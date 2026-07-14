@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.forge/backups/
+.forge/cache/
