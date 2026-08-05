@@ -1,6 +1,7 @@
 """
-VeritasClient —— 通过常驻 veritasd 进程与 Kernel 通信。
+VeritasClient —— JSON Lines RPC 协议，连接 veritasd 常驻进程。
 """
+import json
 import subprocess
 from pathlib import Path
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ class ObjectInfo:
 
 
 class VeritasClient:
-    """通过 veritasd stdin/stdout 协议与 Kernel 通信。"""
+    """通过 veritasd JSON Lines 协议与 Kernel 通信。"""
 
     def __init__(self, project_root: str | Path, binary: str = "veritasd"):
         self.root = str(project_root)
@@ -35,42 +36,33 @@ class VeritasClient:
                 cwd=self.root,
             )
 
-    def _send(self, request: str) -> str:
+    def _send(self, request: dict) -> dict:
         self._ensure_process()
-        assert self._process and self._process.stdin
-        self._process.stdin.write(request + "\n")
+        assert self._process and self._process.stdin and self._process.stdout
+        line = json.dumps(request)
+        self._process.stdin.write(line + "\n")
         self._process.stdin.flush()
-        assert self._process.stdout
-        return self._process.stdout.readline().strip()
+        response_line = self._process.stdout.readline().strip()
+        return json.loads(response_line)
 
     def ping(self) -> bool:
-        return self._send("ping") == "pong"
+        resp = self._send({"cmd": "ping"})
+        return resp.get("result") == "pong"
 
     def list_objects(self) -> list[ObjectInfo]:
-        output = self._send("list_objects")
-        if not output or output == "(no objects)":
-            return []
-        objs = []
-        for line in output.split("\n"):
-            parts = line.strip().split()
-            if len(parts) >= 2:
-                try:
-                    objs.append(ObjectInfo(
-                        object_id=int(parts[0]),
-                        state=parts[1]
-                    ))
-                except ValueError:
-                    pass
-        return objs
+        resp = self._send({"cmd": "list_objects"})
+        objects = resp.get("objects", [])
+        return [
+            ObjectInfo(object_id=obj["id"], state=obj["state"])
+            for obj in objects
+        ]
 
     def get_object_state(self, object_id: int) -> str | None:
-        output = self._send(f"get_object {object_id}")
-        if "not found" in output:
+        resp = self._send({"cmd": "get_object", "id": object_id})
+        if not resp.get("ok"):
             return None
-        parts = output.strip().split()
-        if len(parts) >= 2:
-            return parts[1]
-        return None
+        obj = resp.get("object", {})
+        return obj.get("state")
 
     def object_exists(self, object_id: int) -> bool:
         return self.get_object_state(object_id) is not None
