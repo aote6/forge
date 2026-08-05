@@ -4,10 +4,9 @@ import json
 import time
 from pathlib import Path
 from forge.adapters.base import ToolResult
-from forge.core.security import is_dangerous_command
+from forge.core.security import is_dangerous_command, needs_git_confirmation, is_allowed_command
 
 LOG_PATH = Path.home() / "forge" / ".forge" / "operation_log.jsonl"
-
 
 def _log(name: str, args: dict, success: bool, note: str = ""):
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -18,8 +17,7 @@ def _log(name: str, args: dict, success: bool, note: str = ""):
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-
-def make_tools(workspace) -> dict:
+def make_tools(workspace, safe_mode="blacklist"):
 
     def read_file(path: str, start: int = 1, end: int = 0) -> ToolResult:
         try:
@@ -77,12 +75,31 @@ def make_tools(workspace) -> dict:
             return ToolResult.fail(display=f"🚫 {e}")
 
     def run_command(cmd: str, timeout: int = 60) -> ToolResult:
+        # 1. 危险命令黑名单（任何模式都生效）
         blocked = is_dangerous_command(cmd)
         if blocked:
             _log("run_command", {"cmd": cmd}, False, f"blocked: {blocked}")
             return ToolResult.fail(
                 display=f"🚫 命令被安全策略拦截（命中规则: {blocked}）\n如确需执行，请手动在终端运行。"
             )
+
+        # 2. 白名单模式
+        if safe_mode == "whitelist":
+            if not is_allowed_command(cmd):
+                _log("run_command", {"cmd": cmd}, False, "not in whitelist")
+                return ToolResult.fail(
+                    display=f"⏸️ 命令不在白名单中，需要确认:\n  {cmd}\n💡 请手动在终端执行或切换到黑名单模式。"
+                )
+
+        # 3. Git 命令确认
+        git_check = needs_git_confirmation(cmd)
+        if git_check:
+            _log("run_command", {"cmd": cmd}, False, f"git confirm: {git_check}")
+            return ToolResult.fail(
+                display=f"⏸️ Git 操作需要确认:\n  {cmd}\n💡 请手动在终端执行此 Git 命令。"
+            )
+
+        # 4. 执行
         try:
             result = subprocess.run(
                 cmd, shell=True, cwd=workspace.project_root,
