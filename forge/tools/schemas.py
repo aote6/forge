@@ -1,6 +1,18 @@
-"""工具声明（Gemini 格式）"""
+"""工具声明"""
 
 TOOL_DECLARATIONS = [
+    {
+        "name": "list_files",
+        "description": "列出项目目录结构，用于了解项目布局。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "目录路径，默认项目根目录"},
+                "depth": {"type": "integer", "description": "深度，默认2"},
+            },
+            "required": []
+        }
+    },
     {
         "name": "read_file",
         "description": "读取文件内容。start/end 指定行范围，end=0 表示读全部。",
@@ -12,6 +24,26 @@ TOOL_DECLARATIONS = [
                 "end": {"type": "integer", "description": "结束行号（0=读全部，默认0）"},
             },
             "required": ["path"]
+        }
+    },
+    {
+        "name": "search_code",
+        "description": "在项目中搜索代码，返回匹配的文件名和行号。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "搜索关键词或正则"},
+                "path": {"type": "string", "description": "搜索路径，默认当前目录"},
+            },
+            "required": ["pattern"]
+        }
+    },
+    {
+        "name": "git_diff",
+        "description": "查看当前工作区未暂存的修改。",
+        "parameters": {
+            "type": "object",
+            "properties": {},
         }
     },
     {
@@ -58,18 +90,6 @@ TOOL_DECLARATIONS = [
         }
     },
     {
-        "name": "search_code",
-        "description": "在项目中搜索代码，返回匹配的文件名和行号。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "搜索关键词或正则"},
-                "path": {"type": "string", "description": "搜索路径，默认当前目录"},
-            },
-            "required": ["pattern"]
-        }
-    },
-    {
         "name": "cancel_write",
         "description": "取消之前 prepare_write 创建但尚未提交的事务。",
         "parameters": {
@@ -82,7 +102,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "run_command",
-        "description": "在项目根目录下执行 shell 命令（跑测试、编译、grep 等）。立即执行，不需要用户确认。谨慎使用有破坏性的命令。",
+        "description": "在项目根目录下执行 shell 命令（跑测试、编译、grep 等）。",
         "parameters": {
             "type": "object",
             "properties": {

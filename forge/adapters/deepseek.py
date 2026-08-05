@@ -1,4 +1,5 @@
 """DeepSeek 适配器 - OpenAI 兼容协议"""
+import json
 import os
 from openai import OpenAI
 from forge.adapters.base import BaseAdapter, Message, ToolCall
@@ -14,9 +15,8 @@ class DeepSeekAdapter(BaseAdapter):
             base_url="https://api.deepseek.com"
         )
         self.model_name = model_name
-    
+
     def send(self, messages: list, tools: list) -> Message:
-        # 转换消息格式
         api_messages = []
         for msg in messages:
             if msg.role == "system":
@@ -32,7 +32,7 @@ class DeepSeekAdapter(BaseAdapter):
                             "type": "function",
                             "function": {
                                 "name": tc.name,
-                                "arguments": str(tc.arguments)
+                                "arguments": json.dumps(tc.arguments, ensure_ascii=False)
                             }
                         }
                         for tc in msg.tool_calls
@@ -44,8 +44,7 @@ class DeepSeekAdapter(BaseAdapter):
                     "tool_call_id": msg.tool_call_id or "",
                     "content": msg.content or ""
                 })
-        
-        # 转换工具格式
+
         api_tools = []
         for t in tools:
             api_tools.append({
@@ -56,31 +55,37 @@ class DeepSeekAdapter(BaseAdapter):
                     "parameters": t.get("parameters", {})
                 }
             })
-        
-        # 调用 API
+
         kwargs = {
             "model": self.model_name,
             "messages": api_messages,
-            "temperature": 0.4,
+            "temperature": 0.1,
         }
         if api_tools:
             kwargs["tools"] = api_tools
-        
+
         response = self.client.chat.completions.create(**kwargs)
         choice = response.choices[0]
-        
-        # 解析 ToolCall
+
         tool_calls = None
         if choice.message.tool_calls:
-            tool_calls = [
-                ToolCall(
+            tool_calls = []
+            for tc in choice.message.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    # 参数解析失败，返回空消息让模型重试
+                    return Message(
+                        role="assistant",
+                        content="工具参数格式错误，请重新生成合法 JSON 参数。",
+                        tool_calls=None
+                    )
+                tool_calls.append(ToolCall(
                     id=tc.id,
                     name=tc.function.name,
-                    arguments=eval(tc.function.arguments)
-                )
-                for tc in choice.message.tool_calls
-            ]
-        
+                    arguments=args
+                ))
+
         return Message(
             role="assistant",
             content=choice.message.content,
