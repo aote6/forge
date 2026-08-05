@@ -1,0 +1,54 @@
+{"ts": 1785943393.2882402, "tool": "search_code", "args": {"pattern": "def ", "path": "."}, "success": true, "note": ""}
+{"ts": 1785943395.2670984, "tool": "list_files", "args": {"path": ".", "depth": 2}, "success": true, "note": ""}
+{"ts": 1785943411.5613537, "tool": "read_file", "args": {"path": "test_contracts_v2.py"}, "success": true, "note": ""}
+{"ts": 1785943450.7228758, "tool": "prepare_write", "args": {"path": "test_contracts_v2.py"}, "success": true, "note": "tx=01KZ98CS31HV5YAXRFWNSHKYA1"}
+{"ts": 1785943608.5229535, "tool": "commit_write", "args": {"transaction_id": "01KZ98CS31HV5YAXRFWNSHKYA1"}, "success": true, "note": "✅ 提交成功 + 校验通过"}
+{"ts": 1785944210.9476786, "tool": "read_file", "args": {"path": "~/forge_test_probe.py"}, "success": true, "note": ""}
+{"ts": 1785944214.1558325, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": true, "note": "tx=01KZ9942MBSFWWVRD1HX9ZG44F"}
+{"ts": 1785944342.2483044, "tool": "commit_write", "args": {"transaction_id": "01KZ9942MBSFWWVRD1HX9ZG44F"}, "success": true, "note": "✅ 提交成功 + 校验通过"}
+{"ts": 1785945072.4351106, "tool": "read_file", "args": {"path": "~/forge_test_probe.py"}, "success": true, "note": ""}
+{"ts": 1785945072.562996, "tool": "list_files", "args": {"path": ".", "depth": 1}, "success": true, "note": ""}
+{"ts": 1785945075.4446442, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": true, "note": "tx=01KZ99YBQM9B7R1KC5FDA2XTDJ"}
+{"ts": 1785945085.3714788, "tool": "commit_write", "args": {"transaction_id": "01KZ99YBQM9B7R1KC5FDA2XTDJ"}, "success": true, "note": "✅ 提交成功 + 校验通过"}
+{"ts": 1785946351.630482, "tool": "read_file", "args": {"path": "/root/forge_test_probe.py"}, "success": false, "note": "not found"}
+{"ts": 1785946353.956511, "tool": "run_command", "args": {"cmd": "echo $HOME; ls -la ~/forge_test_probe.py 2>/dev/null; find / -name \"forge_test_probe.py\" 2>/dev/null"}, "success": false, "note": "exit=1"}
+{"ts": 1785946355.8818135, "tool": "read_file", "args": {"path": "/data/data/com.termux/files/home/forge_test_probe.py"}, "success": true, "note": ""}
+{"ts": 1785946358.68092, "tool": "prepare_write", "args": {"path": "/data/data/com.termux/files/home/forge_test_probe.py"}, "success": true, "note": "tx=01KZ9B5GWRRGMDYH7NVXBFEY2M"}
+{"ts": 1785946369.0867782, "tool": "commit_write", "args": {"transaction_id": "01KZ9B5GWRRGMDYH7NVXBFEY2M"}, "success": true, "note": "✅ 提交成功 + 校验通过"}
+{"ts": 1785946943.5383744, "tool": "read_file", "args": {"path": "~/forge_test_probe.py"}, "success": true, "note": ""}
+{"ts": 1785946946.7307222, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": false, "note": "不支持的操作类型: 'insert'。支持: append, prepend, replace, delete, insert_before, insert_after"}
+{"ts": 1785946956.146003, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": false, "note": "找不到 anchor: 'end_of_file'"}
+{"ts": 1785946960.0399067, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": false, "note": "找不到 anchor: '2'"}
+{"ts": 1785946966.4574072, "tool": "run_command", "args": {"cmd": "echo $HOME && ls -la \"$HOME/forge_test_probe.py\" && wc -l \"$HOME/forge_test_probe.py\""}, "success": true, "note": "exit=0"}
+{"ts": 1785946983.8926108, "tool": "search_code", "args": {"pattern": "prepare_write", "path": "."}, "success": true, "note": ""}
+{"ts": 1785946984.7539647, "tool": "search_code", "args": {"pattern": "insert_after|cannot unpack non-iterable|找不到 anchor", "path": "."}, "success": true, "note": ""}
+{"ts": 1785946987.2798922, "tool": "read_file", "args": {"path": "/data/data/com.termux/files/home/forge/forge/core/transaction.py"}, "success": true, "note": ""}
+{"ts": 1785946991.8907025, "tool": "read_file", "args": {"path": "/data/data/com.termux/files/home/forge/forge/tools/__init__.py"}, "success": true, "note": ""}
+{"ts": 1785946997.1096108, "tool": "read_file", "args": {"path": "/data/data/com.termux/files/home/forge/forge/workspace.py"}, "success": true, "note": ""}
+{"ts": 1785947001.9205577, "tool": "read_file", "args": {"path": "/data/data/com.termux/files/home/forge/forge/runtime.py"}, "success": true, "note": ""}
+{"ts": 1785947007.2138155, "tool": "search_code", "args": {"pattern": "参数不匹配", "path": "."}, "success": true, "note": ""}
+{"ts": 1785947011.8532598, "tool": "read_file", "args": {"path": "/data/data/com.termux/files/home/forge/forge/runtime.py"}, "success": true, "note": ""}
+{"ts": 1785947136.4350128, "tool": "read_file", "args": {"path": "~/forge_test_probe.py"}, "success": true, "note": ""}
+{"ts": 1785947138.8314412, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": false, "note": "不支持的操作类型: 'insert'。支持: append, prepend, replace, delete, insert_before, insert_after"}
+{"ts": 1785947141.903489, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": false, "note": "找不到 anchor: 'EOF'"}
+{"ts": 1785947144.9739952, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": false, "note": "cannot unpack non-iterable NoneType object"}
+{"ts": 1785947148.257948, "tool": "read_file", "args": {"path": "~/forge_test_probe.py"}, "success": true, "note": ""}
+{"ts": 1785947151.0192857, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": false, "note": "cannot unpack non-iterable NoneType object"}
+{"ts": 1785947155.1147385, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": false, "note": "cannot unpack non-iterable NoneType object"}
+{"ts": 1785947413.6308024, "tool": "read_file", "args": {"path": "forge_test_probe.py"}, "success": true, "note": ""}
+{"ts": 1785947416.7479124, "tool": "prepare_write", "args": {"path": "forge_test_probe.py"}, "success": false, "note": "cannot unpack non-iterable NoneType object"}
+{"ts": 1785947421.459986, "tool": "prepare_write", "args": {"path": "forge_test_probe.py"}, "success": false, "note": "不支持的操作类型: 'insert'。支持: append, prepend, replace, delete, insert_before, insert_after"}
+{"ts": 1785947425.6667702, "tool": "prepare_write", "args": {"path": "forge_test_probe.py"}, "success": false, "note": "cannot unpack non-iterable NoneType object"}
+{"ts": 1785947431.7723305, "tool": "git_diff", "args": {}, "success": true, "note": ""}
+{"ts": 1785947431.8504357, "tool": "run_command", "args": {"cmd": "git status --short 2>&1; echo \"---\"; ls -la forge_test_probe.py 2>&1; echo \"---\"; pwd"}, "success": true, "note": "exit=0"}
+{"ts": 1785947591.5184138, "tool": "read_file", "args": {"path": "~/forge_test_probe.py"}, "success": true, "note": ""}
+{"ts": 1785947594.0047102, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": false, "note": "不支持的操作类型: 'insert'。支持: append, prepend, replace, delete, insert_before, insert_after"}
+{"ts": 1785947597.3825014, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py", "error": "cannot unpack non-iterable NoneType object"}, "success": false, "note": "unexpected error"}
+{"ts": 1785947605.9858716, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py", "error": "cannot unpack non-iterable NoneType object"}, "success": false, "note": "unexpected error"}
+{"ts": 1785947612.9398034, "tool": "list_files", "args": {"path": ".", "depth": 2}, "success": true, "note": ""}
+{"ts": 1785947612.9979687, "tool": "run_command", "args": {"cmd": "pwd && ls -la ~/forge_test_probe.py 2>&1; echo \"---\"; ls -la ./forge_test_probe.py 2>&1"}, "success": true, "note": "exit=0"}
+{"ts": 1785947623.5021462, "tool": "prepare_write", "args": {"path": "forge_test_probe.py", "error": "cannot unpack non-iterable NoneType object"}, "success": false, "note": "unexpected error"}
+{"ts": 1785947924.7274277, "tool": "read_file", "args": {"path": "~/forge_test_probe.py"}, "success": true, "note": ""}
+{"ts": 1785947928.5524302, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": false, "note": "不支持的操作类型: 'insert'。支持: append, prepend, replace, delete, insert_before, insert_after"}
+{"ts": 1785947931.759532, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": true, "note": "tx=01KZ9CNH3EGS14E6TEG3Q6ZZFR"}
+{"ts": 1785947940.9566493, "tool": "commit_write", "args": {"transaction_id": "01KZ9CNH3EGS14E6TEG3Q6ZZFR"}, "success": true, "note": "✅ 提交成功 + 校验通过"}

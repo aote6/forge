@@ -101,9 +101,14 @@ def make_tools(workspace, safe_mode="blacklist", world_runtime=None):
         except PermissionError as e:
             _log("prepare_write", {"path": path}, False, str(e))
             return ToolResult.fail(display=f"🚫 {e}")
+        except Exception as e:
+            _log("prepare_write", {"path": path, "error": str(e)}, False, "unexpected error")
+            return ToolResult.fail(display=f"❌ 内部错误: {e}")
+        
         if not ok:
             _log("prepare_write", {"path": path}, False, msg)
             return ToolResult.fail(display=msg)
+        
         _log("prepare_write", {"path": path}, True, f"tx={tx.id}")
         display = (
             f"⏸️ 事务 {tx.id} 已准备，待确认。\n"
@@ -118,7 +123,6 @@ def make_tools(workspace, safe_mode="blacklist", world_runtime=None):
             "patch": tx.patch,
             "operations": tx.operations
         })
-
     def commit_write(transaction_id: str) -> ToolResult:
         ok, msg = workspace.commit_write(transaction_id)
         _log("commit_write", {"transaction_id": transaction_id}, ok, msg)

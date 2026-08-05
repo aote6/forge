@@ -101,9 +101,7 @@ class TransactionManager:
         if current_hash != tx.original_hash:
             return False, "❌ 文件已被外部修改，事务失效。请重新 prepare_write。"
         
-        ok, new_content = self._apply_operations(current, tx.operations)
-        if not ok:
-            return False, f"❌ 应用操作失败: {new_content}"
+        new_content = self._apply_operations_get_content(current, tx.operations)
         
         backup_path = self.backup.backup(tx.path)
         if not backup_path:
@@ -141,16 +139,6 @@ class TransactionManager:
             anchor = op.get("anchor", "")
             target = op.get("target", "")
             value = op.get("value", "")
-
-            # 先处理不需要 anchor/target 的操作
-            if op_type == "append":
-                lines.append(value + "\n")
-                continue
-            elif op_type == "prepend":
-                lines.insert(0, value + "\n")
-                continue
-
-            # 以下操作需要 anchor 和 target
             
             matches = [i for i, line in enumerate(lines) if anchor in line]
             if len(matches) == 0:
@@ -171,7 +159,6 @@ class TransactionManager:
             if target_line == -1:
                 return False, f"在 '{anchor}' 附近找不到 target: '{target}'"
             
-
             if op_type == "replace":
                 lines[target_line] = lines[target_line].replace(target, value)
             elif op_type == "delete":
@@ -180,15 +167,8 @@ class TransactionManager:
                 lines.insert(target_line, value + "\n")
             elif op_type == "insert_after":
                 lines.insert(target_line + 1, value + "\n")
-            else:
-                return False, f"不支持的操作类型: '{op_type}'。支持: append, prepend, replace, delete, insert_before, insert_after"
-
+        
         return True, "".join(lines)
-
-    
-    def _apply_operations_get_content(self, original: str, operations: list) -> str:
-        ok, content = self._apply_operations(original, operations)
-        return content if ok else original
     
     def _apply_operations_get_content(self, original: str, operations: list) -> str:
         ok, content = self._apply_operations(original, operations)
