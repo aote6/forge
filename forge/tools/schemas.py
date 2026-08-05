@@ -69,4 +69,27 @@ TOOL_DECLARATIONS = [
             "required": ["pattern"]
         }
     },
+    {
+        "name": "cancel_write",
+        "description": "取消之前 prepare_write 创建但尚未提交的事务。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "transaction_id": {"type": "string", "description": "事务 ID"},
+            },
+            "required": ["transaction_id"]
+        }
+    },
+    {
+        "name": "run_command",
+        "description": "在项目根目录下执行 shell 命令（跑测试、编译、grep 等）。立即执行，不需要用户确认。谨慎使用有破坏性的命令。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cmd": {"type": "string", "description": "要执行的 shell 命令"},
+                "timeout": {"type": "integer", "description": "超时秒数，默认60"},
+            },
+            "required": ["cmd"]
+        }
+    },
 ]

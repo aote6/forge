@@ -13,6 +13,12 @@ SYSTEM_INSTRUCTION = """
 修改文件分两步：prepare_write → 用户确认 → commit_write。
 operations 使用 anchor（函数名/类名）定位，不用行号。
 不确定就说不确定。
+
+开始处理任何具体任务前，先用 read_file 或 search_code 检查项目根目录
+是否存在 STATUS.md / README.md / ARCHITECTURE.md 等文档，了解项目
+背景、当前进度和已知约定，再动手。不确定工具链（编译器/测试命令）
+时，用 run_command 自行探测（如 which cargo、cat Cargo.toml），
+不要凭空假设。
 """
 
 
@@ -24,7 +30,14 @@ class ToolExecutor:
         fn = self.tools.get(tool_call.name)
         if not fn:
             return ToolResult.fail(display=f"未知工具: {tool_call.name}")
-        return fn(**tool_call.arguments)
+        try:
+            return fn(**tool_call.arguments)
+        except TypeError as e:
+            return ToolResult.fail(
+                display=f"参数不匹配: {e}\n收到的参数: {tool_call.arguments}"
+            )
+        except Exception as e:
+            return ToolResult.fail(display=f"工具执行异常: {type(e).__name__}: {e}")
 
 
 class Runtime:

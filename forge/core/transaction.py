@@ -104,6 +104,8 @@ class TransactionManager:
         new_content = self._apply_operations_get_content(current, tx.operations)
         
         backup_path = self.backup.backup(tx.path)
+        if not backup_path:
+            return False, "❌ 备份失败，为安全起见拒绝提交（无法保证可回滚，请检查备份目录权限/磁盘空间）"
         try:
             self.fm.write(tx.path, new_content)
         except Exception as e:
@@ -138,13 +140,16 @@ class TransactionManager:
             target = op.get("target", "")
             value = op.get("value", "")
             
-            anchor_line = -1
-            for i, line in enumerate(lines):
-                if anchor in line:
-                    anchor_line = i
-                    break
-            if anchor_line == -1:
+            matches = [i for i, line in enumerate(lines) if anchor in line]
+            if len(matches) == 0:
                 return False, f"找不到 anchor: '{anchor}'"
+            if len(matches) > 1:
+                line_nums = [m + 1 for m in matches]
+                return False, (
+                    f"anchor '{anchor}' 存在歧义，在文件中出现 {len(matches)} 次"
+                    f"（行号: {line_nums}）。请提供更具体的 anchor（如包含更多上下文）。"
+                )
+            anchor_line = matches[0]
             
             target_line = -1
             for i in range(anchor_line, min(len(lines), anchor_line + 100)):
