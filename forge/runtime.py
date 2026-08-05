@@ -45,7 +45,7 @@ class Runtime:
         self.adapter = adapter
         self.workspace = workspace
         self.memory = memory
-        self.tools = make_tools(workspace)
+        self.tools = make_tools(workspace, safe_mode="blacklist")
         self.executor = ToolExecutor(self.tools)
         self.conversation = Conversation(SYSTEM_INSTRUCTION)
         self._handlers: dict = {e: [] for e in EventType}
