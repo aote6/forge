@@ -33,6 +33,7 @@ class Message:
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
     name: str | None = None
+    raw_parts: list | None = None
 
 
 class BaseAdapter(ABC):
