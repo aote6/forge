@@ -4,8 +4,7 @@ import json
 import time
 from pathlib import Path
 from forge.adapters.base import ToolResult
-from forge.veritas_client import VeritasClient
-from forge.tools.veritas_tools import make_veritas_tools
+from forge.tools.veritas_tools import make_world_tools
 from forge.core.security import is_dangerous_command, needs_git_confirmation, is_allowed_command
 
 LOG_PATH = Path.home() / "forge" / ".forge" / "operation_log.jsonl"
@@ -28,7 +27,7 @@ def _truncate(text: str) -> str:
     return text
 
 
-def make_tools(workspace, safe_mode="blacklist", veritas_client=None):
+def make_tools(workspace, safe_mode="blacklist", world_runtime=None):
 
     def list_files(path: str = ".", depth: int = 2) -> ToolResult:
         try:
@@ -175,8 +174,6 @@ def make_tools(workspace, safe_mode="blacklist", veritas_client=None):
             _log("run_command", {"cmd": cmd}, False, str(e))
             return ToolResult.fail(display=f"执行失败: {e}")
 
-    # 合并 Veritas 工具
-    veritas_tools = make_veritas_tools(veritas_client)
     tools = {
         "list_files": list_files,
         "read_file": read_file,
@@ -187,5 +184,6 @@ def make_tools(workspace, safe_mode="blacklist", veritas_client=None):
         "cancel_write": cancel_write,
         "run_command": run_command,
     }
-    tools.update(veritas_tools)
+    if world_runtime is not None:
+        tools.update(make_world_tools(world_runtime))
     return tools
