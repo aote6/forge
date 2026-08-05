@@ -43,6 +43,9 @@ class VeritasClient:
         self._process.stdin.write(line + "\n")
         self._process.stdin.flush()
         response_line = self._process.stdout.readline().strip()
+        # 跳过空行（veritasd stderr 日志不应出现在 stdout，但以防万一）
+        while response_line == '':
+            response_line = self._process.stdout.readline().strip()
         return json.loads(response_line)
 
     def ping(self) -> bool:
@@ -66,6 +69,14 @@ class VeritasClient:
 
     def object_exists(self, object_id: int) -> bool:
         return self.get_object_state(object_id) is not None
+
+    def create_object(self) -> int | None:
+        """创建新 Object，返回 object_id"""
+        resp = self._send({"cmd": "create_object"})
+        if resp.get("ok"):
+            obj = resp.get("object", {})
+            return obj.get("id")
+        return None
 
     def close(self):
         if self._process:

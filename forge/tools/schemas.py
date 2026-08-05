@@ -16,6 +16,11 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "veritas_create_object",
+        "description": "在 Veritas Kernel 中创建一个新 Object，返回 Object ID",
+        "parameters": {"type": "object", "properties": {}, "required": []}
+    },
+    {
         "name": "veritas_object_exists",
         "description": "检查 Object 是否存在",
         "parameters": {
@@ -68,14 +73,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "prepare_write",
-        "description": (
-            "准备修改文件。operations 是操作列表，每个操作包含：\n"
-            "- type: 'replace' | 'insert_before' | 'insert_after' | 'delete'\n"
-            "- anchor: 定位锚点字符串（如函数名、类名）\n"
-            "- target: 要操作的代码片段\n"
-            "- value: 新代码片段（delete 时不需要）\n"
-            "返回事务 ID 和 diff 预览，需要用户确认后调用 commit_write。"
-        ),
+        "description": "准备修改文件。operations 使用 anchor 定位。返回事务 ID 和 diff 预览，需要用户确认后调用 commit_write。",
         "parameters": {
             "type": "object",
             "properties": {

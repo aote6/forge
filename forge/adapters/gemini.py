@@ -40,7 +40,6 @@ class GeminiAdapter(BaseAdapter):
                     parts=[types.Part.from_text(text=msg.content or "")]
                 ))
             elif msg.role == "assistant":
-                # 优先使用原始 raw_parts（含 thought_signature）
                 if hasattr(msg, "raw_parts") and msg.raw_parts:
                     contents.append(types.Content(role="model", parts=msg.raw_parts))
                 else:
@@ -75,7 +74,7 @@ class GeminiAdapter(BaseAdapter):
             tools=gemini_tools if gemini_tools else None,
         )
 
-        max_retries = 3
+        max_retries = 5
         response = None
         for attempt in range(max_retries):
             try:
@@ -86,15 +85,16 @@ class GeminiAdapter(BaseAdapter):
                 )
                 break
             except Exception as e:
-                if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
-                    wait = 15 * (attempt + 1)
-                    print(f"\n⏳ 触发限额，等待 {wait} 秒后重试（{attempt+1}/{max_retries}）...")
+                err_str = str(e)
+                if any(k in err_str for k in ["RESOURCE_EXHAUSTED", "429", "503", "UNAVAILABLE"]):
+                    wait = (2 ** attempt) * 3
+                    print(f"\n⏳ 服务繁忙，{wait} 秒后重试（{attempt+1}/{max_retries}）...")
                     time.sleep(wait)
                     continue
                 raise
 
         if response is None:
-            raise RuntimeError("多次重试后仍然限额，请切换 DeepSeek")
+            raise RuntimeError("Gemini 服务暂不可用，建议切回 DeepSeek (`dp`) 模式")
 
         text = ""
         tool_calls = []

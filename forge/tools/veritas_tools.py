@@ -1,4 +1,4 @@
-"""Veritas 工具 —— Forge 控制平面的眼睛"""
+"""Veritas 工具 —— Forge 控制平面"""
 from forge.adapters.base import ToolResult
 from forge.veritas_client import VeritasClient
 
@@ -6,7 +6,6 @@ from forge.veritas_client import VeritasClient
 def make_veritas_tools(client: VeritasClient):
 
     def veritas_list_objects() -> ToolResult:
-        """列出 Veritas Kernel 中所有 Object"""
         try:
             objs = client.list_objects()
             if not objs:
@@ -20,7 +19,6 @@ def make_veritas_tools(client: VeritasClient):
             return ToolResult.fail(display=f"查询失败: {e}")
 
     def veritas_get_object(object_id: int) -> ToolResult:
-        """查询指定 Object 的状态"""
         try:
             state = client.get_object_state(object_id)
             if state is None:
@@ -32,19 +30,20 @@ def make_veritas_tools(client: VeritasClient):
         except Exception as e:
             return ToolResult.fail(display=f"查询失败: {e}")
 
-    def veritas_object_exists(object_id: int) -> ToolResult:
-        """检查 Object 是否存在"""
+    def veritas_create_object() -> ToolResult:
         try:
-            exists = client.object_exists(object_id)
-            return ToolResult.ok(
-                display=f"Object {object_id}: {'存在' if exists else '不存在'}",
-                payload={"object_id": object_id, "exists": exists}
-            )
+            oid = client.create_object()
+            if oid is not None:
+                return ToolResult.ok(
+                    display=f"Object {oid} 已创建，状态: Alive",
+                    payload={"object_id": oid, "state": "Alive"}
+                )
+            return ToolResult.fail(display="创建 Object 失败")
         except Exception as e:
-            return ToolResult.fail(display=f"查询失败: {e}")
+            return ToolResult.fail(display=f"创建失败: {e}")
 
     return {
         "veritas_list_objects": veritas_list_objects,
         "veritas_get_object": veritas_get_object,
-        "veritas_object_exists": veritas_object_exists,
+        "veritas_create_object": veritas_create_object,
     }
