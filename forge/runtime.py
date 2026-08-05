@@ -6,6 +6,7 @@ from forge.workspace import Workspace
 from forge.memory import MemoryStore
 from forge.events import Event, EventType
 from forge.tools import make_tools
+from forge.veritas_client import VeritasClient
 from forge.tools.schemas import TOOL_DECLARATIONS
 from forge.agent_state import AgentPhase
 from forge.system_prompt import SYSTEM_INSTRUCTION
@@ -72,7 +73,7 @@ class Runtime:
         self.adapter = adapter
         self.workspace = workspace
         self.memory = memory
-        self.tools = make_tools(workspace, safe_mode="blacklist")
+        self.tools = make_tools(workspace, safe_mode="blacklist", veritas_client=VeritasClient(workspace.project_root))
         self.executor = ToolExecutor(self.tools)
         self.conversation = Conversation(SYSTEM_INSTRUCTION)
         self.phase = AgentPhase.IDLE

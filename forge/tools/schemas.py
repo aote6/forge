@@ -2,6 +2,29 @@
 
 TOOL_DECLARATIONS = [
     {
+        "name": "veritas_list_objects",
+        "description": "列出 Veritas Kernel 中所有 Object（ID 和状态）",
+        "parameters": {"type": "object", "properties": {}, "required": []}
+    },
+    {
+        "name": "veritas_get_object",
+        "description": "查询指定 Object 的状态（Alive/Frozen/Dead）",
+        "parameters": {
+            "type": "object",
+            "properties": {"object_id": {"type": "integer", "description": "Object ID"}},
+            "required": ["object_id"]
+        }
+    },
+    {
+        "name": "veritas_object_exists",
+        "description": "检查 Object 是否存在",
+        "parameters": {
+            "type": "object",
+            "properties": {"object_id": {"type": "integer", "description": "Object ID"}},
+            "required": ["object_id"]
+        }
+    },
+    {
         "name": "list_files",
         "description": "列出项目目录结构，用于了解项目布局。",
         "parameters": {
@@ -41,10 +64,7 @@ TOOL_DECLARATIONS = [
     {
         "name": "git_diff",
         "description": "查看当前工作区未暂存的修改。",
-        "parameters": {
-            "type": "object",
-            "properties": {},
-        }
+        "parameters": {"type": "object", "properties": {}}
     },
     {
         "name": "prepare_write",
