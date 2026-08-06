@@ -50,6 +50,8 @@ class IntentExecutor:
 
         session = self._world.begin_session()
         obj_id = session.create_object()
+        # 注册路径映射，让 FileProjection 知道这个 object 对应哪个文件
+        self._world.register_path(obj_id, path)
         session.write(obj_id, 0, value=path)     # state_id=0: 文件路径
         session.write(obj_id, 1, value=content)  # state_id=1: 文件内容
 
