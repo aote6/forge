@@ -2,19 +2,25 @@
 import re
 
 
+def is_confirm(text: str) -> bool:
+    t = text.strip().lower()
+    if t in ("确认", "confirm", "yes", "y", "ok"):
+        return True
+    if re.match(r"^(确认|commit|confirm)\b", t):
+        return True
+    return False
+
+
+def is_cancel(text: str) -> bool:
+    t = text.strip().lower()
+    if t in ("取消", "cancel", "no", "n", "abort"):
+        return True
+    if t.startswith("取消") or t.startswith("cancel") or t.startswith("abort"):
+        return True
+    return False
+
+
 def extract_confirmation(text: str) -> str | None:
-    """
-    支持格式：
-      确认 abc123
-      commit abc123
-      确认 tx_abc123
-    """
-    patterns = [
-        r"确认\s+([a-zA-Z0-9_-]+)",
-        r"commit\s+([a-zA-Z0-9_-]+)",
-    ]
-    for p in patterns:
-        m = re.search(p, text)
-        if m:
-            return m.group(1)
+    if is_confirm(text):
+        return "confirm"
     return None

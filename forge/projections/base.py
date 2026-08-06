@@ -13,6 +13,14 @@ from typing import Optional
 from forge.world.types import Receipt, TransactionDelta
 
 
+@dataclass
+class ProjectionResult:
+    """一次 Projection.apply 的结果。"""
+    name: str
+    success: bool
+    reason: str = ""
+    retryable: bool = False
+
 
 class Projection(ABC):
     """投影基类。
@@ -25,26 +33,16 @@ class Projection(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """投影名称，用于注册和日志。"""
         ...
 
     @abstractmethod
     def prepare(self, delta: TransactionDelta) -> Optional[dict]:
-        """准备阶段。返回用户确认所需的信息（如 diff）。
-
-        此阶段不能修改外部世界。
-        返回 None 表示不需要用户确认。
-        返回 dict 表示需要确认，内容会展示给用户。
-        """
+        """准备阶段。返回用户确认所需的信息（如 diff）。此阶段不能修改外部世界。"""
         ...
 
     @abstractmethod
-    def apply(self, receipt: Receipt, delta: TransactionDelta) -> None:
-        """应用阶段。事务已提交，执行实际更新。
-
-        此方法失败不会回滚世界事务。
-        Projection 可以稍后恢复。
-        """
+    def apply(self, receipt: Receipt, delta: TransactionDelta) -> ProjectionResult:
+        """应用阶段。事务已提交，执行实际更新。失败不回滚世界事务。"""
         ...
 
 
@@ -61,7 +59,6 @@ class ProjectionManager:
         self._projections.remove(projection)
 
     def prepare_all(self, delta: TransactionDelta) -> dict[str, dict]:
-        """运行所有 Projection 的 prepare 阶段，收集确认信息。"""
         confirmations = {}
         for p in self._projections:
             result = p.prepare(delta)
@@ -69,7 +66,22 @@ class ProjectionManager:
                 confirmations[p.name] = result
         return confirmations
 
-    def apply_all(self, receipt: Receipt, delta: TransactionDelta) -> None:
-        """运行所有 Projection 的 apply 阶段。"""
+    def project(self, receipt: Receipt, delta: TransactionDelta) -> list[ProjectionResult]:
+        """运行所有 Projection 的 apply，统一收集结果。不 silent。"""
+        results: list[ProjectionResult] = []
         for p in self._projections:
-            p.apply(receipt, delta)
+            try:
+                result = p.apply(receipt, delta)
+                results.append(result)
+            except Exception as e:
+                results.append(ProjectionResult(
+                    name=p.name,
+                    success=False,
+                    reason=f"{type(e).__name__}: {e}",
+                    retryable=True,
+                ))
+        return results
+
+    # back-compat alias
+    def apply_all(self, receipt: Receipt, delta: TransactionDelta) -> list[ProjectionResult]:
+        return self.project(receipt, delta)

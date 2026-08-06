@@ -1,21 +1,21 @@
-"""GitProjection — 世界状态变更自动同步到 Git。
+"""GitProjection — 世界状态变更同步到 Git。
 
-commit 成功后自动执行 git add + git commit。
+只提交 TransactionDelta 涉及的文件，不做 git add -A。
 失败不影响世界事务。
 """
 
 from __future__ import annotations
 
-import subprocess
 import os
+import subprocess
 from pathlib import Path
 
-from forge.projections.base import Projection, TransactionDelta
+from forge.projections.base import Projection, ProjectionResult, TransactionDelta
 from forge.world.types import Receipt
 
 
 class GitProjection(Projection):
-    """Git 投影。事务提交后自动同步到 Git 仓库。"""
+    """Git 投影。事务提交后仅同步 delta 涉及的文件。"""
 
     def __init__(self, project_root: str = "."):
         self.project_root = os.path.abspath(os.path.expanduser(project_root))
@@ -55,50 +55,87 @@ class GitProjection(Projection):
         except Exception as e:
             return -1, "", str(e)
 
+    def _paths_from_delta(self, delta: TransactionDelta) -> list[str]:
+        paths: list[str] = []
+        for object_id, writes in delta.memory_written.items():
+            for state_id, value in writes:
+                if state_id == 0 and value:
+                    p = Path(value)
+                    if not p.is_absolute():
+                        p = Path(self.project_root) / p
+                    paths.append(str(p))
+        meta_paths = (delta.metadata or {}).get("deleted_paths", {})
+        for path in meta_paths.values():
+            p = Path(str(path))
+            if not p.is_absolute():
+                p = Path(self.project_root) / p
+            paths.append(str(p))
+        # unique, preserve order
+        seen = set()
+        unique = []
+        for p in paths:
+            if p not in seen:
+                seen.add(p)
+                unique.append(p)
+        return unique
+
     def prepare(self, delta: TransactionDelta) -> dict | None:
-        """列出将要 commit 的文件变更。"""
         if not self._enabled:
             return None
-
-        # 只看已修改但未暂存的文件
-        code, stdout, stderr = self._git("diff", "--name-only")
-        staged_code, staged_out, _ = self._git("diff", "--cached", "--name-only")
-
-        files = []
-        if code == 0 and stdout:
-            files.extend(stdout.split("\n"))
-        if staged_code == 0 and staged_out:
-            files.extend(staged_out.split("\n"))
-
-        if not files:
+        paths = self._paths_from_delta(delta)
+        if not paths:
             return None
-
         return {
             "type": "git_status",
-            "files_to_commit": list(set(files)),
+            "files_to_commit": paths,
         }
 
-    def apply(self, receipt: Receipt, delta: TransactionDelta) -> None:
-        """git add + git commit 所有变更。"""
+    def apply(self, receipt: Receipt, delta: TransactionDelta) -> ProjectionResult:
         if not self._enabled:
-            return
+            return ProjectionResult(name=self.name, success=True, reason="git disabled")
 
-        # git add -A 暂存所有变更
-        self._git("add", "-A")
+        paths = self._paths_from_delta(delta)
+        if not paths:
+            return ProjectionResult(name=self.name, success=True, reason="no paths in delta")
 
-        # 检查是否有东西可提交
-        code, stdout, _ = self._git("diff", "--cached", "--quiet")
-        if code == 0:
-            return  # 没有变更
+        try:
+            for path in paths:
+                # path relative to project root preferred for git
+                try:
+                    rel = str(Path(path).relative_to(self.project_root))
+                except ValueError:
+                    rel = path
+                code, _, err = self._git("add", "--", rel)
+                if code != 0 and err:
+                    # file may already be deleted; still try
+                    pass
 
-        # git commit
-        commit_msg = (
-            f"forge: tx={receipt.tx_id} v={receipt.version}\n"
-            f"\n"
-            f"Objects created: {len(delta.objects_created)}\n"
-            f"Objects deleted: {len(delta.objects_deleted)}\n"
-            f"Objects frozen: {len(delta.objects_frozen)}\n"
-            f"Links added: {len(delta.links_added)}\n"
-            f"Links removed: {len(delta.links_removed)}"
-        )
-        self._git("commit", "-m", commit_msg)
+            code, _, _ = self._git("diff", "--cached", "--quiet")
+            if code == 0:
+                return ProjectionResult(name=self.name, success=True, reason="nothing to commit")
+
+            commit_msg = (
+                f"forge: tx={receipt.tx_id} v={receipt.version}\n"
+                f"\n"
+                f"Objects created: {len(delta.objects_created)}\n"
+                f"Objects deleted: {len(delta.objects_deleted)}\n"
+                f"Objects frozen: {len(delta.objects_frozen)}\n"
+                f"Links added: {len(delta.links_added)}\n"
+                f"Links removed: {len(delta.links_removed)}"
+            )
+            code, _, err = self._git("commit", "-m", commit_msg)
+            if code != 0:
+                return ProjectionResult(
+                    name=self.name,
+                    success=False,
+                    reason=err or f"git commit exit {code}",
+                    retryable=True,
+                )
+            return ProjectionResult(name=self.name, success=True, reason="committed")
+        except Exception as e:
+            return ProjectionResult(
+                name=self.name,
+                success=False,
+                reason=f"{type(e).__name__}: {e}",
+                retryable=True,
+            )
