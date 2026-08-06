@@ -1,43 +1,45 @@
-"""Planner — LLM生成草案 + Validator + Repair → Executable Plan"""
+"""Planner — LLM 输出行号+新内容 → Forge 从仓库提取 old_text → Validator 校验
+
+原则：old_text 永远来自真实仓库，LLM 只负责"决定改哪里"。
+"""
 import json
 import re
 import sys
 import time
-from difflib import SequenceMatcher
+import os
 from typing import Optional
 
 from forge.contracts.repository import RepoContext
 from forge.contracts.planning import Plan, PlanStep
 from forge.adapters.base import BaseAdapter, Message
 
-PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。根据仓库文件列表和用户任务，生成一个有序的修改计划。
+PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文件列表、文件内容（带行号）、以及用户任务。
 
-输出格式必须是严格的 JSON，不要包含任何其他文字：
-
+输出严格的 JSON，不要包含任何其他文字：
 {
   "goal": "用户任务的简洁重述",
-  "assumptions": ["实现假设1", "假设2"],
+  "assumptions": ["假设1"],
   "steps": [
     {
       "step_id": "step_1",
-      "description": "这一步做什么",
-      "target_files": ["文件路径1"],
+      "description": "做什么",
+      "target_files": ["文件路径"],
       "operation_type": "modify | create_file | delete_file",
       "dependencies": [],
       "content": "create_file 时的完整文件内容",
-      "old_text": "modify 时被替换的原文",
-      "new_text": "modify 时替换后的新文"
+      "start_line": modify 时修改的起始行号 (从1开始),
+      "end_line": modify 时修改的结束行号 (含),
+      "new_text": "modify 时，替换 start_line 到 end_line 的新内容"
     }
   ]
 }
 
 规则：
-1. modify/delete 的 target_files 必须来自仓库文件列表
-2. create_file 的 target_files 是要新建的文件，可以不在列表中
-3. modify 时必须提供 old_text 和 new_text
-4. create_file 时必须提供 content
-5. old_text 尽量简短且唯一，方便精确定位
-6. 只输出 JSON，不要输出任何解释文字
+1. modify 时必须提供 start_line 和 end_line，指向上面文件内容中的行号
+2. modify 时必须提供 new_text，即替换后的新内容
+3. create_file 时必须提供 content，即完整的新文件内容
+4. start_line/end_line 必须在文件行数范围内
+5. 只输出 JSON，不要输出任何解释文字
 """
 
 
@@ -46,9 +48,13 @@ class PlanValidationError(Exception):
 
 
 class PlanValidator:
-    """校验 LLM 输出的 Plan 结构是否合法"""
+    """校验 Plan 合法性，从仓库提取 old_text"""
 
-    def validate(self, plan_dict: dict, repo: RepoContext) -> Plan:
+    def __init__(self, project_root: str = "."):
+        self.project_root = project_root
+
+    def validate(self, plan_dict: dict, repo: RepoContext) -> tuple[Plan, dict]:
+        """校验并补充 old_text。返回 (Plan, enriched_dict)"""
         if not isinstance(plan_dict, dict):
             raise PlanValidationError("Plan 必须是 dict")
 
@@ -70,6 +76,7 @@ class PlanValidator:
         valid_ops = {"modify", "create_file", "delete_file"}
         step_ids = set()
         steps = []
+        enriched_steps = []
 
         for i, s in enumerate(steps_raw):
             sid = s.get("step_id", f"step_{i+1}")
@@ -89,6 +96,8 @@ class PlanValidator:
             if op not in valid_ops:
                 raise PlanValidationError(f"{sid}: 无效 operation_type '{op}'")
 
+            enriched = dict(s)  # 复制原始数据
+
             for tf in targets:
                 if op in ("modify", "delete_file"):
                     if tf not in existing_files:
@@ -101,10 +110,42 @@ class PlanValidator:
                 content = s.get("content", "")
                 if not content:
                     raise PlanValidationError(f"{sid}: create_file 缺少 content")
+
             elif op == "modify":
-                old_text = s.get("old_text", "")
-                if not old_text:
-                    raise PlanValidationError(f"{sid}: modify 缺少 old_text")
+                start_line = s.get("start_line")
+                end_line = s.get("end_line")
+                if start_line is None or end_line is None:
+                    raise PlanValidationError(f"{sid}: modify 缺少 start_line 或 end_line")
+                if not isinstance(start_line, int) or not isinstance(end_line, int):
+                    raise PlanValidationError(f"{sid}: start_line/end_line 必须是整数")
+                if start_line < 1 or end_line < start_line:
+                    raise PlanValidationError(f"{sid}: 无效行号范围 {start_line}-{end_line}")
+
+                new_text = s.get("new_text", "")
+                # new_text 可以为空（删除行）
+
+                # 从仓库提取 old_text
+                for tf in targets:
+                    filepath = os.path.join(self.project_root, tf)
+                    if not os.path.exists(filepath):
+                        raise PlanValidationError(f"{sid}: 文件不存在: {tf}")
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    if end_line > len(lines):
+                        raise PlanValidationError(
+                            f"{sid}: end_line={end_line} 超出文件行数 {len(lines)}"
+                        )
+                    # 提取 old_text（保留原始格式）
+                    old_lines = lines[start_line-1:end_line]
+                    old_text = "".join(old_lines)
+                    enriched["old_text"] = old_text
+                    enriched["target_file_content"] = "".join(lines)
+
+            elif op == "delete_file":
+                for tf in targets:
+                    filepath = os.path.join(self.project_root, tf)
+                    if not os.path.exists(filepath):
+                        raise PlanValidationError(f"{sid}: 要删除的文件不存在: {tf}")
 
             deps = s.get("dependencies", [])
             if not isinstance(deps, list):
@@ -117,105 +158,22 @@ class PlanValidator:
                 operation_type=op,
                 dependencies=deps
             ))
+            enriched_steps.append(enriched)
 
         for step in steps:
             for dep in step.dependencies:
                 if dep not in step_ids:
                     raise PlanValidationError(f"{step.step_id}: 依赖的 {dep} 不存在")
 
-        return Plan(
+        plan = Plan(
             plan_id=_make_plan_id(),
             goal=goal,
             steps=steps,
             assumptions=assumptions
         )
-
-
-class PlanRepair:
-    """修复 LLM 生成的 old_text，使其精确匹配文件内容"""
-
-    @staticmethod
-    def repair(raw_plan: dict, project_root: str) -> dict:
-        """遍历所有 modify step，用模糊匹配修正 old_text"""
-        import os
-        repaired = json.loads(json.dumps(raw_plan))  # deep copy
-        for step in repaired.get("steps", []):
-            if step.get("operation_type") != "modify":
-                continue
-            old_text = step.get("old_text", "")
-            if not old_text:
-                continue
-            for target in step.get("target_files", []):
-                filepath = os.path.join(project_root, target)
-                if not os.path.exists(filepath):
-                    continue
-                with open(filepath, "r", encoding="utf-8") as f:
-                    content = f.read()
-                if old_text in content:
-                    continue  # 已经精确匹配，不需要修复
-
-                # 模糊匹配
-                fixed = PlanRepair._fuzzy_find(old_text, content)
-                if fixed:
-                    print(f"  [Repair] old_text 修复: {repr(old_text[:40])} -> {repr(fixed[:40])}", file=sys.stderr)
-                    # 同步更新 new_text：保持与修复后 old_text 相同的引号风格
-                    new_text = step.get("new_text", "")
-                    if new_text:
-                        # 尝试用修复后的 old_text 推断 new_text 的格式
-                        step["new_text"] = PlanRepair._fix_new_text(old_text, fixed, new_text)
-                    step["old_text"] = fixed
-                else:
-                    print(f"  [Repair] 无法修复 old_text: {repr(old_text[:60])}", file=sys.stderr)
-        return repaired
-
-    @staticmethod
-    def _fuzzy_find(needle: str, haystack: str) -> Optional[str]:
-        """在 haystack 中找与 needle 最相似的子串"""
-        if not needle or not haystack:
-            return None
-
-        # 先尝试忽略空白差异
-        needle_compact = ''.join(needle.split())
-        haystack_compact = ''.join(haystack.split())
-        if needle_compact in haystack_compact:
-            idx = haystack_compact.find(needle_compact)
-            # 在原 haystack 中定位
-            pos = 0
-            compact_pos = 0
-            for i, ch in enumerate(haystack):
-                if not ch.isspace():
-                    if compact_pos == idx:
-                        pos = i
-                        break
-                    compact_pos += 1
-            # 提取原 haystack 中对应位置的子串，保持原始格式
-            end = pos + len(needle)
-            return haystack[pos:end]
-
-        # 逐行匹配
-        needle_lines = needle.strip().splitlines()
-        haystack_lines = haystack.splitlines()
-
-        best_ratio = 0
-        best_match = None
-
-        for i in range(len(haystack_lines) - len(needle_lines) + 1):
-            window = '\n'.join(haystack_lines[i:i+len(needle_lines)])
-            ratio = SequenceMatcher(None, needle, window).ratio()
-            if ratio > best_ratio and ratio > 0.7:
-                best_ratio = ratio
-                best_match = window
-
-        return best_match
-    @staticmethod
-    def _fix_new_text(old_original: str, old_fixed: str, new_text: str) -> str:
-        """根据 old_text 的修复结果，调整 new_text 的格式"""
-        # 如果 old 只是引号/空格差异，直接替换差异部分
-        if old_original.replace("'", '"').replace(" ", "") == old_fixed.replace("'", '"').replace(" ", ""):
-            # 找到 old_fixed 和 old_original 之间的映射关系
-            return new_text.replace(old_original, old_fixed) if old_original in new_text else new_text
-        return new_text
-
+        enriched_plan = dict(plan_dict)
+        enriched_plan["steps"] = enriched_steps
+        return plan, enriched_plan
 
 
 def _make_plan_id() -> str:
@@ -223,24 +181,45 @@ def _make_plan_id() -> str:
 
 
 class Planner:
-    """LLM 生成草案 + Validator + Repair → Executable Plan"""
+    """LLM 输出行号+新内容 → Forge 提取 old_text → Validator"""
 
     def __init__(self, adapter: BaseAdapter):
         self.adapter = adapter
-        self.validator = PlanValidator()
 
     def plan(self, task: str, repo: RepoContext, project_root: str = ".") -> tuple[Plan, dict]:
-        """生成可执行 Plan：LLM → Repair → Validate"""
+        self.validator = PlanValidator(project_root)
+
         files_summary = "\n".join(repo.file_tree[:80])
         if len(repo.file_tree) > 80:
             files_summary += f"\n... 还有 {len(repo.file_tree) - 80} 个文件"
 
+        # 读取文件内容，带行号
+        file_contents = ""
+        total_chars = 0
+        for f in repo.file_tree[:30]:
+            if total_chars > 8000:
+                break
+            filepath = os.path.join(project_root, f)
+            if not os.path.exists(filepath):
+                continue
+            try:
+                with open(filepath, "r", encoding="utf-8") as fh:
+                    lines = fh.readlines()
+                numbered = "".join(f"{i+1:04d}  {line}" for i, line in enumerate(lines[:100]))
+                file_contents += f"\n--- {f} (lines 1-{min(len(lines),100)}) ---\n{numbered}\n"
+                total_chars += len(numbered)
+            except Exception:
+                pass
+
         user_prompt = f"""仓库文件列表:
 {files_summary}
 
+文件内容（带行号，用于精确定位修改位置）:
+{file_contents}
+
 用户任务: {task}
 
-请输出执行计划的 JSON:"""
+请输出执行计划的 JSON（modify 时用 start_line/end_line 指定行号，new_text 指定新内容）:"""
 
         messages = [
             Message(role="system", content=PLANNER_SYSTEM_PROMPT),
@@ -256,13 +235,8 @@ class Planner:
         if plan_dict is None:
             raise PlanValidationError(f"无法从 LLM 响应中提取 JSON:\n{raw_text[:500]}")
 
-        # Repair: 修正 old_text
-        print("[Planner] Repair: 修正 old_text...", file=sys.stderr)
-        repaired_dict = PlanRepair.repair(plan_dict, project_root)
-
-        # Validate
-        plan = self.validator.validate(repaired_dict, repo)
-        return plan, repaired_dict
+        plan, enriched = self.validator.validate(plan_dict, repo)
+        return plan, enriched
 
     def _extract_json(self, raw: str) -> Optional[dict]:
         try:
@@ -286,7 +260,6 @@ class Planner:
 
 
 def plan_to_proposals(plan: Plan, raw_plan_dict: dict = None) -> list:
-    """把 Plan 的每个 Step 转换为 ChangeProposal"""
     from forge.contracts.constitution import ChangeProposal
 
     raw_steps = {}
@@ -310,6 +283,8 @@ def plan_to_proposals(plan: Plan, raw_plan_dict: dict = None) -> list:
                 "content": raw.get("content", ""),
                 "old_text": raw.get("old_text", ""),
                 "new_text": raw.get("new_text", ""),
+                "start_line": raw.get("start_line"),
+                "end_line": raw.get("end_line"),
             }],
             reason=f"{plan.goal} — {step.description}",
             expected_effects=[f"{step.operation_type}: {', '.join(step.target_files)}"]
