@@ -1,36 +1,18 @@
-"""工具组装入口。
-
-拆分：
-- make_local_tools: 只读与命令
-- make_intent_tools: 语义 Intent（LLM 唯一变更入口）
-- make_tools: 组合以上，并装配 Projection；返回 (tools, confirm_fn, abort_fn)
-  confirm/abort 回调供 Runtime 使用，Runtime 不直接依赖 Projection。
-"""
-
+"""工具组装入口。"""
 from __future__ import annotations
 
 from forge.adapters.base import ToolResult
 from forge.tools.local_tools import make_local_tools
 from forge.tools.intent_tools import make_intent_tools
 from forge.intents.executor import IntentExecutor
-from forge.projections.base import ProjectionManager
-from forge.projections.file_projection import FileProjection
-from forge.projections.git_projection import GitProjection
-from forge.projections.index_projection import IndexProjection
 
 
-def make_tools(workspace, safe_mode: str = "blacklist", world_runtime=None):
+def make_tools(workspace, safe_mode: str = "blacklist", world_runtime=None, projections=None):
     tools = make_local_tools(workspace, safe_mode=safe_mode)
     confirm_fn = None
     abort_fn = None
 
-    if world_runtime is not None:
-        projections = ProjectionManager()
-        path_map = getattr(world_runtime, '_path_map', None)
-        fp = FileProjection(project_root=workspace.project_root, object_path_map=path_map)
-        projections.register(fp)
-        projections.register(GitProjection(project_root=workspace.project_root))
-        projections.register(IndexProjection(project_root=workspace.project_root))
+    if world_runtime is not None and projections is not None:
         executor = IntentExecutor(world_runtime)
         tools.update(make_intent_tools(executor, projections))
 

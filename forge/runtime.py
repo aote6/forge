@@ -7,6 +7,7 @@ Transaction 链路（完全不动）：
   LLM → Intent → WorldSession → Receipt → Projection
 """
 import json
+import os
 import sys
 from forge.adapters.base import BaseAdapter, Message, ToolCall, ToolResult
 from forge.conversation import Conversation
@@ -35,6 +36,12 @@ from forge.adapters.verifier_adapter import verify as verification_verify
 # v2 Planner + TaskMemory
 from forge.planner import Planner, plan_to_proposals
 from forge.task_memory import TaskMemory, make_checkpoint
+
+# Projection
+from forge.projections.base import ProjectionManager
+from forge.projections.file_projection import FileProjection
+from forge.projections.git_projection import GitProjection
+from forge.projections.index_projection import IndexProjection
 
 MAX_AGENT_STEPS = 20
 MAX_CONSECUTIVE_FAILURES = 3
@@ -103,8 +110,19 @@ class Runtime:
             self.world.ensure_identity()
         except Exception:
             pass
+
+        # ProjectionManager 提升到 Runtime 层，Recovery 和 make_tools 共用
+        self.projections = ProjectionManager()
+        path_map = getattr(self.world, '_path_map', None)
+        self.projections.register(FileProjection(
+            project_root=workspace.project_root, object_path_map=path_map
+        ))
+        self.projections.register(GitProjection(project_root=workspace.project_root))
+        self.projections.register(IndexProjection(project_root=workspace.project_root))
+
         tools, confirm_fn, abort_fn = make_tools(
-            workspace, safe_mode="blacklist", world_runtime=self.world
+            workspace, safe_mode="blacklist",
+            world_runtime=self.world, projections=self.projections
         )
         self.tools = tools
         self._confirm_fn = confirm_fn
@@ -122,18 +140,16 @@ class Runtime:
         self._planner = Planner(adapter)
 
     def _recover_projections(self):
+        """启动时从 Veritas WAL 恢复所有 Projection。"""
         try:
             from forge.recovery.replay import ProjectionRecovery
-            recovery = ProjectionRecovery(self.world, self.world.projections)
+            recovery = ProjectionRecovery(self.world, self.projections)
             recovered = recovery.recover()
             for name, count in recovered.items():
                 if count > 0:
                     print(f"[recovery] {name}: {count} receipts replayed", file=sys.stderr)
         except Exception as e:
-            print(f"[recovery] skipped: {e}", file=sys.stderr)
-        self.conversation = Conversation(SYSTEM_INSTRUCTION)
-        self.phase = AgentPhase.IDLE
-        self._handlers: dict = {e: [] for e in EventType}
+            print(f"[recovery] error: {e}", file=sys.stderr)
 
     def on(self, event_type: EventType, handler):
         self._handlers[event_type].append(handler)
@@ -191,13 +207,12 @@ class Runtime:
             self._save_phase("executing", plan=self._plan)
             self.phase = AgentPhase.EXECUTING
 
-        # Phase 4: EXECUTING (走 Transaction 链路)
+        # Phase 4: EXECUTING
         if self.phase == AgentPhase.EXECUTING:
             results = []
             proposals = plan_to_proposals(self._plan)
-            for i, proposal in enumerate(proposals):
+            for proposal in proposals:
                 for target in proposal.target_files:
-                    import os
                     full_path = os.path.join(self.workspace.project_root, target)
                     content = f"# Forge v2 auto-generated\n# {proposal.reason}\n"
                     os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
@@ -215,14 +230,7 @@ class Runtime:
                     ]
                     delta.objects_created = [obj_id]
 
-                    from forge.projections.base import ProjectionManager
-                    from forge.projections.file_projection import FileProjection
-                    pm = ProjectionManager()
-                    pm.register(FileProjection(
-                        project_root=self.workspace.project_root,
-                        object_path_map=getattr(self.world, '_path_map', None)
-                    ))
-                    pm.project(receipt, delta)
+                    self.projections.project(receipt, delta)
 
                     results.append({
                         "step": proposal.proposal_id,
@@ -268,7 +276,6 @@ class Runtime:
         return f"[v2] 阶段: {self.phase.value}"
 
     def _save_phase(self, phase: str, plan: Plan | None = None, extra: dict | None = None):
-        """保存当前阶段到 TaskCheckpoint"""
         cp = make_checkpoint(
             task_id=self._task_id,
             phase=phase,
@@ -318,10 +325,7 @@ class Runtime:
                     return result.display
                 self.phase = AgentPhase.IDLE
                 return "事务已取消。"
-            return (
-                "⏸️ 当前有待确认的事务\n"
-                "请输入「确认」提交，或「取消」放弃。\n"
-            )
+            return "⏸️ 当前有待确认的事务\n请输入「确认」提交，或「取消」放弃。\n"
 
         self.executor.reset()
         if self.phase == AgentPhase.IDLE:
@@ -345,9 +349,7 @@ class Runtime:
                 return f"⛔ Agent 步数超限({MAX_AGENT_STEPS})，已强制终止。"
 
             self.conversation.append(Message(
-                role="assistant",
-                content=response.content,
-                tool_calls=response.tool_calls,
+                role="assistant", content=response.content, tool_calls=response.tool_calls,
             ))
 
             for tc in response.tool_calls:
