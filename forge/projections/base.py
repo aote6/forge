@@ -62,6 +62,14 @@ class ProjectionManager:
     def unregister(self, projection: Projection) -> None:
         self._projections.remove(projection)
 
+    @property
+    def projection_names(self) -> list:
+        return [p.name for p in self._projections]
+
+    @property
+    def checkpoint(self):
+        return self._checkpoint
+
     def prepare_all(self, delta: TransactionDelta) -> dict[str, dict]:
         confirmations = {}
         for p in self._projections:
