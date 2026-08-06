@@ -53,6 +53,8 @@ class ProjectionManager:
         self._projections: list[Projection] = []
         from forge.projections.applied_store import AppliedTransactionStore
         self._applied = AppliedTransactionStore()
+        from forge.projections.checkpoint import ProjectionCheckpoint
+        self._checkpoint = ProjectionCheckpoint()
 
     def register(self, projection: Projection) -> None:
         self._projections.append(projection)
@@ -69,14 +71,23 @@ class ProjectionManager:
         return confirmations
 
     def project(self, receipt: Receipt, delta: TransactionDelta) -> list[ProjectionResult]:
-        """运行所有 Projection 的 apply，统一收集结果。不 silent。幂等保护（基于 tx_id 去重）。"""
+        """运行所有 Projection 的 apply，统一收集结果。双层幂等保护。"""
+        # 进程级幂等：tx_id 去重
         if not self._applied.should_apply(receipt):
             return [ProjectionResult(name="_manager", success=True, reason="skipped: already applied")]
         results: list[ProjectionResult] = []
         for p in self._projections:
+            # 持久化幂等：version 检查
+            if not self._checkpoint.should_apply(p.name, receipt.version):
+                results.append(ProjectionResult(
+                    name=p.name, success=True, reason="skipped: version <= checkpoint"
+                ))
+                continue
             try:
                 result = p.apply(receipt, delta)
                 results.append(result)
+                if result.success:
+                    self._checkpoint.mark_applied(p.name, receipt.version)
             except Exception as e:
                 results.append(ProjectionResult(
                     name=p.name, success=False, reason=str(e), retryable=True
