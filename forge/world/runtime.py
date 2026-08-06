@@ -13,6 +13,7 @@ from forge.world.adapter import WorldAdapter, WorldAdapterError
 from forge.world.identity import IdentityStore
 from forge.world.session import WorldSession
 from forge.world.types import LinkInfo, ObjectInfo, Receipt, WorldInfo
+from forge.world.types import TransactionDelta
 
 
 class WorldRuntime:
@@ -21,12 +22,14 @@ class WorldRuntime:
         project_root: str | Path = ".",
         binary: str = "veritasd",
         adapter: WorldAdapter | None = None,
+        projection_manager: ProjectionManager | None = None,
     ):
         self.project_root = str(Path(project_root).expanduser().resolve())
         self._adapter = adapter or WorldAdapter(self.project_root, binary=binary)
         self._identity = IdentityStore(self.project_root)
         self._object_id: Optional[int] = None
         self._current_session: Optional[WorldSession] = None
+        self.projections = projection_manager  # set later if None; lazy import to avoid circular deps
 
     @property
     def adapter(self) -> WorldAdapter:
@@ -81,6 +84,41 @@ class WorldRuntime:
         session = WorldSession(self._adapter, sid, actor)
         self._current_session = session
         return session
+
+    def commit_session(self) -> tuple[Receipt, TransactionDelta]:
+        if self.projections is None:
+            from forge.projections.base import ProjectionManager
+            self.projections = ProjectionManager()
+        """提交当前 session 并触发所有 Projection。"""
+        if self._current_session is None or self._current_session.closed:
+            raise RuntimeError("no active session to commit")
+
+        receipt, delta = self._current_session.commit()
+
+        # 触发所有 Projection
+        self.projections.apply_all(receipt, delta)
+
+        return receipt, delta
+
+    def prepare_commit(self) -> dict[str, dict]:
+        if self.projections is None:
+            from forge.projections.base import ProjectionManager
+            self.projections = ProjectionManager()
+        """运行所有 Projection 的 prepare 阶段，返回确认信息。"""
+        if self._current_session is None or self._current_session.closed:
+            raise RuntimeError("no active session")
+
+        # 构造当前 delta 用于预览
+        delta = self._current_session._build_memory_delta()
+        preview_delta = TransactionDelta(
+            objects_created=list(self._current_session._created_objects),
+            objects_deleted=list(self._current_session._deleted_objects),
+            objects_frozen=list(self._current_session._frozen_objects),
+            links_added=list(self._current_session._links_added),
+            links_removed=list(self._current_session._links_removed),
+            memory_written=delta,
+        )
+        return self.projections.prepare_all(preview_delta)
 
     @property
     def current_session(self) -> Optional[WorldSession]:

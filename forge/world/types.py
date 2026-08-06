@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -32,3 +32,15 @@ class WorldInfo:
     version: int
     state_root: int
     object_count: int
+
+
+@dataclass
+class TransactionDelta:
+    """描述一次已提交事务中发生了什么变化。"""
+    objects_created: list[int] = field(default_factory=list)
+    objects_deleted: list[int] = field(default_factory=list)
+    objects_frozen: list[int] = field(default_factory=list)
+    links_added: list[tuple] = field(default_factory=list)
+    links_removed: list[tuple] = field(default_factory=list)
+    memory_written: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
