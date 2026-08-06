@@ -188,7 +188,7 @@ class Runtime:
 
         # Phase 2: PLANNING
         if self.phase == AgentPhase.PLANNING:
-            self._plan, self._raw_plan_dict = self._planner.plan(task, self._repo_context)
+            self._plan, self._raw_plan_dict = self._planner.plan(task, self._repo_context, self.workspace.project_root)
             self._save_phase("checking", plan=self._plan)
             self.phase = AgentPhase.CHECKING
 
