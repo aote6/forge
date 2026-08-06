@@ -201,6 +201,8 @@ class FileProjection(Projection):
                 os.remove(path)
 
     def _path_for_object(self, object_id: int) -> Optional[str]:
+        if hasattr(self, "_path_map") and self._path_map is not None:
+            return self._path_map.get(object_id)
         return None
 
     def set_path_mapping(self, object_id: int, path: str) -> None:

@@ -104,11 +104,25 @@ class WorldRuntime:
         return session
 
     def commit_session(self) -> tuple[Receipt, TransactionDelta]:
-        """提交当前 session，返回 (Receipt, TransactionDelta)。不触发 Projection。"""
         if self._current_session is None or self._current_session.closed:
             raise RuntimeError("no active session to commit")
         receipt, delta = self._current_session.commit()
+        self._update_path_map(delta)
         return receipt, delta
+
+    def _update_path_map(self, delta):
+        try:
+            from forge.projections.object_path import ObjectPathMap
+        except ImportError:
+            return
+        if not hasattr(self, "_path_map"):
+            self._path_map = ObjectPathMap()
+        self._path_map.update_from_delta(delta)
+
+    def get_path_for_object(self, object_id: int):
+        if not hasattr(self, "_path_map"):
+            return None
+        return self._path_map.get(object_id)
 
     def abort_session(self) -> None:
         if self._current_session is None or self._current_session.closed:
