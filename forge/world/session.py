@@ -1,4 +1,8 @@
-"""WorldSession — long-lived Veritas transaction held by Forge."""
+"""WorldSession — long-lived Veritas transaction held by Forge.
+
+commit() 返回 veritasd 的权威 TransactionDelta。
+preview_delta() 用本地追踪提供非权威预览。
+"""
 
 from __future__ import annotations
 
@@ -16,24 +20,13 @@ class SessionClosedError(RuntimeError):
 
 
 class WorldSession:
-    """One session == one Kernel TransactionContext on the veritasd side.
-
-    Tracking lists are a Temporary Stub used only by preview_delta().
-    commit() uses the authoritative delta from veritasd.
-    """
+    """One session == one Kernel TransactionContext on the veritasd side."""
 
     def __init__(self, adapter: "WorldAdapter", session_id: int, actor_id: Optional[int]):
         self._adapter = adapter
         self.session_id = session_id
         self.actor_id = actor_id
         self._closed = False
-        # Temporary Stub — replace when veritasd returns delta on commit
-        self._stub_created: list[int] = []
-        self._stub_deleted: list[int] = []
-        self._stub_frozen: list[int] = []
-        self._stub_links_added: list[tuple[int, int, str]] = []
-        self._stub_links_removed: list[tuple[int, int]] = []
-        self._stub_writes: list[tuple[int, int, str]] = []
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -41,42 +34,35 @@ class WorldSession:
 
     def create_object(self) -> int:
         self._ensure_open()
-        oid = self._adapter.tx_create_object(self.session_id)
-        self._stub_created.append(oid)
-        return oid
+        return self._adapter.tx_create_object(self.session_id)
 
     def freeze(self, object_id: int) -> None:
         self._ensure_open()
         self._adapter.tx_freeze_object(self.session_id, object_id)
-        self._stub_frozen.append(object_id)
 
     def death(self, object_id: int) -> None:
         self._ensure_open()
         self._adapter.tx_death_object(self.session_id, object_id)
-        self._stub_deleted.append(object_id)
 
     def link(self, from_id: int, to_id: int, link_type: str = "owns") -> None:
         self._ensure_open()
         self._adapter.tx_link(self.session_id, from_id, to_id, link_type)
-        self._stub_links_added.append((from_id, to_id, link_type))
 
     def unlink(self, from_id: int, to_id: int) -> None:
         self._ensure_open()
         self._adapter.tx_unlink(self.session_id, from_id, to_id)
-        self._stub_links_removed.append((from_id, to_id))
 
     def write(self, object_id: int, state_id: int, value: str = "", hex_value: str | None = None) -> None:
         self._ensure_open()
         self._adapter.tx_write(
             self.session_id, state_id, value=value or None, hex_value=hex_value
         )
-        self._stub_writes.append((object_id, state_id, value))
 
     def commit(self) -> tuple[Receipt, TransactionDelta]:
+        """提交事务。delta 来自 veritasd，是权威世界状态变化。"""
         self._ensure_open()
         receipt = self._adapter.tx_commit(self.session_id)
         self._closed = True
-        # 权威 delta 来自 veritasd，透传即可
         return receipt, receipt.delta
 
     def abort(self) -> None:
@@ -88,22 +74,3 @@ class WorldSession:
     @property
     def closed(self) -> bool:
         return self._closed
-
-    def preview_delta(self) -> TransactionDelta:
-        """Non-authoritative preview for prepare/confirm UX only."""
-        return TransactionDelta(
-            objects_created=list(self._stub_created),
-            objects_deleted=list(self._stub_deleted),
-            objects_frozen=list(self._stub_frozen),
-            links_added=list(self._stub_links_added),
-            links_removed=list(self._stub_links_removed),
-            memory_written=self._build_memory_delta(),
-        )
-
-    def _build_memory_delta(self) -> dict[int, list[tuple[int, str]]]:
-        result: dict[int, list[tuple[int, str]]] = {}
-        for obj_id, state_id, value in self._stub_writes:
-            if obj_id not in result:
-                result[obj_id] = []
-            result[obj_id].append((state_id, value))
-        return result
