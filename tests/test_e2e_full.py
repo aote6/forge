@@ -5,10 +5,10 @@ import tempfile
 
 sys.path.insert(0, '/data/data/com.termux/files/home/forge')
 
-from forge.contracts.repository import RepoContext
-from forge.contracts.planning import Plan, PlanStep
-from forge.contracts.constitution import ChangeProposal, CheckStatus
-from forge.contracts.verification import VerificationRequest
+from forge.protocols.repository import RepoContext
+from forge.protocols.planning import Plan, PlanStep
+from forge.protocols.constitution import ChangeProposal, CheckStatus
+from forge.protocols.verification import VerificationRequest
 from forge.world.types import TransactionDelta, Receipt
 
 from forge.adapters.repo_adapter import get_repo_context

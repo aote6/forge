@@ -1,6 +1,6 @@
 """仓库感知适配器 — 对接 zhiwang"""
 import subprocess
-from forge.contracts.repository import RepoContext
+from forge.protocols.repository import RepoContext
 
 ZW_HOME = "/data/data/com.termux/files/home/zhiwang"
 

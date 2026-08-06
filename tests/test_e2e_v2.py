@@ -6,10 +6,10 @@ import shutil
 
 sys.path.insert(0, '/data/data/com.termux/files/home/forge')
 
-from forge.contracts.repository import RepoContext
-from forge.contracts.planning import Plan, PlanStep
-from forge.contracts.constitution import ChangeProposal, ConstitutionResult, CheckStatus
-from forge.contracts.verification import VerificationRequest, VerificationResult
+from forge.protocols.repository import RepoContext
+from forge.protocols.planning import Plan, PlanStep
+from forge.protocols.constitution import ChangeProposal, ConstitutionResult, CheckStatus
+from forge.protocols.verification import VerificationRequest, VerificationResult
 
 from forge.adapters.repo_adapter import get_repo_context
 from forge.adapters.constitution_adapter import check as constitution_check
@@ -147,7 +147,7 @@ def case3_protocol_completeness():
     vres = VerificationResult(status=CheckStatus.PASS, executed_checks=["sms"])
     test("3.6 VerificationResult 构造", vres.status == CheckStatus.PASS)
 
-    from forge.contracts.execution import TaskCheckpoint
+    from forge.protocols.execution import TaskCheckpoint
     cp = TaskCheckpoint(task_id="t1", phase="checking", plan_id="p1", completed_steps=["s1"])
     test("3.7 TaskCheckpoint 构造", cp.phase == "checking")
 

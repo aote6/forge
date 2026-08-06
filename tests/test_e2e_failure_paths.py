@@ -100,7 +100,7 @@ def test_checkpoint_recovery():
     project = "/data/data/com.termux/files/home/forge"
 
     from forge.task_memory import TaskMemory, make_checkpoint
-    from forge.contracts.execution import TaskCheckpoint
+    from forge.protocols.execution import TaskCheckpoint
 
     tm = TaskMemory(project)
 

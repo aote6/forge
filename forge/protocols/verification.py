@@ -1,7 +1,7 @@
 """验证协议 — 对接 sms"""
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
-from forge.contracts.constitution import CheckStatus
+from forge.protocols.constitution import CheckStatus
 
 @dataclass
 class VerificationRequest:

@@ -1,8 +1,8 @@
 """验证适配器 — 对接 sms"""
 import subprocess
 import os
-from forge.contracts.verification import VerificationRequest, VerificationResult
-from forge.contracts.constitution import CheckStatus
+from forge.protocols.verification import VerificationRequest, VerificationResult
+from forge.protocols.constitution import CheckStatus
 
 
 def verify(request: VerificationRequest) -> VerificationResult:
