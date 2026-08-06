@@ -22,22 +22,30 @@ class ProjectionCheckpoint:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._file = self._dir / "projection_checkpoint.json"
         self._checkpoints: dict[str, int] = {}
+        self._tx_ids: dict[str, list] = {}  # persisted as list for JSON
         self._load()
 
     def _load(self) -> None:
         try:
             if self._file.exists():
                 with open(self._file) as f:
-                    self._checkpoints = json.load(f)
+                    data = json.load(f)
+                    self._checkpoints = data.get("versions", {})
+                    self._tx_ids = data.get("tx_ids", {})
         except Exception:
             self._checkpoints = {}
+            self._tx_ids = {}
 
     def _save(self) -> None:
         """原子写入：tmp → fsync → rename。失败抛异常。"""
         tmp = self._file.with_suffix(".tmp")
         try:
             with open(tmp, "w") as f:
-                json.dump(self._checkpoints, f, indent=2)
+                data = {
+                    "versions": self._checkpoints,
+                    "tx_ids": {k: list(v) for k, v in self._tx_ids.items()},
+                }
+                json.dump(data, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp, self._file)
@@ -56,6 +64,15 @@ class ProjectionCheckpoint:
         if receipt_version > current:
             self._checkpoints[projection_name] = receipt_version
             self._save()
+
+    def get_last_applied_tx_id(self, projection_name: str) -> int:
+        """返回此投影最后应用的 tx_id（从 persisted tx_ids 恢复）。"""
+        return self._tx_ids.get(projection_name, 0)
+
+    def mark_tx_applied(self, projection_name: str, tx_id: int) -> None:
+        if projection_name not in self._tx_ids:
+            self._tx_ids[projection_name] = set()
+        self._tx_ids[projection_name].add(tx_id)
 
     @property
     def checkpoints(self) -> dict[str, int]:
