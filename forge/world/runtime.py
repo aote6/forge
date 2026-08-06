@@ -29,7 +29,7 @@ class WorldRuntime:
         self._identity = IdentityStore(self.project_root)
         self._object_id: Optional[int] = None
         self._current_session: Optional[WorldSession] = None
-        self.projections = projection_manager  # set later if None; lazy import to avoid circular deps
+        self._projections = projection_manager  # set later if None; lazy import to avoid circular deps
 
     @property
     def adapter(self) -> WorldAdapter:
@@ -37,6 +37,17 @@ class WorldRuntime:
 
     def connect(self) -> bool:
         return self._adapter.ping()
+
+    @property
+    def projections(self):
+        if self._projections is None:
+            from forge.projections.base import ProjectionManager
+            self._projections = ProjectionManager()
+        return self._projections
+
+    @projections.setter
+    def projections(self, value):
+        self._projections = value
 
     def ensure_identity(self) -> int:
         """Restore or create Forge's Object identity in the world."""
@@ -87,14 +98,11 @@ class WorldRuntime:
 
     def register_path(self, object_id: int, path: str) -> None:
         """注册 object_id 到文件路径的映射，供 FileProjection 使用。"""
-        for proj in self.projections._projections:
+        for proj in self.projections._projections:  # property 保证非空
             if hasattr(proj, 'set_path_mapping'):
                 proj.set_path_mapping(object_id, path)
 
     def commit_session(self) -> tuple[Receipt, TransactionDelta]:
-        if self.projections is None:
-            from forge.projections.base import ProjectionManager
-            self.projections = ProjectionManager()
         """提交当前 session 并触发所有 Projection。"""
         if self._current_session is None or self._current_session.closed:
             raise RuntimeError("no active session to commit")
@@ -107,9 +115,6 @@ class WorldRuntime:
         return receipt, delta
 
     def prepare_commit(self) -> dict[str, dict]:
-        if self.projections is None:
-            from forge.projections.base import ProjectionManager
-            self.projections = ProjectionManager()
         """运行所有 Projection 的 prepare 阶段，返回确认信息。"""
         if self._current_session is None or self._current_session.closed:
             raise RuntimeError("no active session")
