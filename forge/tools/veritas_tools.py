@@ -10,6 +10,12 @@ from __future__ import annotations
 from forge.adapters.base import ToolResult
 
 
+def _friendly_error(tool, e):
+    msg = str(e)
+    if '不在线' in msg or 'veritasd' in msg.lower():
+        return 'veritasd 不在线。世界操作（' + tool + '）不可用。请使用本地工具或启动 veritasd。'
+    return tool + ' failed: ' + str(e)
+
 def make_world_tools(world_runtime):
     """Build tool callables bound to a WorldRuntime instance."""
 
@@ -23,7 +29,7 @@ def make_world_tools(world_runtime):
                 payload={"object_id": oid},
             )
         except Exception as e:
-            return ToolResult.fail(display=f"whoami failed: {e}")
+            return ToolResult.fail(display=_friendly_error("whoami", e))
 
     def world_info() -> ToolResult:
         try:
@@ -40,7 +46,7 @@ def make_world_tools(world_runtime):
                 },
             )
         except Exception as e:
-            return ToolResult.fail(display=f"world_info failed: {e}")
+            return ToolResult.fail(display=_friendly_error("world_info", e))
 
     def world_list_objects() -> ToolResult:
         try:
@@ -53,7 +59,7 @@ def make_world_tools(world_runtime):
                 payload={"objects": [{"id": o.object_id, "state": o.state} for o in objs]},
             )
         except Exception as e:
-            return ToolResult.fail(display=f"list_objects failed: {e}")
+            return ToolResult.fail(display=_friendly_error("list_objects", e))
 
     def world_get_object(object_id: int) -> ToolResult:
         try:
@@ -65,7 +71,7 @@ def make_world_tools(world_runtime):
                 payload={"object_id": info.object_id, "state": info.state},
             )
         except Exception as e:
-            return ToolResult.fail(display=f"get_object failed: {e}")
+            return ToolResult.fail(display=_friendly_error("get_object", e))
 
     def world_get_links() -> ToolResult:
         try:
@@ -83,7 +89,7 @@ def make_world_tools(world_runtime):
                 },
             )
         except Exception as e:
-            return ToolResult.fail(display=f"get_links failed: {e}")
+            return ToolResult.fail(display=_friendly_error("get_links", e))
 
     def world_begin() -> ToolResult:
         try:
@@ -93,7 +99,7 @@ def make_world_tools(world_runtime):
                 payload={"session_id": session.session_id, "actor_id": session.actor_id},
             )
         except Exception as e:
-            return ToolResult.fail(display=f"begin_session failed: {e}")
+            return ToolResult.fail(display=_friendly_error("begin_session", e))
 
     def _session():
         s = world_runtime.current_session
@@ -109,21 +115,21 @@ def make_world_tools(world_runtime):
                 payload={"object_id": oid},
             )
         except Exception as e:
-            return ToolResult.fail(display=f"create_object failed: {e}")
+            return ToolResult.fail(display=_friendly_error("create_object", e))
 
     def world_freeze(object_id: int) -> ToolResult:
         try:
             _session().freeze(int(object_id))
             return ToolResult.ok(display=f"Object {object_id} freeze staged")
         except Exception as e:
-            return ToolResult.fail(display=f"freeze failed: {e}")
+            return ToolResult.fail(display=_friendly_error("freeze", e))
 
     def world_death(object_id: int) -> ToolResult:
         try:
             _session().death(int(object_id))
             return ToolResult.ok(display=f"Object {object_id} death staged")
         except Exception as e:
-            return ToolResult.fail(display=f"death failed: {e}")
+            return ToolResult.fail(display=_friendly_error("death", e))
 
     def world_link(from_id: int, to_id: int, link_type: str = "owns") -> ToolResult:
         try:
@@ -132,14 +138,14 @@ def make_world_tools(world_runtime):
                 display=f"Link {from_id} -[{link_type}]-> {to_id} staged"
             )
         except Exception as e:
-            return ToolResult.fail(display=f"link failed: {e}")
+            return ToolResult.fail(display=_friendly_error("link", e))
 
     def world_unlink(from_id: int, to_id: int) -> ToolResult:
         try:
             _session().unlink(int(from_id), int(to_id))
             return ToolResult.ok(display=f"Unlink {from_id} -> {to_id} staged")
         except Exception as e:
-            return ToolResult.fail(display=f"unlink failed: {e}")
+            return ToolResult.fail(display=_friendly_error("unlink", e))
 
     def world_commit() -> ToolResult:
         try:
@@ -159,7 +165,7 @@ def make_world_tools(world_runtime):
                 },
             )
         except Exception as e:
-            return ToolResult.fail(display=f"commit failed: {e}")
+            return ToolResult.fail(display=_friendly_error("commit", e))
 
     def world_abort() -> ToolResult:
         try:
@@ -169,7 +175,7 @@ def make_world_tools(world_runtime):
             s.abort()
             return ToolResult.ok(display="session aborted")
         except Exception as e:
-            return ToolResult.fail(display=f"abort failed: {e}")
+            return ToolResult.fail(display=_friendly_error("abort", e))
 
     # Deprecated aliases (route through WorldRuntime observation / session)
     def veritas_list_objects() -> ToolResult:
@@ -185,7 +191,7 @@ def make_world_tools(world_runtime):
                 world_runtime.begin_session()
             return world_create_object()
         except Exception as e:
-            return ToolResult.fail(display=f"create failed: {e}")
+            return ToolResult.fail(display=_friendly_error("create", e))
 
     def veritas_object_exists(object_id: int) -> ToolResult:
         try:
