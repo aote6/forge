@@ -151,6 +151,7 @@ class FileProjection(Projection):
         }
 
     def apply(self, receipt: Receipt, delta: TransactionDelta):
+        # 幂等依赖 ProjectionManager._applied_tx 保证同 tx_id 不重复调用
         applied = []
 
         for object_id, writes in self._group_writes_by_object(delta).items():

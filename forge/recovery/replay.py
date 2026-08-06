@@ -25,11 +25,16 @@ class ProjectionRecovery:
             name = proj.name
             last_version = self._pm._checkpoint.checkpoints.get(name, 0)
             receipts = self._world.get_receipts_since(last_version)
+            receipts.sort(key=lambda r: r.version)  # 确保按 version 升序
             count = 0
             for receipt in receipts:
-                self._pm.project(receipt, receipt.delta)
-                self._pm.checkpoint.mark_applied(name, receipt.version)
-                count += 1
+                results = self._pm.project(receipt, receipt.delta)
+                if all(r.success for r in results):
+                    count += 1
+                else:
+                    failed = [r.name for r in results if not r.success]
+                    import sys
+                    print(f'[recovery] {name}: skipped v{receipt.version} — {failed} failed', file=sys.stderr)
             recovered[name] = count
 
         return recovered

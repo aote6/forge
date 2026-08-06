@@ -55,14 +55,10 @@ class ProjectionManager:
 
     def __init__(self):
         self._projections: list[Projection] = []
-        from forge.projections.applied_store import AppliedTransactionStore
-        self._applied = AppliedTransactionStore()
+
         from forge.projections.checkpoint import ProjectionCheckpoint
         self._checkpoint = ProjectionCheckpoint()
-        self._applied_tx: dict[str, set] = {}  # projection_name -> {tx_id}
-        # 从 checkpoint 恢复已应用的 tx_id
-        for name, tx_ids in self._checkpoint._tx_ids.items():
-            self._applied_tx[name] = set(tx_ids)
+        self._applied_tx: dict[str, set] = {}  # projection_name -> {tx_id} (进程内缓存，不跨重启)
 
     def register(self, projection: Projection) -> None:
         self._projections.append(projection)
@@ -92,9 +88,7 @@ class ProjectionManager:
 
     def project(self, receipt: Receipt, delta: TransactionDelta) -> list[ProjectionResult]:
         """运行所有 Projection 的 apply，统一收集结果。双层幂等保护。"""
-        # 进程级幂等：tx_id 去重
-        if not self._applied.should_apply(receipt):
-            return [ProjectionResult(name="_manager", success=True, reason="skipped: already applied")]
+
         results: list[ProjectionResult] = []
         for p in self._projections:
             # 1. 持久化幂等：version 检查
@@ -124,7 +118,6 @@ class ProjectionManager:
                 results.append(ProjectionResult(
                     name=p.name, success=False, reason=str(e), retryable=True
                 ))
-        self._applied.mark_applied(receipt)
         return results
         for p in self._projections:
             try:
