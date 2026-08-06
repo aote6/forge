@@ -18,9 +18,8 @@ class SessionClosedError(RuntimeError):
 class WorldSession:
     """One session == one Kernel TransactionContext on the veritasd side.
 
-    Tracking lists are a Temporary Stub for TransactionDelta until veritasd
-    returns an authoritative delta in the commit response. They are not a
-    world state source.
+    Tracking lists are a Temporary Stub used only by preview_delta().
+    commit() uses the authoritative delta from veritasd.
     """
 
     def __init__(self, adapter: "WorldAdapter", session_id: int, actor_id: Optional[int]):
@@ -77,17 +76,8 @@ class WorldSession:
         self._ensure_open()
         receipt = self._adapter.tx_commit(self.session_id)
         self._closed = True
-
-        # Temporary Stub: build delta from local tracking until veritasd returns it
-        delta = TransactionDelta(
-            objects_created=list(self._stub_created),
-            objects_deleted=list(self._stub_deleted),
-            objects_frozen=list(self._stub_frozen),
-            links_added=list(self._stub_links_added),
-            links_removed=list(self._stub_links_removed),
-            memory_written=self._build_memory_delta(),
-        )
-        return receipt, delta
+        # 权威 delta 来自 veritasd，透传即可
+        return receipt, receipt.delta
 
     def abort(self) -> None:
         if self._closed:
