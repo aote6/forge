@@ -150,7 +150,7 @@ class FileProjection(Projection):
             "requires_confirmation": True,
         }
 
-    def apply(self, receipt: Receipt, delta: TransactionDelta) -> None:
+    def apply(self, receipt: Receipt, delta: TransactionDelta):
         applied = []
 
         for object_id, writes in self._group_writes_by_object(delta).items():
@@ -200,6 +200,9 @@ class FileProjection(Projection):
                 except Exception:
                     pass
                 os.remove(path)
+
+        from forge.projections.base import ProjectionResult
+        return ProjectionResult(name=self.name, success=True)
 
     def _path_for_object(self, object_id: int) -> Optional[str]:
         if hasattr(self, "_path_map") and self._path_map is not None:
