@@ -107,3 +107,87 @@ v1.0 — 2026-08-06
 
 基于架构裁决：tx_ids 是 Dual Source of Truth，应删除。
 Checkpoint 永远只保存 version。
+
+---
+
+## 附录：架构常见疑虑与裁决
+
+本附录记录 Forge 架构演进中反复出现的疑虑及对应的裁决。
+当未来遇到类似问题时，以本文为参考，避免重复争论。
+
+### 1. Runtime 是否需要拆成 Agent Kernel（Planner / Memory / Dispatcher / ...）？
+
+**裁决：暂不拆分。**
+
+当前 Runtime 的职责清晰：编排 LLM Intent → Veritas Transaction → Projection。
+拆分成 Planner、Memory、Tool Dispatcher 等模块不会增加新能力，
+只会增加调用链长度和概念数量。
+
+触发拆分的条件（满足任一条再考虑）：
+- Runtime 单文件超过 500 行
+- 需要支持非 LLM 驱动的 Agent 模式
+- 出现多个完全不同的 Agent 生命周期需要管理
+
+在那之前，保持现状。
+
+### 2. Tool 是否允许直接产生副作用？
+
+**裁决：不允许。所有副作用必须经过 Veritas Transaction。**
+
+修改类工具（create_file、modify_file、delete_file）必须走
+IntentExecutor → WorldSession → veritasd → Receipt.delta → Projection。
+
+只读工具（list_files、read_file、search_code）可以直接访问文件系统，
+因为它们不产生副作用。
+
+如果发现 Tool 直接写文件、改状态而不经过 Transaction，视为 Bug。
+
+### 3. Event 和 Projection 是否会混在一起？
+
+**裁决：当前分离，未来也禁止混合。**
+
+Projection 的唯一职责是状态物化（Materialization）：
+将 Veritas 的状态变化同步到外部介质（文件、Git、索引）。
+
+Event（通知其他 Agent、触发后续操作）是独立的关注点。
+如果未来需要 Event 机制，应创建独立的 Event 层订阅 Receipt 流，
+严禁在 FileProjection 或任何 Projection 的 apply() 中发送通知。
+
+### 4. Projection 是否会绕过 ProjectionManager？
+
+**裁决：架构上禁止，代码层面通过约定保证。**
+
+ProjectionManager.project() 是唯一做了 checkpoint + 幂等保护的入口。
+直接调用 FileProjection.apply() 会绕过这些保护，但不做运行时强制拦截。
+
+约束方式：
+- Projection.apply() 的文档明确标注"仅由 ProjectionManager 调用"
+- Code Review 时检查是否有直接调用 apply() 的代码
+- 如未来需要强制，可在 apply() 内部检查调用栈（不推荐，成本高于收益）
+
+### 5. Forge 是否会偷偷维护第二份世界状态？
+
+**裁决：不会，但需持续警惕以下模式。**
+
+以下属于合法的 Runtime 状态（不是世界状态）：
+- Conversation：LLM 对话历史
+- Memory：Agent 工作记忆
+- Workspace：只读文件操作入口
+
+以下属于危险模式，禁止：
+- Object 写缓存：缓存了 Veritas Object 状态且用于决策
+- 本地"当前世界状态"副本：与 Veritas 的 Object/Memory/Link 重复
+- 跨重启保留的本地状态（除 checkpoint 外）
+
+判断标准：如果某数据可以删除后从 Veritas 完全重建，它是缓存，允许。
+如果删除后无法重建，它是世界状态副本，禁止。
+
+### 6. 为什么 Checkpoint 只存 version 不存 tx_ids？
+
+**裁决：tx_ids 是 Dual Source of Truth，已删除。**
+
+详见正文第 6 条不变量。version 是 Veritas 提交流的全序键，
+持久化 tx_ids 与 version 描述同一命题却可独立演化，导致永久漏 replay。
+
+如果未来有人提议重新引入 tx_ids 或 receipt_hash 等第二字段参与 skip 决策，
+请先阅读正文"禁止的做法"第 1 条。
