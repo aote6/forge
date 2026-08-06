@@ -85,6 +85,12 @@ class WorldRuntime:
         self._current_session = session
         return session
 
+    def register_path(self, object_id: int, path: str) -> None:
+        """注册 object_id 到文件路径的映射，供 FileProjection 使用。"""
+        for proj in self.projections._projections:
+            if hasattr(proj, 'set_path_mapping'):
+                proj.set_path_mapping(object_id, path)
+
     def commit_session(self) -> tuple[Receipt, TransactionDelta]:
         if self.projections is None:
             from forge.projections.base import ProjectionManager
