@@ -1,10 +1,12 @@
 """Lu Patch Adapter — 安全写入适配器
 
 Forge 决定改什么，Lu 负责安全落盘。
+所有写入操作（create/modify/delete）统一走 Lu，保持唯一写入口。
 """
 import subprocess
 import sys
 import os
+import tempfile
 
 LU_PATCH = os.path.expanduser("~/lu/core/lu_patch.py")
 
@@ -14,13 +16,32 @@ def _run_lu(cmd: list, timeout: int = 30) -> tuple[bool, str]:
     if not os.path.exists(LU_PATCH):
         return False, f"Lu patch engine 不存在: {LU_PATCH}"
 
-    print(f"  [Lu Adapter] {' '.join(cmd)}", file=sys.stderr)
+    print(f"  [Lu] {' '.join(cmd)}", file=sys.stderr)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
     if result.returncode == 0:
         return True, result.stdout.strip()
     else:
         return False, result.stderr.strip() or result.stdout.strip() or "Lu 写入失败"
+
+
+def _write_via_whole_file(path: str, content: str) -> tuple[bool, str]:
+    """通过临时文件 + --whole-file 走 Lu 原子写入"""
+    # 写临时文件
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.new', delete=False, encoding='utf-8')
+    tmp.write(content)
+    tmp_path = tmp.name
+    tmp.close()
+
+    cmd = ["python3", LU_PATCH, path, "--whole-file", "--new-file", tmp_path]
+    ok, msg = _run_lu(cmd)
+
+    try:
+        os.unlink(tmp_path)
+    except Exception:
+        pass
+
+    return ok, msg
 
 
 def patch(
@@ -30,8 +51,7 @@ def patch(
     start_line: int = None,
     end_line: int = None
 ) -> tuple[bool, str]:
-    """安全修改文件。返回 (success, message)"""
-
+    """安全修改已有文件"""
     if not os.path.exists(path):
         return False, f"目标文件不存在: {path}"
 
@@ -53,48 +73,45 @@ def patch(
                 cmd += [path, "--anchor-before", first_line,
                         "--anchor-after", last_line, "--text", new_text]
     else:
-        return False, "缺少定位信息（start_line 或 old_text）"
+        return False, "缺少定位信息"
 
     return _run_lu(cmd)
 
 
 def create(path: str, content: str) -> tuple[bool, str]:
-    """安全创建文件。写入临时文件，用 --whole-file 走原子写入"""
-    import tempfile
-    # 写临时文件
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.new', delete=False, encoding='utf-8') as f:
-        f.write(content)
-        tmp_path = f.name
+    """安全创建文件。先 touch + 再走 Lu whole-file 原子写入"""
+    if os.path.exists(path):
+        return False, f"文件已存在: {path}"
 
-    cmd = ["python3", LU_PATCH, path, "--whole-file", "--new-file", tmp_path]
-    ok, msg = _run_lu(cmd)
+    # 创建目录
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
-    # 清理临时文件
-    try:
-        os.unlink(tmp_path)
-    except Exception:
-        pass
+    # touch 空文件，让 Lu 的 --whole-file 有 target 可替换
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("")
+
+    ok, msg = _write_via_whole_file(path, content)
+
+    if not ok:
+        # 写入失败，清理空文件
+        try:
+            os.remove(path)
+        except Exception:
+            pass
 
     return ok, msg
 
 
 def delete(path: str) -> tuple[bool, str]:
-    """安全删除文件。用 --whole-file + 空内容"""
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.empty', delete=False, encoding='utf-8') as f:
-        f.write("")
-        tmp_path = f.name
+    """安全删除文件。先通过 Lu 写空内容触发快照，再删除"""
+    if not os.path.exists(path):
+        return True, "文件不存在，无需删除"
 
-    cmd = ["python3", LU_PATCH, path, "--whole-file", "--new-file", tmp_path]
-    ok, msg = _run_lu(cmd)
+    # Lu 写入空内容 → 触发快照 + 原子替换
+    ok, msg = _write_via_whole_file(path, "")
 
-    try:
-        os.unlink(tmp_path)
-    except Exception:
-        pass
-
-    # Lu 写入空文件成功后，手动删文件
-    if ok and os.path.exists(path):
+    if ok:
+        # Lu 成功写入空文件后，手动删除
         try:
             os.remove(path)
             return True, f"已删除: {path}"
