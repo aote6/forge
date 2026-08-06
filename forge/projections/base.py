@@ -51,6 +51,8 @@ class ProjectionManager:
 
     def __init__(self):
         self._projections: list[Projection] = []
+        from forge.projections.applied_store import AppliedTransactionStore
+        self._applied = AppliedTransactionStore()
 
     def register(self, projection: Projection) -> None:
         self._projections.append(projection)
@@ -67,8 +69,20 @@ class ProjectionManager:
         return confirmations
 
     def project(self, receipt: Receipt, delta: TransactionDelta) -> list[ProjectionResult]:
-        """运行所有 Projection 的 apply，统一收集结果。不 silent。"""
+        """运行所有 Projection 的 apply，统一收集结果。不 silent。幂等保护。"""
+        if not self._applied.should_apply(receipt):
+            return [ProjectionResult(name="_manager", success=True, reason="skipped: already applied")]
         results: list[ProjectionResult] = []
+        for p in self._projections:
+            try:
+                result = p.apply(receipt, delta)
+                results.append(result)
+            except Exception as e:
+                results.append(ProjectionResult(
+                    name=p.name, success=False, reason=str(e), retryable=True
+                ))
+        self._applied.mark_applied(receipt)
+        return results
         for p in self._projections:
             try:
                 result = p.apply(receipt, delta)
