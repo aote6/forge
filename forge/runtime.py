@@ -22,11 +22,11 @@ from forge.system_prompt import SYSTEM_INSTRUCTION
 from forge.confirmation import is_confirm, is_cancel
 
 # v2 协议层
-from forge.contracts.repository import RepoContext
-from forge.contracts.planning import Plan, PlanStep
-from forge.contracts.constitution import ChangeProposal, ConstitutionResult, CheckStatus
-from forge.contracts.verification import VerificationRequest, VerificationResult
-from forge.contracts.execution import TaskCheckpoint
+from forge.protocols.repository import RepoContext
+from forge.protocols.planning import Plan, PlanStep
+from forge.protocols.constitution import ChangeProposal, ConstitutionResult, CheckStatus
+from forge.protocols.verification import VerificationRequest, VerificationResult
+from forge.protocols.execution import TaskCheckpoint
 
 # v2 adapter 层
 from forge.adapters.repo_adapter import get_repo_context

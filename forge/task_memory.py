@@ -9,10 +9,10 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-from forge.contracts.execution import TaskCheckpoint
-from forge.contracts.planning import Plan
-from forge.contracts.constitution import ChangeProposal, ConstitutionResult, CheckStatus
-from forge.contracts.verification import VerificationResult
+from forge.protocols.execution import TaskCheckpoint
+from forge.protocols.planning import Plan
+from forge.protocols.constitution import ChangeProposal, ConstitutionResult, CheckStatus
+from forge.protocols.verification import VerificationResult
 
 TASK_MEMORY_DIR = ".forge/tasks"
 

@@ -7,7 +7,7 @@ import sys
 LU_HOME = "/data/data/com.termux/files/home/lu"
 sys.path.insert(0, os.path.join(LU_HOME, "core"))
 
-from forge.contracts.constitution import (
+from forge.protocols.constitution import (
     ChangeProposal, ConstitutionResult, ConstitutionViolation, CheckStatus
 )
 

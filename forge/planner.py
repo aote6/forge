@@ -9,8 +9,8 @@ import time
 import os
 from typing import Optional
 
-from forge.contracts.repository import RepoContext
-from forge.contracts.planning import Plan, PlanStep
+from forge.protocols.repository import RepoContext
+from forge.protocols.planning import Plan, PlanStep
 from forge.adapters.base import BaseAdapter, Message
 
 PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文件列表、文件内容（带行号）、以及用户任务。
@@ -260,7 +260,7 @@ class Planner:
 
 
 def plan_to_proposals(plan: Plan, raw_plan_dict: dict = None) -> list:
-    from forge.contracts.constitution import ChangeProposal
+    from forge.protocols.constitution import ChangeProposal
 
     raw_steps = {}
     if raw_plan_dict:

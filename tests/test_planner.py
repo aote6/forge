@@ -4,7 +4,7 @@ import os
 
 sys.path.insert(0, '/data/data/com.termux/files/home/forge')
 
-from forge.contracts.repository import RepoContext
+from forge.protocols.repository import RepoContext
 from forge.adapters.repo_adapter import get_repo_context
 
 results = []
