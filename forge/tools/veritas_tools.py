@@ -143,12 +143,13 @@ def make_world_tools(world_runtime):
 
     def world_commit() -> ToolResult:
         try:
-            receipt = _session().commit()
+            receipt, delta = world_runtime.commit_session()
             return ToolResult.ok(
                 display=(
                     f"Committed tx={receipt.tx_id} version={receipt.version}\n"
                     f"  before_root={receipt.before_root}\n"
-                    f"  after_root={receipt.after_root}"
+                    f"  after_root={receipt.after_root}\n"
+                    f"  objects_created={len(delta.objects_created)} objects_deleted={len(delta.objects_deleted)}"
                 ),
                 payload={
                     "tx_id": receipt.tx_id,
