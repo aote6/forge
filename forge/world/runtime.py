@@ -1,7 +1,8 @@
 """
 WorldRuntime — Forge's presence inside the Veritas world.
 
-LLM / Tools must go through this layer, never through VeritasClient.
+LLM / Tools must go through this layer, never through WorldAdapter directly.
+WorldRuntime does not know about Projection.
 """
 
 from __future__ import annotations
@@ -22,14 +23,12 @@ class WorldRuntime:
         project_root: str | Path = ".",
         binary: str = "veritasd",
         adapter: WorldAdapter | None = None,
-        projection_manager: ProjectionManager | None = None,
     ):
         self.project_root = str(Path(project_root).expanduser().resolve())
         self._adapter = adapter or WorldAdapter(self.project_root, binary=binary)
         self._identity = IdentityStore(self.project_root)
         self._object_id: Optional[int] = None
         self._current_session: Optional[WorldSession] = None
-        self._projections = projection_manager  # set later if None; lazy import to avoid circular deps
         self._online = False
         try:
             self._online = self._adapter.ping()
@@ -50,17 +49,6 @@ class WorldRuntime:
         except Exception:
             self._online = False
         return self._online
-
-    @property
-    def projections(self):
-        if self._projections is None:
-            from forge.projections.base import ProjectionManager
-            self._projections = ProjectionManager()
-        return self._projections
-
-    @projections.setter
-    def projections(self, value):
-        self._projections = value
 
     def ensure_identity(self) -> int:
         """Restore or create Forge's Object identity in the world."""
@@ -101,7 +89,7 @@ class WorldRuntime:
         if not self._online:
             raise RuntimeError(
                 "veritasd 不在线。世界操作不可用。"
-                "请使用本地工具（read_file、search_code 等）进行只读操作，"
+                "请使用本地只读工具（read_file、search_code 等），"
                 "或启动 veritasd 后重试。"
             )
         if self._current_session is not None and not self._current_session.closed:
@@ -115,40 +103,22 @@ class WorldRuntime:
         self._current_session = session
         return session
 
-    def register_path(self, object_id: int, path: str) -> None:
-        """注册 object_id 到文件路径的映射，供 FileProjection 使用。"""
-        for proj in self.projections._projections:  # property 保证非空
-            if hasattr(proj, 'set_path_mapping'):
-                proj.set_path_mapping(object_id, path)
-
     def commit_session(self) -> tuple[Receipt, TransactionDelta]:
-        """提交当前 session 并触发所有 Projection。"""
+        """提交当前 session，返回 (Receipt, TransactionDelta)。不触发 Projection。"""
         if self._current_session is None or self._current_session.closed:
             raise RuntimeError("no active session to commit")
-
         receipt, delta = self._current_session.commit()
-
-        # 触发所有 Projection
-        self.projections.apply_all(receipt, delta)
-
         return receipt, delta
 
-    def prepare_commit(self) -> dict[str, dict]:
-        """运行所有 Projection 的 prepare 阶段，返回确认信息。"""
+    def abort_session(self) -> None:
+        if self._current_session is None or self._current_session.closed:
+            return
+        self._current_session.abort()
+
+    def preview_session(self) -> TransactionDelta:
         if self._current_session is None or self._current_session.closed:
             raise RuntimeError("no active session")
-
-        # 构造当前 delta 用于预览
-        delta = self._current_session._build_memory_delta()
-        preview_delta = TransactionDelta(
-            objects_created=list(self._current_session._created_objects),
-            objects_deleted=list(self._current_session._deleted_objects),
-            objects_frozen=list(self._current_session._frozen_objects),
-            links_added=list(self._current_session._links_added),
-            links_removed=list(self._current_session._links_removed),
-            memory_written=delta,
-        )
-        return self.projections.prepare_all(preview_delta)
+        return self._current_session.preview_delta()
 
     @property
     def current_session(self) -> Optional[WorldSession]:

@@ -1,10 +1,11 @@
 """FileProjection — 世界状态在本地文件系统上的投影。
 
-路径映射：
+路径与内容来自 TransactionDelta.memory_written：
 - state_id=0: 文件路径（相对项目根目录）
 - state_id=1: 文件内容
 - state_id=2: 修改操作（JSON 序列化的 operations 列表）
-- path_map 持久化到 .forge/object_map.json
+
+不持久化 object→path 映射，不成为世界状态源。路径仅从 delta 重建。
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from forge.projections.base import Projection, TransactionDelta
+from forge.projections.base import Projection, ProjectionResult, TransactionDelta
 from forge.core.file_manager import FileManager
 from forge.core.patch_engine import PatchEngine
 from forge.core.validator import ValidatorRegistry
@@ -30,9 +31,6 @@ class FileProjection(Projection):
         self.fm = FileManager()
         self.patch_engine = PatchEngine()
         self.backup = BackupManager()
-        self._path_map: dict[int, str] = {}
-        self._map_file = Path(self.project_root) / ".forge" / "object_map.json"
-        self._load_path_map()
 
     @property
     def name(self) -> str:
@@ -42,53 +40,14 @@ class FileProjection(Projection):
         p = Path(os.path.expanduser(path))
         return str(p if p.is_absolute() else Path(self.project_root) / p)
 
-    # ── path_map 持久化 ─────────────────────────────────────
-
-    def _load_path_map(self) -> None:
-        try:
-            if self._map_file.exists():
-                with open(self._map_file) as f:
-                    raw = json.load(f)
-                    self._path_map = {int(k): v for k, v in raw.items()}
-        except Exception:
-            self._path_map = {}
-
-    def _save_path_map(self) -> None:
-        try:
-            self._map_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._map_file, "w") as f:
-                json.dump(self._path_map, f, indent=2)
-        except Exception:
-            pass
-
-    def set_path_mapping(self, object_id: int, path: str) -> None:
-        self._path_map[object_id] = path
-        self._save_path_map()
-
-    def remove_path_mapping(self, object_id: int) -> None:
-        self._path_map.pop(object_id, None)
-        self._save_path_map()
-
-    def _path_for_object(self, object_id: int) -> Optional[str]:
-        path = self._path_map.get(object_id)
-        if path:
-            return self._resolve(path)
-        return None
-
-    # ── Projection 接口 ──────────────────────────────────────
-
     def prepare(self, delta: TransactionDelta) -> Optional[dict]:
         diffs = {}
         files_created = []
         files_modified = []
         files_deleted = []
 
-        # 新建和修改
         for object_id, writes in delta.memory_written.items():
-            path = self._path_for_object(object_id)
-            if path is None:
-                # 回退：从 writes 中提取路径
-                path = self._resolve_path_from_writes(writes)
+            path = self._path_from_writes(writes)
             if path is None:
                 continue
 
@@ -102,8 +61,9 @@ class FileProjection(Projection):
                     original = ""
 
                 if operations:
-                    # modify_file: 预览应用 operations 后的结果
-                    new_content = self.patch_engine.apply_edits(original, self._dicts_to_edits(operations))
+                    new_content = self.patch_engine.apply_edits(
+                        original, self._dicts_to_edits(operations)
+                    )
                     patch = self.patch_engine.diff(original, new_content, path)
                 elif content is not None:
                     patch = self.patch_engine.diff(original, content, path)
@@ -120,9 +80,8 @@ class FileProjection(Projection):
                     preview += "\n...(truncated)"
                 diffs[path] = preview
 
-        # 删除
         for object_id in delta.objects_deleted:
-            path = self._path_for_object(object_id)
+            path = self._path_for_deleted(object_id, delta)
             if path:
                 files_deleted.append(path)
                 if path not in diffs:
@@ -142,73 +101,92 @@ class FileProjection(Projection):
             "requires_confirmation": True,
         }
 
-    def apply(self, receipt: Receipt, delta: TransactionDelta) -> None:
-        applied = []
+    def apply(self, receipt: Receipt, delta: TransactionDelta) -> ProjectionResult:
+        applied: list[str] = []
+        try:
+            for object_id, writes in delta.memory_written.items():
+                path = self._path_from_writes(writes)
+                if path is None:
+                    continue
 
-        # 新建和修改
-        for object_id, writes in delta.memory_written.items():
-            path = self._path_for_object(object_id)
-            if path is None:
-                path = self._resolve_path_from_writes(writes)
-            if path is None:
-                continue
+                content = self._extract_content(writes)
+                operations = self._extract_operations(writes)
 
-            content = self._extract_content(writes)
-            operations = self._extract_operations(writes)
-
-            # 读取原文件
-            original = ""
-            if self.fm.exists(path):
-                try:
-                    original = self.fm.read(path)
-                except Exception:
-                    pass
-                # 备份
-                try:
-                    self.backup.backup(path)
-                except Exception:
-                    pass
-
-            # 计算新内容
-            if operations:
-                new_content = self.patch_engine.apply_edits(original, self._dicts_to_edits(operations))
-            elif content is not None:
-                new_content = content
-            else:
-                continue
-
-            # 写入
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            self.fm.write(path, new_content)
-            applied.append(path)
-
-            # 语法校验
-            ok, msg = ValidatorRegistry.validate(path)
-            if not ok:
-                for p in applied:
+                original = ""
+                if self.fm.exists(path):
                     try:
-                        self.backup.restore_latest(p)
+                        original = self.fm.read(path)
                     except Exception:
                         pass
-                raise RuntimeError(f"语法校验失败: {path}: {msg}")
+                    try:
+                        self.backup.backup(path)
+                    except Exception:
+                        pass
 
-        # 删除
-        for object_id in delta.objects_deleted:
-            path = self._path_for_object(object_id)
-            if path and self.fm.exists(path):
+                if operations:
+                    new_content = self.patch_engine.apply_edits(
+                        original, self._dicts_to_edits(operations)
+                    )
+                elif content is not None:
+                    new_content = content
+                else:
+                    continue
+
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                self.fm.write(path, new_content)
+                applied.append(path)
+
+                ok, msg = ValidatorRegistry.validate(path)
+                if not ok:
+                    for p in applied:
+                        try:
+                            self.backup.restore_latest(p)
+                        except Exception:
+                            pass
+                    return ProjectionResult(
+                        name=self.name,
+                        success=False,
+                        reason=f"语法校验失败: {path}: {msg}",
+                        retryable=False,
+                    )
+
+            for object_id in delta.objects_deleted:
+                path = self._path_for_deleted(object_id, delta)
+                if path and self.fm.exists(path):
+                    try:
+                        self.backup.backup(path)
+                    except Exception:
+                        pass
+                    os.remove(path)
+
+            return ProjectionResult(name=self.name, success=True, reason="ok")
+        except Exception as e:
+            for p in applied:
                 try:
-                    self.backup.backup(path)
+                    self.backup.restore_latest(p)
                 except Exception:
                     pass
-                os.remove(path)
-                self.remove_path_mapping(object_id)
+            return ProjectionResult(
+                name=self.name,
+                success=False,
+                reason=f"{type(e).__name__}: {e}",
+                retryable=True,
+            )
 
-    # ── writes 解析 ──────────────────────────────────────────
-
-    def _resolve_path_from_writes(self, writes: list[tuple[int, str]]) -> Optional[str]:
+    def _path_from_writes(self, writes: list[tuple[int, str]]) -> Optional[str]:
         for state_id, value in writes:
-            if state_id == 0:
+            if state_id == 0 and value:
                 return self._resolve(value)
+        return None
+
+    def _path_for_deleted(self, object_id: int, delta: TransactionDelta) -> Optional[str]:
+        writes = delta.memory_written.get(object_id)
+        if writes:
+            return self._path_from_writes(writes)
+        # path may be in metadata if provided by upper layer
+        meta_paths = (delta.metadata or {}).get("deleted_paths", {})
+        if object_id in meta_paths:
+            return self._resolve(str(meta_paths[object_id]))
         return None
 
     def _extract_content(self, writes: list[tuple[int, str]]) -> Optional[str]:
@@ -227,7 +205,6 @@ class FileProjection(Projection):
         return None
 
     def _dicts_to_edits(self, operations: list) -> list:
-        """把 LLM 传入的 dict 列表转为 PatchEngine 期望的 EditOp 列表。"""
         from forge.core.patch_engine import EditOp
         edits = []
         for op in operations:

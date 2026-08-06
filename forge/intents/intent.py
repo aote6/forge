@@ -2,7 +2,7 @@
 
 Intent 是整个 Forge 的核心抽象。
 LLM 产生 Intent，IntentExecutor 消费 Intent。
-Intent 不包含 Veritas 原语，只包含语义目标。
+Intent 不包含 Veritas 原语，只包含语义目标。不包含执行逻辑。
 """
 
 from __future__ import annotations
@@ -62,10 +62,11 @@ class Intent:
         )
 
     @classmethod
-    def delete_file(cls, path: str) -> "Intent":
+    def delete_file(cls, path: str = "", require_confirm: bool = True) -> "Intent":
         return cls(
             type=IntentType.DELETE_FILE,
             parameters={"path": path},
+            policy={"require_confirm": require_confirm},
         )
 
     @classmethod
@@ -74,17 +75,25 @@ class Intent:
         from_id: int,
         to_id: int,
         link_type: str = "owns",
+        require_confirm: bool = False,
     ) -> "Intent":
         return cls(
             type=IntentType.LINK_OBJECTS,
             parameters={"from_id": from_id, "to_id": to_id, "link_type": link_type},
+            policy={"require_confirm": require_confirm},
         )
 
     @classmethod
-    def unlink_objects(cls, from_id: int, to_id: int) -> "Intent":
+    def unlink_objects(
+        cls,
+        from_id: int,
+        to_id: int,
+        require_confirm: bool = False,
+    ) -> "Intent":
         return cls(
             type=IntentType.UNLINK_OBJECTS,
             parameters={"from_id": from_id, "to_id": to_id},
+            policy={"require_confirm": require_confirm},
         )
 
     def to_dict(self) -> dict:
