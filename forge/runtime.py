@@ -133,6 +133,7 @@ class Runtime:
         # v2 状态
         self._repo_context: RepoContext | None = None
         self._plan: Plan | None = None
+        self._raw_plan_dict: dict | None = None
         self._checkpoint: TaskCheckpoint | None = None
         self._correction_count: int = 0
         self._task_id: str | None = None
@@ -187,7 +188,7 @@ class Runtime:
 
         # Phase 2: PLANNING
         if self.phase == AgentPhase.PLANNING:
-            self._plan = self._planner.plan(task, self._repo_context)
+            self._plan, self._raw_plan_dict = self._planner.plan(task, self._repo_context)
             self._save_phase("checking", plan=self._plan)
             self.phase = AgentPhase.CHECKING
 
@@ -207,37 +208,87 @@ class Runtime:
             self._save_phase("executing", plan=self._plan)
             self.phase = AgentPhase.EXECUTING
 
-        # Phase 4: EXECUTING
+        # Phase 4: EXECUTING — 真实代码编辑
         if self.phase == AgentPhase.EXECUTING:
             results = []
-            proposals = plan_to_proposals(self._plan)
+            proposals = plan_to_proposals(self._plan, self._raw_plan_dict)
             for proposal in proposals:
-                for target in proposal.target_files:
+                for op in proposal.operations:
+                    target = op.get("target_files", [None])[0]
+                    if not target:
+                        continue
                     full_path = os.path.join(self.workspace.project_root, target)
-                    content = f"# Forge v2 auto-generated\n# {proposal.reason}\n"
-                    os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
+                    op_type = op.get("type", "create_file")
 
-                    session = self.world.begin_session()
-                    obj_id = session.create_object()
-                    session.write(obj_id, 0, value=full_path)
-                    session.write(obj_id, 1, value=content)
-                    receipt, delta = self.world.commit_session()
+                    if op_type == "create_file":
+                        new_content = op.get("content", "")
+                        os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
 
-                    # 补 delta（已知 veritasd 限制）
-                    delta.memory_written = [
-                        {"object_id": obj_id, "state_id": 0, "value_hex": full_path.encode().hex()},
-                        {"object_id": obj_id, "state_id": 1, "value_hex": content.encode().hex()},
-                    ]
-                    delta.objects_created = [obj_id]
+                        session = self.world.begin_session()
+                        obj_id = session.create_object()
+                        session.write(obj_id, 0, value=full_path)
+                        session.write(obj_id, 1, value=new_content)
+                        receipt, delta = self.world.commit_session()
 
-                    self.projections.project(receipt, delta)
+                        delta.memory_written = [
+                            {"object_id": obj_id, "state_id": 0, "value_hex": full_path.encode().hex()},
+                            {"object_id": obj_id, "state_id": 1, "value_hex": new_content.encode().hex()},
+                        ]
+                        delta.objects_created = [obj_id]
+                        self.projections.project(receipt, delta)
 
-                    results.append({
-                        "step": proposal.proposal_id,
-                        "file": target,
-                        "tx_id": receipt.tx_id,
-                        "version": receipt.version
-                    })
+                        results.append({
+                            "step": proposal.proposal_id,
+                            "file": target,
+                            "op": "create_file",
+                            "tx_id": receipt.tx_id,
+                            "version": receipt.version
+                        })
+
+                    elif op_type == "modify":
+                        old_text = op.get("old_text", "")
+                        new_text = op.get("new_text", "")
+
+                        if os.path.exists(full_path):
+                            with open(full_path, "r", encoding="utf-8") as f:
+                                original = f.read()
+
+                            if old_text in original:
+                                modified = original.replace(old_text, new_text, 1)
+
+                                session = self.world.begin_session()
+                                obj_id = session.create_object()
+                                session.write(obj_id, 0, value=full_path)
+                                session.write(obj_id, 1, value=modified)
+                                receipt, delta = self.world.commit_session()
+
+                                delta.memory_written = [
+                                    {"object_id": obj_id, "state_id": 0, "value_hex": full_path.encode().hex()},
+                                    {"object_id": obj_id, "state_id": 1, "value_hex": modified.encode().hex()},
+                                ]
+                                delta.objects_created = [obj_id]
+                                self.projections.project(receipt, delta)
+
+                                results.append({
+                                    "step": proposal.proposal_id,
+                                    "file": target,
+                                    "op": "modify",
+                                    "tx_id": receipt.tx_id,
+                                    "version": receipt.version
+                                })
+                            else:
+                                print(f"  ⚠️ old_text 未在 {target} 中找到，跳过修改", file=sys.stderr)
+                        else:
+                            print(f"  ⚠️ {target} 不存在，跳过修改", file=sys.stderr)
+
+                    elif op_type == "delete_file":
+                        if os.path.exists(full_path):
+                            os.remove(full_path)
+                            results.append({
+                                "step": proposal.proposal_id,
+                                "file": target,
+                                "op": "delete_file"
+                            })
 
             self._save_phase("verifying", plan=self._plan,
                              extra={"execution_results": results})
