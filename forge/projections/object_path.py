@@ -1,8 +1,10 @@
 """Object Path Mapping — 从 TransactionDelta 提取 ObjectId → 文件路径的映射。
 
 路径来源：memory_written 中 state_id=0 的 value_hex。
-这是从 Object 的 metadata 推导文件路径的临时方案。
-未来应由 Veritas Object 自身携带 path metadata。
+TODO: 这是临时协议。state_id=0 表示 path 是 Forge 自定义约定，
+不是 Veritas Object 的标准 metadata。
+未来应由 Veritas Object 携带正式的 path/type/owner metadata，
+通过 Object metadata 查询而非解析 memory slot。
 """
 
 from __future__ import annotations
