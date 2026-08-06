@@ -7,6 +7,8 @@ from forge.adapters.base import ToolResult
 from forge.tools.veritas_tools import make_world_tools
 from forge.tools.intent_tools import make_intent_tools
 from forge.projections.file_projection import FileProjection
+from forge.projections.git_projection import GitProjection
+from forge.projections.index_projection import IndexProjection
 from forge.intents.executor import IntentExecutor
 from forge.core.security import is_dangerous_command, needs_git_confirmation, is_allowed_command
 
@@ -194,6 +196,8 @@ def make_tools(workspace, safe_mode="blacklist", world_runtime=None):
     if world_runtime is not None:
         # 注册 FileProjection
         world_runtime.projections.register(FileProjection(project_root=workspace.project_root))
+        world_runtime.projections.register(GitProjection(project_root=workspace.project_root))
+        world_runtime.projections.register(IndexProjection(project_root=workspace.project_root))
         tools.update(make_world_tools(world_runtime))
         executor = IntentExecutor(world_runtime)
         tools.update(make_intent_tools(executor))
