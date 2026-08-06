@@ -63,6 +63,10 @@ class ProjectionManager:
         self._projections.remove(projection)
 
     @property
+    def projections(self) -> list:
+        return list(self._projections)
+
+    @property
     def projection_names(self) -> list:
         return [p.name for p in self._projections]
 

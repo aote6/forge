@@ -21,13 +21,14 @@ class ProjectionRecovery:
         """执行恢复，返回每个 Projection 恢复的 receipt 数量。"""
         recovered = {}
 
-        for proj in self._pm._projections:
+        for proj in self._pm.projections:
             name = proj.name
             last_version = self._pm._checkpoint.checkpoints.get(name, 0)
             receipts = self._world.get_receipts_since(last_version)
             count = 0
             for receipt in receipts:
                 self._pm.project(receipt, receipt.delta)
+                self._pm.checkpoint.mark_applied(name, receipt.version)
                 count += 1
             recovered[name] = count
 
