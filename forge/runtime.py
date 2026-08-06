@@ -246,40 +246,43 @@ class Runtime:
                         })
 
                     elif op_type == "modify":
+                        from forge.adapters.lu_patch_adapter import patch as lu_patch
                         old_text = op.get("old_text", "")
                         new_text = op.get("new_text", "")
+                        start_line = op.get("start_line")
+                        end_line = op.get("end_line")
 
-                        if os.path.exists(full_path):
+                        # 调用 Lu 安全写入
+                        ok, msg = lu_patch(full_path, old_text, new_text, start_line, end_line)
+
+                        if ok:
+                            # 读回修改后的内容，走 Veritas Transaction
                             with open(full_path, "r", encoding="utf-8") as f:
-                                original = f.read()
+                                modified = f.read()
 
-                            if old_text in original:
-                                modified = original.replace(old_text, new_text, 1)
+                            session = self.world.begin_session()
+                            obj_id = session.create_object()
+                            session.write(obj_id, 0, value=full_path)
+                            session.write(obj_id, 1, value=modified)
+                            receipt, delta = self.world.commit_session()
 
-                                session = self.world.begin_session()
-                                obj_id = session.create_object()
-                                session.write(obj_id, 0, value=full_path)
-                                session.write(obj_id, 1, value=modified)
-                                receipt, delta = self.world.commit_session()
+                            delta.memory_written = [
+                                {"object_id": obj_id, "state_id": 0, "value_hex": full_path.encode().hex()},
+                                {"object_id": obj_id, "state_id": 1, "value_hex": modified.encode().hex()},
+                            ]
+                            delta.objects_created = [obj_id]
+                            self.projections.project(receipt, delta)
 
-                                delta.memory_written = [
-                                    {"object_id": obj_id, "state_id": 0, "value_hex": full_path.encode().hex()},
-                                    {"object_id": obj_id, "state_id": 1, "value_hex": modified.encode().hex()},
-                                ]
-                                delta.objects_created = [obj_id]
-                                self.projections.project(receipt, delta)
-
-                                results.append({
-                                    "step": proposal.proposal_id,
-                                    "file": target,
-                                    "op": "modify",
-                                    "tx_id": receipt.tx_id,
-                                    "version": receipt.version
-                                })
-                            else:
-                                print(f"  ⚠️ old_text 未在 {target} 中找到，跳过修改", file=sys.stderr)
+                            results.append({
+                                "step": proposal.proposal_id,
+                                "file": target,
+                                "op": "modify",
+                                "tx_id": receipt.tx_id,
+                                "version": receipt.version
+                            })
+                            print(f"  [Lu] {msg}", file=sys.stderr)
                         else:
-                            print(f"  ⚠️ {target} 不存在，跳过修改", file=sys.stderr)
+                            print(f"  [Lu] 写入失败: {msg}", file=sys.stderr)
 
                     elif op_type == "delete_file":
                         if os.path.exists(full_path):
