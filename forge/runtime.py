@@ -97,20 +97,40 @@ class Runtime:
         return event
 
     def _update_phase_after_tool(self, tool_name: str, result: ToolResult):
-        """根据工具执行结果自动推进任务阶段"""
+        """根据工具执行结果自动推进任务阶段。不再区分本地/世界事务。"""
         if not result.success:
             return
 
-        if tool_name in ("list_files", "read_file", "search_code"):
+        # 探索类工具 → DISCOVERY
+        if tool_name in ("list_files", "read_file", "search_code",
+                         "world_list_objects", "world_get_object", "world_get_links",
+                         "world_whoami", "world_info"):
             if self.phase in (AgentPhase.IDLE, AgentPhase.DISCOVERY):
                 self.phase = AgentPhase.DISCOVERY
-        elif tool_name == "prepare_write":
-            self.phase = AgentPhase.WAIT_CONFIRM
-            if result.payload:
+
+        # 事务开始 → DISCOVERY（进入编辑阶段）
+        elif tool_name in ("world_begin",):
+            self.phase = AgentPhase.DISCOVERY
+
+        # 变更类工具（含新旧两种路径）→ WAIT_CONFIRM
+        elif tool_name in ("prepare_write", "create_file", "modify_file",
+                           "delete_file", "world_create_object", "world_freeze",
+                           "world_death", "world_link", "world_unlink"):
+            if result.payload and result.payload.get("requires_confirmation"):
+                self.phase = AgentPhase.WAIT_CONFIRM
                 self.pending_transaction = result.payload.get("transaction_id")
-        elif tool_name == "commit_write":
+
+        # 提交类工具 → VERIFYING
+        elif tool_name in ("commit_write", "world_commit"):
             self.phase = AgentPhase.VERIFYING
             self.pending_transaction = None
+
+        # 取消/中止 → IDLE
+        elif tool_name in ("cancel_write", "world_abort"):
+            self.phase = AgentPhase.IDLE
+            self.pending_transaction = None
+
+        # 验证类工具 → REPORT
         elif tool_name in ("git_diff", "run_command"):
             if self.phase == AgentPhase.VERIFYING:
                 self.phase = AgentPhase.REPORT
@@ -118,15 +138,26 @@ class Runtime:
     def run(self, user_input: str) -> str:
         # === 处理 WAIT_CONFIRM 状态：用户确认/取消事务 ===
         if self.phase == AgentPhase.WAIT_CONFIRM:
+            # 尝试识别确认指令
             txid = extract_confirmation(user_input)
             if txid:
+                # 优先走世界事务提交
                 result = self.executor.execute(
                     ToolCall(
                         id="user-confirm",
-                        name="commit_write",
-                        arguments={"transaction_id": txid}
+                        name="world_commit",
+                        arguments={}
                     )
                 )
+                if not result.success:
+                    # 回退到本地事务提交
+                    result = self.executor.execute(
+                        ToolCall(
+                            id="user-confirm-local",
+                            name="commit_write",
+                            arguments={"transaction_id": txid}
+                        )
+                    )
                 if result.success:
                     self.phase = AgentPhase.VERIFYING
                     self.conversation.append(Message(
@@ -139,22 +170,32 @@ class Runtime:
 
             # 检查是否取消
             if user_input.strip().startswith("取消"):
-                if self.pending_transaction:
-                    self.executor.execute(
-                        ToolCall(
-                            id="user-cancel",
-                            name="cancel_write",
-                            arguments={"transaction_id": self.pending_transaction}
-                        )
+                # 优先走世界事务中止
+                abort_result = self.executor.execute(
+                    ToolCall(
+                        id="user-abort",
+                        name="world_abort",
+                        arguments={}
                     )
+                )
+                if not abort_result.success:
+                    # 回退到本地事务取消
+                    if self.pending_transaction:
+                        self.executor.execute(
+                            ToolCall(
+                                id="user-cancel",
+                                name="cancel_write",
+                                arguments={"transaction_id": self.pending_transaction}
+                            )
+                        )
                 self.phase = AgentPhase.IDLE
                 self.pending_transaction = None
                 return "事务已取消。"
 
             # 不是确认也不是取消，提示用户
             return (
-                f"⏸️ 当前有待确认的事务: {self.pending_transaction}\n"
-                f"请输入 '确认 {self.pending_transaction}' 提交，或 '取消' 放弃。\n"
+                f"⏸️ 当前有待确认的事务\n"
+                f"请输入 '确认' 提交，或 '取消' 放弃。\n"
                 f"（其他指令暂不支持，请先处理当前事务）"
             )
 
@@ -191,9 +232,13 @@ class Runtime:
             ))
 
             for tc in response.tool_calls:
-                # WAIT_CONFIRM 状态下拒绝修改类工具
+                # WAIT_CONFIRM 状态下拒绝所有修改类工具
                 if self.phase == AgentPhase.WAIT_CONFIRM:
-                    if tc.name in ("prepare_write", "commit_write"):
+                    if tc.name in ("prepare_write", "commit_write", "cancel_write",
+                                   "create_file", "modify_file", "delete_file",
+                                   "world_create_object", "world_freeze", "world_death",
+                                   "world_link", "world_unlink", "world_begin",
+                                   "link_objects", "unlink_objects"):
                         self.conversation.append(Message(
                             role="tool",
                             content="⏸️ 当前有未确认的事务，请等待用户确认后再继续。",
@@ -221,14 +266,14 @@ class Runtime:
                 # 更新阶段
                 self._update_phase_after_tool(tc.name, result)
 
-                # prepare_write 成功后立即暂停，等待用户确认
+                # 操作需要用户确认时暂停（支持新旧两种工具路径）
                 if (result.success
                         and result.payload
                         and result.payload.get("requires_confirmation")):
                     self.conversation.append(Message(
                         role="system",
                         content=(
-                            "文件修改已准备完成。必须等待用户确认后才能继续。"
+                            "修改已准备完成。必须等待用户确认后才能继续。"
                             "不要调用其它修改工具。"
                         )
                     ))
