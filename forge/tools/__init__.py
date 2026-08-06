@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from forge.adapters.base import ToolResult
 from forge.tools.veritas_tools import make_world_tools
+from forge.tools.intent_tools import make_intent_tools
+from forge.intents.executor import IntentExecutor
 from forge.core.security import is_dangerous_command, needs_git_confirmation, is_allowed_command
 
 LOG_PATH = Path.home() / "forge" / ".forge" / "operation_log.jsonl"
@@ -190,4 +192,6 @@ def make_tools(workspace, safe_mode="blacklist", world_runtime=None):
     }
     if world_runtime is not None:
         tools.update(make_world_tools(world_runtime))
+        executor = IntentExecutor(world_runtime)
+        tools.update(make_intent_tools(executor))
     return tools

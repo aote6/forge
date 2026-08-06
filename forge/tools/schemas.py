@@ -193,5 +193,66 @@ TOOL_DECLARATIONS = [
             },
             "required": ["cmd"]
         }
+        },
+    {
+        "name": "create_file",
+        "description": "创建一个新文件。指定路径和内容。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径（相对于项目根目录）"},
+                "content": {"type": "string", "description": "文件内容，默认为空"},
+            },
+            "required": ["path"]
+        }
+    },
+    {
+        "name": "modify_file",
+        "description": "修改已有文件。需要提供 object_id。operations 使用 anchor 定位修改位置。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径"},
+                "object_id": {"type": "integer", "description": "文件的 Veritas Object ID"},
+                "operations": {"type": "array", "description": "修改操作列表"}
+            },
+            "required": ["path", "object_id", "operations"]
+        }
+    },
+    {
+        "name": "delete_file",
+        "description": "删除文件对应的 Veritas Object。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "integer", "description": "要删除的 Object ID"}
+            },
+            "required": ["object_id"]
+        }
+    },
+    {
+        "name": "link_objects",
+        "description": "在两个 Object 之间建立 Link 关系。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "from_id": {"type": "integer", "description": "源 Object ID"},
+                "to_id": {"type": "integer", "description": "目标 Object ID"},
+                "link_type": {"type": "string", "description": "Link 类型: owns/depends_on/references，默认 owns"}
+            },
+            "required": ["from_id", "to_id"]
+        }
+    },
+    {
+        "name": "unlink_objects",
+        "description": "删除两个 Object 之间的 Link。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "from_id": {"type": "integer", "description": "源 Object ID"},
+                "to_id": {"type": "integer", "description": "目标 Object ID"}
+            },
+            "required": ["from_id", "to_id"]
+        }
     },
 ]
