@@ -3,6 +3,7 @@ from enum import Enum
 
 
 class AgentPhase(Enum):
+    # v1 阶段
     IDLE = "idle"
     DISCOVERY = "discovery"
     ANALYSIS = "analysis"
@@ -11,3 +12,10 @@ class AgentPhase(Enum):
     VERIFYING = "verifying"
     REPORT = "report"
     DONE = "done"
+
+    # v2 新增
+    UNDERSTANDING = "understanding"
+    PLANNING = "planning"
+    CHECKING = "checking"
+    EXECUTING = "executing"
+    REVIEWING = "reviewing"
