@@ -26,7 +26,10 @@ def make_tools(workspace, safe_mode: str = "blacklist", world_runtime=None):
 
     if world_runtime is not None:
         projections = ProjectionManager()
-        projections.register(FileProjection(project_root=workspace.project_root))
+        fp = FileProjection(project_root=workspace.project_root)
+        if hasattr(world_runtime, "_path_map"):
+            fp.object_path_map = world_runtime._path_map
+        projections.register(fp)
         projections.register(GitProjection(project_root=workspace.project_root))
         projections.register(IndexProjection(project_root=workspace.project_root))
         executor = IntentExecutor(world_runtime)
