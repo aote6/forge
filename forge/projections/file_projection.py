@@ -19,11 +19,12 @@ from forge.world.types import Receipt
 
 
 class FileProjection(Projection):
-    def __init__(self, project_root: str = "."):
+    def __init__(self, project_root: str = ".", object_path_map=None):
         self.project_root = os.path.abspath(os.path.expanduser(project_root))
         self.fm = FileManager()
         self.patch_engine = PatchEngine()
         self.backup = BackupManager()
+        self.object_path_map = object_path_map
 
     @property
     def name(self) -> str:
