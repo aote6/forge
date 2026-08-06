@@ -119,6 +119,16 @@ class WorldRuntime:
             self._path_map = ObjectPathMap()
         self._path_map.update_from_delta(delta)
 
+    def get_receipts_since(self, since_version: int) -> list:
+        """从 Veritas 获取 version > since_version 的历史 receipt。"""
+        resp = self._adapter._send({
+            "cmd": "receipts_since",
+            "version": since_version
+        })
+        from forge.world.receipt_parser import parse_receipt
+        receipts_raw = resp.get("receipts", [])
+        return [parse_receipt({"ok": True, "receipt": r}) for r in receipts_raw]
+
     def get_path_for_object(self, object_id: int):
         if not hasattr(self, "_path_map"):
             return None

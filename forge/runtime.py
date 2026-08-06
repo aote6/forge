@@ -89,7 +89,22 @@ class Runtime:
         self.tools = tools
         self._confirm_fn = confirm_fn
         self._abort_fn = abort_fn
+        self._recover_projections()
         self.executor = ToolExecutor(self.tools)
+
+    def _recover_projections(self):
+        """启动时从 Veritas WAL 恢复所有 Projection。"""
+        try:
+            from forge.recovery.replay import ProjectionRecovery
+            recovery = ProjectionRecovery(self.world, self.world.projections)
+            recovered = recovery.recover()
+            for name, count in recovered.items():
+                if count > 0:
+                    import sys
+                    print(f"[recovery] {name}: {count} receipts replayed", file=sys.stderr)
+        except Exception as e:
+            import sys
+            print(f"[recovery] skipped: {e}", file=sys.stderr)
         self.conversation = Conversation(SYSTEM_INSTRUCTION)
         self.phase = AgentPhase.IDLE
         self._handlers: dict = {e: [] for e in EventType}
