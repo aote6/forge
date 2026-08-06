@@ -221,34 +221,35 @@ class Runtime:
                     op_type = op.get("type", "create_file")
 
                     if op_type == "create_file":
+                        from forge.adapters.lu_patch_adapter import create as lu_create
                         new_content = op.get("content", "")
-                        os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
 
-                        # 新建文件直接写（无已有文件损坏风险）
-                        with open(full_path, "w", encoding="utf-8") as f:
-                            f.write(new_content)
+                        ok, msg = lu_create(full_path, new_content)
 
-                        session = self.world.begin_session()
-                        obj_id = session.create_object()
-                        session.write(obj_id, 0, value=full_path)
-                        session.write(obj_id, 1, value=new_content)
-                        receipt, delta = self.world.commit_session()
+                        if ok:
+                            session = self.world.begin_session()
+                            obj_id = session.create_object()
+                            session.write(obj_id, 0, value=full_path)
+                            session.write(obj_id, 1, value=new_content)
+                            receipt, delta = self.world.commit_session()
 
-                        delta.memory_written = [
-                            {"object_id": obj_id, "state_id": 0, "value_hex": full_path.encode().hex()},
-                            {"object_id": obj_id, "state_id": 1, "value_hex": new_content.encode().hex()},
-                        ]
-                        delta.objects_created = [obj_id]
-                        self.projections.project(receipt, delta)
+                            delta.memory_written = [
+                                {"object_id": obj_id, "state_id": 0, "value_hex": full_path.encode().hex()},
+                                {"object_id": obj_id, "state_id": 1, "value_hex": new_content.encode().hex()},
+                            ]
+                            delta.objects_created = [obj_id]
+                            self.projections.project(receipt, delta)
 
-                        results.append({
-                            "step": proposal.proposal_id,
-                            "file": target,
-                            "op": "create_file",
-                            "tx_id": receipt.tx_id,
-                            "version": receipt.version
-                        })
-
+                            results.append({
+                                "step": proposal.proposal_id,
+                                "file": target,
+                                "op": "create_file",
+                                "tx_id": receipt.tx_id,
+                                "version": receipt.version
+                            })
+                            print(f"  [Lu] create OK: {msg}", file=sys.stderr)
+                        else:
+                            print(f"  [Lu] create 失败: {msg}", file=sys.stderr)
                     elif op_type == "modify":
                         from forge.adapters.lu_patch_adapter import patch as lu_patch
                         old_text = op.get("old_text", "")
