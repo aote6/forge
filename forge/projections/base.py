@@ -69,7 +69,7 @@ class ProjectionManager:
         return confirmations
 
     def project(self, receipt: Receipt, delta: TransactionDelta) -> list[ProjectionResult]:
-        """运行所有 Projection 的 apply，统一收集结果。不 silent。幂等保护。"""
+        """运行所有 Projection 的 apply，统一收集结果。不 silent。幂等保护（基于 tx_id 去重）。"""
         if not self._applied.should_apply(receipt):
             return [ProjectionResult(name="_manager", success=True, reason="skipped: already applied")]
         results: list[ProjectionResult] = []
