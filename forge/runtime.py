@@ -224,6 +224,10 @@ class Runtime:
                         new_content = op.get("content", "")
                         os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
 
+                        # 新建文件直接写（无已有文件损坏风险）
+                        with open(full_path, "w", encoding="utf-8") as f:
+                            f.write(new_content)
+
                         session = self.world.begin_session()
                         obj_id = session.create_object()
                         session.write(obj_id, 0, value=full_path)
@@ -285,8 +289,21 @@ class Runtime:
                             print(f"  [Lu] 写入失败: {msg}", file=sys.stderr)
 
                     elif op_type == "delete_file":
+                        from forge.adapters.lu_patch_adapter import delete as lu_delete
+
                         if os.path.exists(full_path):
-                            os.remove(full_path)
+                            ok, msg = lu_delete(full_path)
+                            if ok:
+                                results.append({
+                                    "step": proposal.proposal_id,
+                                    "file": target,
+                                    "op": "delete_file"
+                                })
+                                print(f"  [Lu] delete: {msg}", file=sys.stderr)
+                            else:
+                                print(f"  [Lu] delete 失败: {msg}", file=sys.stderr)
+                        else:
+                            # 文件不存在，记录为已完成
                             results.append({
                                 "step": proposal.proposal_id,
                                 "file": target,
