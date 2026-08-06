@@ -137,7 +137,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "prepare_write",
-        "description": "准备修改文件。operations 使用 anchor 定位。返回事务 ID 和 diff 预览，需要用户确认后调用 commit_write。",
+        "description": "[DEPRECATED] 请使用 create_file 或 modify_file。准备修改文件。operations 使用 anchor 定位。返回事务 ID 和 diff 预览，需要用户确认后调用 commit_write。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -162,7 +162,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "commit_write",
-        "description": "提交之前 prepare_write 创建的事务。需要传入事务 ID。",
+        "description": "[DEPRECATED] 请使用 create_file 或 modify_file，它们会自动提交。提交之前 prepare_write 创建的事务。需要传入事务 ID。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -173,7 +173,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "cancel_write",
-        "description": "取消之前 prepare_write 创建但尚未提交的事务。",
+        "description": "[DEPRECATED] 请使用 world_abort。取消之前 prepare_write 创建但尚未提交的事务。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -196,7 +196,7 @@ TOOL_DECLARATIONS = [
         },
     {
         "name": "create_file",
-        "description": "创建一个新文件。指定路径和内容。",
+        "description": "[PREFERRED] 创建一个新文件。指定路径和内容。这是推荐的文件创建方式。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -208,7 +208,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "modify_file",
-        "description": "修改已有文件。需要提供 object_id。operations 使用 anchor 定位修改位置。",
+        "description": "[PREFERRED] 修改已有文件。需要提供 object_id。operations 使用 anchor 定位修改位置。这是推荐的文件修改方式。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -221,7 +221,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "delete_file",
-        "description": "删除文件对应的 Veritas Object。",
+        "description": "[PREFERRED] 删除文件对应的 Veritas Object。这是推荐的文件删除方式。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -232,7 +232,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "link_objects",
-        "description": "在两个 Object 之间建立 Link 关系。",
+        "description": "[PREFERRED] 在两个 Object 之间建立 Link 关系。这是推荐的链接方式。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -245,7 +245,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "unlink_objects",
-        "description": "删除两个 Object 之间的 Link。",
+        "description": "[PREFERRED] 删除两个 Object 之间的 Link。这是推荐的取消链接方式。",
         "parameters": {
             "type": "object",
             "properties": {

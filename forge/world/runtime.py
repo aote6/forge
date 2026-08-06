@@ -30,13 +30,26 @@ class WorldRuntime:
         self._object_id: Optional[int] = None
         self._current_session: Optional[WorldSession] = None
         self._projections = projection_manager  # set later if None; lazy import to avoid circular deps
+        self._online = False
+        try:
+            self._online = self._adapter.ping()
+        except Exception:
+            self._online = False
 
     @property
     def adapter(self) -> WorldAdapter:
         return self._adapter
 
+    @property
+    def online(self) -> bool:
+        return self._online
+
     def connect(self) -> bool:
-        return self._adapter.ping()
+        try:
+            self._online = self._adapter.ping()
+        except Exception:
+            self._online = False
+        return self._online
 
     @property
     def projections(self):
@@ -85,6 +98,12 @@ class WorldRuntime:
         return self._adapter.get_links()
 
     def begin_session(self, actor_id: Optional[int] = None) -> WorldSession:
+        if not self._online:
+            raise RuntimeError(
+                "veritasd 不在线。世界操作不可用。"
+                "请使用本地工具（read_file、search_code 等）进行只读操作，"
+                "或启动 veritasd 后重试。"
+            )
         if self._current_session is not None and not self._current_session.closed:
             try:
                 self._current_session.abort()
