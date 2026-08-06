@@ -1,10 +1,13 @@
-"""Runtime - Agent 编排引擎
+"""Runtime - Agent 编排引擎 v2
 
-只负责：Conversation、Phase、Tool Dispatch、Confirm、Abort。
-不知道文件系统、Git、Projection、world primitive。
-根据工具返回的 payload（phase / requires_confirmation / mutation）推进状态。
+Engineering Loop:
+  UNDERSTANDING → PLANNING → CHECKING → EXECUTING → VERIFYING → REVIEWING → DONE
+
+Transaction 链路（完全不动）：
+  LLM → Intent → WorldSession → Receipt → Projection
 """
 import json
+import sys
 from forge.adapters.base import BaseAdapter, Message, ToolCall, ToolResult
 from forge.conversation import Conversation
 from forge.workspace import Workspace
@@ -17,8 +20,21 @@ from forge.agent_state import AgentPhase
 from forge.system_prompt import SYSTEM_INSTRUCTION
 from forge.confirmation import is_confirm, is_cancel
 
+# v2 协议层
+from forge.contracts.repository import RepoContext
+from forge.contracts.planning import Plan, PlanStep
+from forge.contracts.constitution import ChangeProposal, ConstitutionResult, CheckStatus
+from forge.contracts.verification import VerificationRequest, VerificationResult
+from forge.contracts.execution import TaskCheckpoint
+
+# v2 adapter 层
+from forge.adapters.repo_adapter import get_repo_context
+from forge.adapters.constitution_adapter import check as constitution_check
+from forge.adapters.verifier_adapter import verify as verification_verify
+
 MAX_AGENT_STEPS = 20
 MAX_CONSECUTIVE_FAILURES = 3
+MAX_SELF_CORRECTION = 3
 
 
 class ToolExecutor:
@@ -92,6 +108,12 @@ class Runtime:
         self._recover_projections()
         self.executor = ToolExecutor(self.tools)
 
+        # v2 状态
+        self._repo_context: RepoContext | None = None
+        self._plan: Plan | None = None
+        self._checkpoint: TaskCheckpoint | None = None
+        self._correction_count: int = 0
+
     def _recover_projections(self):
         """启动时从 Veritas WAL 恢复所有 Projection。"""
         try:
@@ -100,10 +122,8 @@ class Runtime:
             recovered = recovery.recover()
             for name, count in recovered.items():
                 if count > 0:
-                    import sys
                     print(f"[recovery] {name}: {count} receipts replayed", file=sys.stderr)
         except Exception as e:
-            import sys
             print(f"[recovery] skipped: {e}", file=sys.stderr)
         self.conversation = Conversation(SYSTEM_INSTRUCTION)
         self.phase = AgentPhase.IDLE
@@ -137,6 +157,147 @@ class Runtime:
         if self.phase in (AgentPhase.IDLE, AgentPhase.DISCOVERY):
             self.phase = AgentPhase.DISCOVERY
 
+    # ─── v2 Engineering Loop ────────────────────────────────
+
+    def _step_understand(self, task: str) -> RepoContext:
+        """Phase 1: 仓库理解 → RepoContext"""
+        print("[v2] UNDERSTANDING — 正在获取仓库上下文...", file=sys.stderr)
+        ctx = get_repo_context(self.workspace.project_root)
+        self._repo_context = ctx
+        self.phase = AgentPhase.PLANNING
+        print(f"[v2] UNDERSTANDING 完成 — {len(ctx.file_tree)} 个文件", file=sys.stderr)
+        return ctx
+
+    def _step_plan(self, task: str) -> Plan:
+        """Phase 2: 规划 → Plan"""
+        print("[v2] PLANNING — 正在生成执行计划...", file=sys.stderr)
+        self.conversation.append(Message(
+            role="system",
+            content=(
+                f"你是一个代码规划器。根据以下仓库上下文和任务，"
+                f"生成一个有序的修改计划。\n\n"
+                f"仓库文件列表:\n{chr(10).join(self._repo_context.file_tree[:50])}\n\n"
+                f"任务: {task}\n\n"
+                f"输出格式: 每行一个步骤，格式为 '文件名: 操作类型: 描述'"
+            )
+        ))
+        response = self.adapter.send(
+            self.conversation.get_messages(), TOOL_DECLARATIONS
+        )
+        # TODO: 解析 LLM 输出为 Plan 结构
+        self._plan = Plan(
+            plan_id=f"plan_{self._repo_context.commit_hash[:8]}",
+            goal=task,
+            steps=[],
+            assumptions=[]
+        )
+        self.phase = AgentPhase.CHECKING
+        print(f"[v2] PLANNING 完成", file=sys.stderr)
+        return self._plan
+
+    def _step_check(self, plan: Plan) -> ConstitutionResult:
+        """Phase 3: 宪法检查 → ConstitutionResult"""
+        print("[v2] CHECKING — 正在运行宪法检查...", file=sys.stderr)
+        all_files = []
+        for step in plan.steps:
+            all_files.extend(step.target_files)
+        proposal = ChangeProposal(
+            proposal_id=plan.plan_id,
+            plan_id=plan.plan_id,
+            target_files=list(set(all_files)),
+            operations=[],
+            reason=plan.goal,
+            expected_effects=[]
+        )
+        result = constitution_check(proposal)
+        if result.status == CheckStatus.FAIL:
+            print(f"[v2] CHECKING 失败 — {len(result.violations)} 条违规", file=sys.stderr)
+            for v in result.violations:
+                print(f"  - {v.rule_id}: {v.message}", file=sys.stderr)
+            self.phase = AgentPhase.DONE
+        else:
+            print("[v2] CHECKING 通过", file=sys.stderr)
+            self.phase = AgentPhase.EXECUTING
+        return result
+
+    def _step_execute(self, plan: Plan) -> str:
+        """Phase 4: 执行 — 走现有 Transaction 链路"""
+        print("[v2] EXECUTING — 进入 Transaction 链路...", file=sys.stderr)
+        # 退回到现有 Runtime.run() 的 Transaction 链路
+        # 把 plan 的步骤注入 conversation 作为 LLM 上下文
+        steps_text = "\n".join(
+            f"{i+1}. {s.target_files} — {s.operation_type} — {s.description}"
+            for i, s in enumerate(plan.steps)
+        )
+        self.conversation.append(Message(
+            role="system",
+            content=f"执行以下计划:\n{steps_text}\n\n请按顺序修改文件。"
+        ))
+        self.phase = AgentPhase.DISCOVERY  # 复用现有 Transaction 链路
+        return steps_text
+
+    def _step_verify(self) -> VerificationResult:
+        """Phase 5: 验证 → VerificationResult"""
+        print("[v2] VERIFYING — 正在运行验证...", file=sys.stderr)
+        all_files = []
+        if self._plan:
+            for step in self._plan.steps:
+                all_files.extend(step.target_files)
+        request = VerificationRequest(
+            changed_files=list(set(all_files)),
+            change_type="modify"
+        )
+        result = verification_verify(request)
+        if result.status == CheckStatus.FAIL:
+            print(f"[v2] VERIFYING 失败 — {len(result.failures)} 项失败", file=sys.stderr)
+            self._correction_count += 1
+            if self._correction_count < MAX_SELF_CORRECTION:
+                print(f"[v2] 回跳到 EXECUTING (第{self._correction_count}次纠错)", file=sys.stderr)
+                self.phase = AgentPhase.EXECUTING
+            else:
+                print(f"[v2] 已达最大纠错次数({MAX_SELF_CORRECTION})，任务挂起", file=sys.stderr)
+                self.phase = AgentPhase.DONE
+        else:
+            print("[v2] VERIFYING 通过", file=sys.stderr)
+            self.phase = AgentPhase.REVIEWING
+        return result
+
+    def _step_review(self) -> str:
+        """Phase 6: 审查 → 完成"""
+        print("[v2] REVIEWING — 生成完成报告...", file=sys.stderr)
+        self.phase = AgentPhase.DONE
+        self._correction_count = 0
+        report = "✅ 任务完成。所有步骤已执行，宪法检查通过，验证通过。"
+        print(f"[v2] {report}", file=sys.stderr)
+        return report
+
+    # ─── 公开入口 ──────────────────────────────────────────
+
+    def run_v2(self, task: str) -> str:
+        """v2 Engineering Loop 入口"""
+        print(f"\n[v2] Engineering Loop 启动 — 任务: {task}", file=sys.stderr)
+
+        # Phase 1: UNDERSTANDING
+        self.phase = AgentPhase.UNDERSTANDING
+        repo_ctx = self._step_understand(task)
+
+        # Phase 2: PLANNING
+        plan = self._step_plan(task)
+
+        # Phase 3: CHECKING
+        check_result = self._step_check(plan)
+        if check_result.status == CheckStatus.FAIL:
+            return f"❌ 宪法检查未通过:\n" + "\n".join(
+                f"  - {v.rule_id}: {v.message}" for v in check_result.violations
+            )
+
+        # Phase 4: EXECUTING (走现有 Transaction 链路)
+        self._step_execute(plan)
+
+        # Phase 5-6 由 _update_phase_from_result 和 self correction 驱动
+        # 此处返回执行上下文，后续交互由 run() 继续处理
+        return f"📋 计划已生成，开始执行 {len(plan.steps)} 个步骤。请继续。"
+
     def run(self, user_input: str) -> str:
         # === WAIT_CONFIRM: 用户确认/取消 ===
         if self.phase == AgentPhase.WAIT_CONFIRM:
@@ -164,7 +325,18 @@ class Runtime:
                 "（其他指令暂不支持，请先处理当前事务）"
             )
 
-        # === 正常任务流程 ===
+        # === v2 Phase 衔接：VERIFYING 完成后走 REVIEWING ===
+        if self.phase == AgentPhase.VERIFYING and self._plan is not None:
+            verify_result = self._step_verify()
+            if self.phase == AgentPhase.REVIEWING:
+                report = self._step_review()
+                self.conversation.append(Message(role="assistant", content=report))
+                return report
+            if self.phase == AgentPhase.EXECUTING:
+                # Self correction: 回跳执行
+                return "⚠️ 验证失败，正在重新执行..."
+
+        # === 正常任务流程 (v1 兼容) ===
         self.executor.reset()
         if self.phase == AgentPhase.IDLE:
             self.phase = AgentPhase.DISCOVERY
@@ -239,7 +411,9 @@ class Runtime:
                 self.conversation.get_messages(), TOOL_DECLARATIONS
             )
 
-        self.phase = AgentPhase.DONE
+        # v1 完成逻辑
+        if self.phase != AgentPhase.DONE:
+            self.phase = AgentPhase.DONE
         self.emit(Event(EventType.ASSISTANT_REPLY, {"content": response.content or ""}))
         if response.content:
             self.conversation.append(Message(role="assistant", content=response.content))

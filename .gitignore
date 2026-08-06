@@ -3,3 +3,4 @@ __pycache__/
 .forge/backups/
 .forge/cache/
 .forge/
+wal_*.log
