@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
-from forge.world.types import LinkInfo, ObjectInfo, Receipt, WorldInfo
+from forge.world.types import LinkInfo, ObjectInfo, Receipt, WorldInfo, TransactionDelta
 
 
 class WorldAdapterError(RuntimeError):
@@ -230,11 +230,24 @@ class WorldAdapter:
         resp = self._send({"cmd": "tx_commit", "session_id": int(session_id)})
         self._require_ok(resp)
         r = resp.get("receipt") or {}
+        d = r.get("delta") or {}
+        delta = TransactionDelta(
+            actor_id=int(d.get("actor_id", 0)),
+            objects_created=[int(x) for x in d.get("objects_created", [])],
+            objects_deleted=[int(x) for x in d.get("objects_deleted", [])],
+            objects_frozen=[int(x) for x in d.get("objects_frozen", [])],
+            links_added=[(int(f), int(t), lt) for f, t, lt in d.get("links_added", [])],
+            links_removed=[(int(f), int(t)) for f, t in d.get("links_removed", [])],
+            memory_written=d.get("memory_written", []),
+            capability_events=d.get("capability_events", []),
+            effects=[(k, v) for k, v in d.get("effects", [])],
+        )
         return Receipt(
             tx_id=int(r.get("tx_id", 0)),
             before_root=int(r.get("before_root", 0)),
             after_root=int(r.get("after_root", 0)),
             version=int(r.get("version", 0)),
+            delta=delta,
         )
 
     def tx_abort(self, session_id: int) -> None:
