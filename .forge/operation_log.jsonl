@@ -52,3 +52,14 @@
 {"ts": 1785947928.5524302, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": false, "note": "不支持的操作类型: 'insert'。支持: append, prepend, replace, delete, insert_before, insert_after"}
 {"ts": 1785947931.759532, "tool": "prepare_write", "args": {"path": "~/forge_test_probe.py"}, "success": true, "note": "tx=01KZ9CNH3EGS14E6TEG3Q6ZZFR"}
 {"ts": 1785947940.9566493, "tool": "commit_write", "args": {"transaction_id": "01KZ9CNH3EGS14E6TEG3Q6ZZFR"}, "success": true, "note": "✅ 提交成功 + 校验通过"}
+{"ts": 1786032124.3247983, "tool": "list_files", "args": {"path": ".", "depth": 1}, "success": true, "note": ""}
+{"ts": 1786032196.3274941, "tool": "run_command", "args": {"cmd": "ls -la 123 2>/dev/null; echo \"---\"; ls 123 2>/dev/null || echo \"文件不存在\""}, "success": true, "note": "exit=0"}
+{"ts": 1786032197.4301, "tool": "search_code", "args": {"pattern": "preview_delta", "path": "."}, "success": true, "note": ""}
+{"ts": 1786032200.9670587, "tool": "read_file", "args": {"path": "forge/forge/world/session.py"}, "success": true, "note": ""}
+{"ts": 1786032200.9705184, "tool": "read_file", "args": {"path": "forge/forge/world/runtime.py"}, "success": true, "note": ""}
+{"ts": 1786032206.963904, "tool": "read_file", "args": {"path": "forge/forge/intents/executor.py"}, "success": true, "note": ""}
+{"ts": 1786032212.4322321, "tool": "search_code", "args": {"pattern": "class TransactionDelta", "path": "forge/forge/world"}, "success": true, "note": ""}
+{"ts": 1786032212.434456, "tool": "read_file", "args": {"path": "forge/forge/world/adapter.py"}, "success": true, "note": ""}
+{"ts": 1786032216.845216, "tool": "read_file", "args": {"path": "forge/forge/world/types.py"}, "success": true, "note": ""}
+{"ts": 1786032216.8764668, "tool": "search_code", "args": {"pattern": "tx_commit|tx_create_object|tx_write", "path": "forge/forge/world/adapter.py"}, "success": true, "note": ""}
+{"ts": 1786032221.2626126, "tool": "read_file", "args": {"path": "forge/forge/world/adapter.py"}, "success": true, "note": ""}
