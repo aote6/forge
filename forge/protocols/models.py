@@ -259,10 +259,12 @@ class ExecutionResult:
 
     @classmethod
     def from_dict(cls, data: dict) -> "ExecutionResult":
+        if "success" not in data:
+            raise ValueError("ExecutionResult.from_dict: missing required field 'success'")
         return cls(
             version=data.get("version", PROTOCOL_VERSION),
             proposal_id=data.get("proposal_id", ""),
-            success=bool(data.get("success", False)),
+            success=bool(data["success"]),
             tx_id=data.get("tx_id"),
             world_version=data.get("world_version"),
             files=list(data.get("files") or []),
