@@ -67,8 +67,7 @@ class PlanValidator:
                         raise PlanValidationError(f"{sid}: create_file 的目标 '{tf}' 已存在")
 
             if op == "create_file":
-                content = s.get("content", "")
-                if not content:
+                if "content" not in s:
                     raise PlanValidationError(f"{sid}: create_file 缺少 content")
 
             elif op == "modify":

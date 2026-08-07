@@ -113,7 +113,7 @@ class Runtime:
 
         tools, confirm_fn, abort_fn = make_tools(
             workspace=workspace,
-            world=self.world,
+            world_runtime=self.world,
             projections=self.projections,
         )
         self.executor = ToolExecutor(tools)
