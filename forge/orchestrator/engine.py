@@ -241,7 +241,16 @@ class EngineeringOrchestrator:
                 for s in plan.steps:
                     files.extend(s.target_files)
             req = VerificationRequest(changed_files=list(dict.fromkeys(files)))
-            vres = verification_verify(req, self.project_root, hub=self.hub)
+            # Pass receipt evidence from EXECUTING phase for structured verification.
+            last_receipt = self.checkpoint.extra.get("last_receipt")
+            last_delta = self.checkpoint.extra.get("last_delta")
+            exec_results = self.checkpoint.execution_results
+            vres = verification_verify(
+                req, self.project_root, hub=self.hub,
+                receipt=last_receipt,
+                delta=last_delta,
+                execution_results=exec_results,
+            )
             self.checkpoint.verification_results.append(vres)
             if vres.status == CheckStatus.FAIL:
                 self._correction_count += 1
