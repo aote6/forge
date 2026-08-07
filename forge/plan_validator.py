@@ -102,9 +102,16 @@ class PlanValidator:
             if not isinstance(deps, list):
                 raise PlanValidationError(f"{sid}: dependencies 必须是 list")
 
+            import sys
+            print(f"[Validator DEBUG] step {sid}: content={repr(s.get('content', 'MISSING'))}", file=sys.stderr)
             steps.append(PlanStep(
                 step_id=sid, description=desc, target_files=targets,
-                operation_type=op, dependencies=deps
+                operation_type=op, dependencies=deps,
+                content=s.get("content", ""),
+                old_text=s.get("old_text", enriched.get("old_text", "")),
+                new_text=s.get("new_text", ""),
+                start_line=s.get("start_line"),
+                end_line=s.get("end_line"),
             ))
             enriched_steps.append(enriched)
 

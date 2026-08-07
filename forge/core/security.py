@@ -1,4 +1,5 @@
 """安全策略：路径黑名单 + 命令黑名单 + Git 保护 + 白名单模式"""
+import os
 import re
 from pathlib import Path
 
@@ -82,3 +83,38 @@ def is_allowed_command(cmd: str) -> bool:
         if re.search(pattern, cmd):
             return True
     return False
+
+
+# ── Workspace-bound path resolution (all writes must use this) ──
+
+class PathSecurityError(PermissionError):
+    """Raised when a path escapes workspace or hits a blocked pattern."""
+
+
+def resolve_workspace_path(project_root: str, relative_or_abs: str) -> str:
+    """Resolve path under project_root; reject ../ escape and blocked paths.
+
+    Returns absolute path inside workspace.
+    Raises PathSecurityError on violation.
+    """
+    root = Path(project_root).expanduser().resolve()
+    raw = Path(os.path.expanduser(relative_or_abs))
+    candidate = raw if raw.is_absolute() else (root / raw)
+    try:
+        resolved = candidate.resolve()
+    except (OSError, RuntimeError) as e:
+        raise PathSecurityError(f"无法解析路径: {relative_or_abs}: {e}") from e
+
+    try:
+        resolved.relative_to(root)
+    except ValueError as e:
+        raise PathSecurityError(
+            f"路径逃逸 workspace: {relative_or_abs} -> {resolved} (root={root})"
+        ) from e
+
+    blocked = is_blocked_path(str(resolved))
+    if blocked:
+        raise PathSecurityError(
+            f"路径被安全策略拦截（命中规则: {blocked}）: {resolved}"
+        )
+    return str(resolved)

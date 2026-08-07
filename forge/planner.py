@@ -11,6 +11,7 @@ from typing import Optional
 
 from forge.protocols.repository import RepoContext
 from forge.protocols.planning import Plan, PlanStep
+from forge.plan_validator import PlanValidator
 from forge.adapters.base import BaseAdapter, Message
 
 PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文件列表、文件内容（带行号）、以及用户任务。
@@ -45,135 +46,6 @@ PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文�
 
 class PlanValidationError(Exception):
     pass
-
-
-class PlanValidator:
-    """校验 Plan 合法性，从仓库提取 old_text"""
-
-    def __init__(self, project_root: str = "."):
-        self.project_root = project_root
-
-    def validate(self, plan_dict: dict, repo: RepoContext) -> tuple[Plan, dict]:
-        """校验并补充 old_text。返回 (Plan, enriched_dict)"""
-        if not isinstance(plan_dict, dict):
-            raise PlanValidationError("Plan 必须是 dict")
-
-        goal = plan_dict.get("goal", "")
-        if not goal:
-            raise PlanValidationError("Plan 缺少 goal")
-
-        assumptions = plan_dict.get("assumptions", [])
-        if not isinstance(assumptions, list):
-            raise PlanValidationError("assumptions 必须是 list")
-
-        steps_raw = plan_dict.get("steps", [])
-        if not steps_raw:
-            raise PlanValidationError("Plan 缺少 steps")
-        if not isinstance(steps_raw, list):
-            raise PlanValidationError("steps 必须是 list")
-
-        existing_files = set(repo.file_tree)
-        valid_ops = {"modify", "create_file", "delete_file"}
-        step_ids = set()
-        steps = []
-        enriched_steps = []
-
-        for i, s in enumerate(steps_raw):
-            sid = s.get("step_id", f"step_{i+1}")
-            if sid in step_ids:
-                raise PlanValidationError(f"重复的 step_id: {sid}")
-            step_ids.add(sid)
-
-            desc = s.get("description", "")
-            if not desc:
-                raise PlanValidationError(f"{sid}: 缺少 description")
-
-            targets = s.get("target_files", [])
-            if not targets:
-                raise PlanValidationError(f"{sid}: 缺少 target_files")
-
-            op = s.get("operation_type", "modify")
-            if op not in valid_ops:
-                raise PlanValidationError(f"{sid}: 无效 operation_type '{op}'")
-
-            enriched = dict(s)  # 复制原始数据
-
-            for tf in targets:
-                if op in ("modify", "delete_file"):
-                    if tf not in existing_files:
-                        raise PlanValidationError(f"{sid}: {op} 的目标 '{tf}' 不在仓库中")
-                elif op == "create_file":
-                    if tf in existing_files:
-                        raise PlanValidationError(f"{sid}: create_file 的目标 '{tf}' 已存在")
-
-            if op == "create_file":
-                content = s.get("content", "")
-                if not content:
-                    raise PlanValidationError(f"{sid}: create_file 缺少 content")
-
-            elif op == "modify":
-                start_line = s.get("start_line")
-                end_line = s.get("end_line")
-                if start_line is None or end_line is None:
-                    raise PlanValidationError(f"{sid}: modify 缺少 start_line 或 end_line")
-                if not isinstance(start_line, int) or not isinstance(end_line, int):
-                    raise PlanValidationError(f"{sid}: start_line/end_line 必须是整数")
-                if start_line < 1 or end_line < start_line:
-                    raise PlanValidationError(f"{sid}: 无效行号范围 {start_line}-{end_line}")
-
-                new_text = s.get("new_text", "")
-                # new_text 可以为空（删除行）
-
-                # 从仓库提取 old_text
-                for tf in targets:
-                    filepath = os.path.join(self.project_root, tf)
-                    if not os.path.exists(filepath):
-                        raise PlanValidationError(f"{sid}: 文件不存在: {tf}")
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        lines = f.readlines()
-                    if end_line > len(lines):
-                        raise PlanValidationError(
-                            f"{sid}: end_line={end_line} 超出文件行数 {len(lines)}"
-                        )
-                    # 提取 old_text（保留原始格式）
-                    old_lines = lines[start_line-1:end_line]
-                    old_text = "".join(old_lines)
-                    enriched["old_text"] = old_text
-                    enriched["target_file_content"] = "".join(lines)
-
-            elif op == "delete_file":
-                for tf in targets:
-                    filepath = os.path.join(self.project_root, tf)
-                    if not os.path.exists(filepath):
-                        raise PlanValidationError(f"{sid}: 要删除的文件不存在: {tf}")
-
-            deps = s.get("dependencies", [])
-            if not isinstance(deps, list):
-                raise PlanValidationError(f"{sid}: dependencies 必须是 list")
-
-            steps.append(PlanStep(
-                step_id=sid,
-                description=desc,
-                target_files=targets,
-                operation_type=op,
-                dependencies=deps
-            ))
-            enriched_steps.append(enriched)
-
-        for step in steps:
-            for dep in step.dependencies:
-                if dep not in step_ids:
-                    raise PlanValidationError(f"{step.step_id}: 依赖的 {dep} 不存在")
-
-        plan = Plan(
-            plan_id=_make_plan_id(),
-            goal=goal,
-            steps=steps,
-            assumptions=assumptions
-        )
-        enriched_plan = dict(plan_dict)
-        enriched_plan["steps"] = enriched_steps
-        return plan, enriched_plan
 
 
 def _make_plan_id() -> str:
@@ -227,12 +99,19 @@ class Planner:
         ]
 
         print("[Planner] 正在调用 LLM 生成计划...", file=sys.stderr)
+        print(f"[Planner DEBUG] system prompt len={len(PLANNER_SYSTEM_PROMPT)}", file=sys.stderr)
+        print(f"[Planner DEBUG] user prompt len={len(user_prompt)}", file=sys.stderr)
+        print(f"[Planner DEBUG] user prompt:\n{user_prompt[:2000]}", file=sys.stderr)
+        print(f"[Planner DEBUG] total messages: {len(messages)}", file=sys.stderr)
         response = self.adapter.send(messages, tools=[])
+        print(f"[Planner DEBUG] raw response len={len(response.content or '')}", file=sys.stderr)
+        print(f"[Planner DEBUG] raw response:\n{repr(response.content[:500])}", file=sys.stderr)
         raw_text = (response.content or "").strip()
         print(f"[Planner] LLM 响应长度: {len(raw_text)} 字符", file=sys.stderr)
 
         plan_dict = self._extract_json(raw_text)
         if plan_dict is None:
+            print(f"[Planner] 无法提取 JSON, 原始响应:\n{raw_text}", file=sys.stderr)
             raise PlanValidationError(f"无法从 LLM 响应中提取 JSON:\n{raw_text[:500]}")
 
         plan, enriched = self.validator.validate(plan_dict, repo)

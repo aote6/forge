@@ -1,2 +1,4 @@
-from forge.adapters.base import BaseAdapter, Message, ToolCall, ToolResult
-from forge.adapters.deepseek import DeepSeekAdapter
+"""Capability adapters — protocol conversion only."""
+from forge.adapters.hub_client import HubClient, HubConfig, HubResponse
+
+__all__ = ["HubClient", "HubConfig", "HubResponse"]

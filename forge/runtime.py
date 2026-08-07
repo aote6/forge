@@ -1,51 +1,35 @@
-"""Runtime - Agent 编排引擎 v2
+"""Runtime — session shell for Forge.
 
-Engineering Loop:
-  UNDERSTANDING → PLANNING → CHECKING → EXECUTING → VERIFYING → REVIEWING → DONE
-
-Transaction 链路（完全不动）：
-  LLM → Intent → WorldSession → Receipt → Projection
+Owns: user session, conversation, tool loop (v1), event bus.
+Does NOT own engineering phase logic — that lives in EngineeringOrchestrator.
 """
+from __future__ import annotations
+
 import json
-import os
 import sys
-from forge.adapters.base import BaseAdapter, Message, ToolCall, ToolResult
-from forge.conversation import Conversation
-from forge.workspace import Workspace
-from forge.memory import MemoryStore
-from forge.events import Event, EventType
-from forge.tools import make_tools
-from forge.world import WorldRuntime
-from forge.tools.schemas import TOOL_DECLARATIONS
+from typing import Optional
+
+from forge.adapters.base import BaseAdapter, Message, ToolResult
 from forge.agent_state import AgentPhase
-from forge.system_prompt import SYSTEM_INSTRUCTION
-from forge.confirmation import is_confirm, is_cancel
-
-# v2 协议层
-from forge.protocols.repository import RepoContext
-from forge.protocols.planning import Plan, PlanStep
-from forge.protocols.constitution import ChangeProposal, ConstitutionResult, CheckStatus
-from forge.protocols.verification import VerificationRequest, VerificationResult
-from forge.protocols.execution import TaskCheckpoint
-
-# v2 adapter 层
-from forge.adapters.repo_adapter import get_repo_context
-from forge.adapters.constitution_adapter import check as constitution_check
-from forge.adapters.verifier_adapter import verify as verification_verify
-
-# v2 Planner + TaskMemory
-from forge.planner import Planner, plan_to_proposals
-from forge.task_memory import TaskMemory, make_checkpoint
-
-# Projection
+from forge.confirmation import is_cancel, is_confirm
+from forge.conversation import Conversation
+from forge.events import Event, EventType
+from forge.memory import MemoryStore
+from forge.memory.checkpoint import CheckpointStore
+from forge.orchestrator.engine import EngineeringOrchestrator
+from forge.planner import Planner
 from forge.projections.base import ProjectionManager
 from forge.projections.file_projection import FileProjection
 from forge.projections.git_projection import GitProjection
 from forge.projections.index_projection import IndexProjection
+from forge.system_prompt import SYSTEM_INSTRUCTION
+from forge.tools import make_tools
+from forge.tools.schemas import TOOL_DECLARATIONS
+from forge.workspace import Workspace
+from forge.world import WorldRuntime
 
 MAX_AGENT_STEPS = 20
 MAX_CONSECUTIVE_FAILURES = 3
-MAX_SELF_CORRECTION = 3
 
 
 class ToolExecutor:
@@ -111,46 +95,43 @@ class Runtime:
         except Exception:
             pass
 
-        # ProjectionManager 提升到 Runtime 层，Recovery 和 make_tools 共用
         self.projections = ProjectionManager()
-        path_map = getattr(self.world, '_path_map', None)
-        self.projections.register(FileProjection(
-            project_root=workspace.project_root, object_path_map=path_map
-        ))
+        path_map = getattr(self.world, "_path_map", None)
+        self.projections.register(
+            FileProjection(project_root=workspace.project_root, object_path_map=path_map)
+        )
         self.projections.register(GitProjection(project_root=workspace.project_root))
         self.projections.register(IndexProjection(project_root=workspace.project_root))
 
+        try:
+            self._recover_projections()
+        except Exception as e:
+            print(f"[recovery] error: {e}", file=sys.stderr)
+
         tools, confirm_fn, abort_fn = make_tools(
-            workspace, safe_mode="blacklist",
-            world_runtime=self.world, projections=self.projections
+            workspace=workspace,
+            world=self.world,
+            projections=self.projections,
         )
-        self.tools = tools
+        self.executor = ToolExecutor(tools)
         self._confirm_fn = confirm_fn
         self._abort_fn = abort_fn
-        self._recover_projections()
-        self.executor = ToolExecutor(self.tools)
 
-        # v2 状态
-        self._repo_context: RepoContext | None = None
-        self._plan: Plan | None = None
-        self._raw_plan_dict: dict | None = None
-        self._checkpoint: TaskCheckpoint | None = None
-        self._correction_count: int = 0
-        self._task_id: str | None = None
-        self._task_memory = TaskMemory(workspace.project_root)
+        self.conversation = Conversation()
+        self.conversation.append(Message(role="system", content=SYSTEM_INSTRUCTION))
+        self.phase = AgentPhase.IDLE
+        self._handlers: dict = {t: [] for t in EventType}
+        self._task_memory = CheckpointStore(workspace.project_root)
         self._planner = Planner(adapter)
 
     def _recover_projections(self):
-        """启动时从 Veritas WAL 恢复所有 Projection。"""
-        try:
-            from forge.recovery.replay import ProjectionRecovery
-            recovery = ProjectionRecovery(self.world, self.projections)
-            recovered = recovery.recover()
-            for name, count in recovered.items():
-                if count > 0:
-                    print(f"[recovery] {name}: {count} receipts replayed", file=sys.stderr)
-        except Exception as e:
-            print(f"[recovery] error: {e}", file=sys.stderr)
+        from forge.recovery.replay import ProjectionRecovery
+
+        recovery = ProjectionRecovery(self.world, self.projections)
+        recovered = recovery.recover()
+        for name, count in recovered.items():
+            if count > 0:
+                print(f"[recovery] {name}: {count} receipts replayed", file=sys.stderr)
 
     def on(self, event_type: EventType, handler):
         self._handlers[event_type].append(handler)
@@ -162,203 +143,17 @@ class Runtime:
                 break
         return event
 
-    # ─── v2 Engineering Loop ────────────────────────────────
-
     def run_v2(self, task: str, task_id: str | None = None) -> str:
-        """v2 Engineering Loop 入口 — 自动走完 6 个 Phase"""
-        self._task_id = task_id or f"task_{task[:20].replace(' ','_')}"
-        self._correction_count = 0
-
-        # 尝试恢复已有 checkpoint
-        saved = self._task_memory.load(self._task_id)
-        if saved and saved.phase != "done":
-            print(f"[v2] 恢复任务: {self._task_id} (phase={saved.phase})", file=sys.stderr)
-            self._checkpoint = saved
-            self.phase = AgentPhase(saved.phase)
-        else:
-            self.phase = AgentPhase.UNDERSTANDING
-
-        print(f"\n[v2] Engineering Loop 启动 — {self._task_id}: {task}", file=sys.stderr)
-
-        # Phase 1: UNDERSTANDING
-        if self.phase == AgentPhase.UNDERSTANDING:
-            self._repo_context = get_repo_context(self.workspace.project_root)
-            self._save_phase("planning")
-            self.phase = AgentPhase.PLANNING
-
-        # Phase 2: PLANNING
-        if self.phase == AgentPhase.PLANNING:
-            self._plan, self._raw_plan_dict = self._planner.plan(task, self._repo_context, self.workspace.project_root)
-            self._save_phase("checking", plan=self._plan)
-            self.phase = AgentPhase.CHECKING
-
-        # Phase 3: CHECKING
-        if self.phase == AgentPhase.CHECKING:
-            proposals = plan_to_proposals(self._plan)
-            all_pass = True
-            for p in proposals:
-                result = constitution_check(p)
-                if result.status == CheckStatus.FAIL:
-                    all_pass = False
-                    print(f"  ❌ Constitution: {[v.rule_id for v in result.violations]}", file=sys.stderr)
-            if not all_pass:
-                self._save_phase("done")
-                self.phase = AgentPhase.DONE
-                return "❌ 宪法检查未通过，任务中止。"
-            self._save_phase("executing", plan=self._plan)
-            self.phase = AgentPhase.EXECUTING
-
-        # Phase 4: EXECUTING — 真实代码编辑
-        if self.phase == AgentPhase.EXECUTING:
-            results = []
-            proposals = plan_to_proposals(self._plan, self._raw_plan_dict)
-            for proposal in proposals:
-                for op in proposal.operations:
-                    target = op.get("target_files", [None])[0]
-                    if not target:
-                        continue
-                    full_path = os.path.join(self.workspace.project_root, target)
-                    op_type = op.get("type", "create_file")
-
-                    if op_type == "create_file":
-                        from forge.adapters.lu_patch_adapter import create as lu_create
-                        new_content = op.get("content", "")
-
-                        ok, msg = lu_create(full_path, new_content)
-
-                        if ok:
-                            session = self.world.begin_session()
-                            obj_id = session.create_object()
-                            session.write(obj_id, 0, value=full_path)
-                            session.write(obj_id, 1, value=new_content)
-                            receipt, delta = self.world.commit_session()
-
-                            delta.memory_written = [
-                                {"object_id": obj_id, "state_id": 0, "value_hex": full_path.encode().hex()},
-                                {"object_id": obj_id, "state_id": 1, "value_hex": new_content.encode().hex()},
-                            ]
-                            delta.objects_created = [obj_id]
-                            self.projections.project(receipt, delta)
-
-                            results.append({
-                                "step": proposal.proposal_id,
-                                "file": target,
-                                "op": "create_file",
-                                "tx_id": receipt.tx_id,
-                                "version": receipt.version
-                            })
-                            print(f"  [Lu] create OK: {msg}", file=sys.stderr)
-                        else:
-                            print(f"  [Lu] create 失败: {msg}", file=sys.stderr)
-                    elif op_type == "modify":
-                        from forge.adapters.lu_patch_adapter import patch as lu_patch
-                        old_text = op.get("old_text", "")
-                        new_text = op.get("new_text", "")
-                        start_line = op.get("start_line")
-                        end_line = op.get("end_line")
-
-                        # 调用 Lu 安全写入
-                        ok, msg = lu_patch(full_path, old_text, new_text, start_line, end_line)
-
-                        if ok:
-                            # 读回修改后的内容，走 Veritas Transaction
-                            with open(full_path, "r", encoding="utf-8") as f:
-                                modified = f.read()
-
-                            session = self.world.begin_session()
-                            obj_id = session.create_object()
-                            session.write(obj_id, 0, value=full_path)
-                            session.write(obj_id, 1, value=modified)
-                            receipt, delta = self.world.commit_session()
-
-                            delta.memory_written = [
-                                {"object_id": obj_id, "state_id": 0, "value_hex": full_path.encode().hex()},
-                                {"object_id": obj_id, "state_id": 1, "value_hex": modified.encode().hex()},
-                            ]
-                            delta.objects_created = [obj_id]
-                            self.projections.project(receipt, delta)
-
-                            results.append({
-                                "step": proposal.proposal_id,
-                                "file": target,
-                                "op": "modify",
-                                "tx_id": receipt.tx_id,
-                                "version": receipt.version
-                            })
-                            print(f"  [Lu] {msg}", file=sys.stderr)
-                        else:
-                            print(f"  [Lu] 写入失败: {msg}", file=sys.stderr)
-
-                    elif op_type == "delete_file":
-                        from forge.adapters.lu_patch_adapter import delete as lu_delete
-
-                        if os.path.exists(full_path):
-                            ok, msg = lu_delete(full_path)
-                            if ok:
-                                results.append({
-                                    "step": proposal.proposal_id,
-                                    "file": target,
-                                    "op": "delete_file"
-                                })
-                                print(f"  [Lu] delete: {msg}", file=sys.stderr)
-                            else:
-                                print(f"  [Lu] delete 失败: {msg}", file=sys.stderr)
-                        else:
-                            # 文件不存在，记录为已完成
-                            results.append({
-                                "step": proposal.proposal_id,
-                                "file": target,
-                                "op": "delete_file"
-                            })
-
-            self._save_phase("verifying", plan=self._plan,
-                             extra={"execution_results": results})
-            self.phase = AgentPhase.VERIFYING
-
-        # Phase 5: VERIFYING
-        if self.phase == AgentPhase.VERIFYING:
-            all_files = [f for s in self._plan.steps for f in s.target_files]
-            vreq = VerificationRequest(changed_files=all_files, change_type="modify")
-            vresult = verification_verify(vreq)
-            if vresult.status == CheckStatus.FAIL:
-                self._correction_count += 1
-                if self._correction_count < MAX_SELF_CORRECTION:
-                    print(f"[v2] 验证失败，回跳 (第{self._correction_count}次)", file=sys.stderr)
-                    self._save_phase("executing", plan=self._plan)
-                    self.phase = AgentPhase.EXECUTING
-                    return "⚠️ 验证失败，重新执行..."
-            self._save_phase("reviewing", plan=self._plan)
-            self.phase = AgentPhase.REVIEWING
-
-        # Phase 6: REVIEWING
-        if self.phase == AgentPhase.REVIEWING:
-            self._save_phase("done", plan=self._plan)
-            self.phase = AgentPhase.DONE
-            self._correction_count = 0
-
-            report = (
-                f"✅ 任务完成: {self._plan.goal}\n"
-                f"   步骤: {len(self._plan.steps)} 个\n"
-                f"   Constitution: PASS\n"
-                f"   Verification: PASS\n"
-            )
-            print(f"[v2] {report}", file=sys.stderr)
-            return report
-
-        return f"[v2] 阶段: {self.phase.value}"
-
-    def _save_phase(self, phase: str, plan: Plan | None = None, extra: dict | None = None):
-        cp = make_checkpoint(
-            task_id=self._task_id,
-            phase=phase,
-            plan=plan or self._plan,
-            completed_steps=[s.step_id for s in (plan or self._plan).steps] if phase == "done" else [],
-            extra_state=extra
+        """Engineering task entry — delegates entirely to EngineeringOrchestrator."""
+        # Fresh world session scope per orchestrated task (no cross-task session share)
+        orch = EngineeringOrchestrator(
+            project_root=self.workspace.project_root,
+            world=self.world,
+            projections=self.projections,
+            planner=self._planner,
+            checkpoint_store=self._task_memory,
         )
-        self._task_memory.save(cp)
-        self._checkpoint = cp
-
-    # ─── v1 兼容 run() ──────────────────────────────────────
+        return orch.run(task, task_id=task_id)
 
     def _update_phase_from_result(self, result: ToolResult):
         if not result.success or not result.payload:
@@ -385,10 +180,12 @@ class Runtime:
                 result = self._confirm_fn()
                 if result.success:
                     self.phase = AgentPhase.VERIFYING
-                    self.conversation.append(Message(
-                        role="system",
-                        content="事务已提交。现在进入验证阶段，请运行 git_diff 和测试。",
-                    ))
+                    self.conversation.append(
+                        Message(
+                            role="system",
+                            content="事务已提交。现在进入验证阶段，请运行 git_diff 和测试。",
+                        )
+                    )
                 return result.display
             if is_cancel(user_input):
                 if self._abort_fn is not None:
@@ -414,43 +211,65 @@ class Runtime:
         while response.tool_calls:
             step_count += 1
             if step_count > MAX_AGENT_STEPS:
-                self.conversation.append(Message(
-                    role="assistant",
-                    content=f"⛔ 已达到最大执行步数({MAX_AGENT_STEPS})，任务中止。",
-                ))
+                self.conversation.append(
+                    Message(
+                        role="assistant",
+                        content=f"⛔ 已达到最大执行步数({MAX_AGENT_STEPS})，任务中止。",
+                    )
+                )
                 return f"⛔ Agent 步数超限({MAX_AGENT_STEPS})，已强制终止。"
 
-            self.conversation.append(Message(
-                role="assistant", content=response.content, tool_calls=response.tool_calls,
-            ))
+            self.conversation.append(
+                Message(
+                    role="assistant",
+                    content=response.content,
+                    tool_calls=response.tool_calls,
+                )
+            )
 
             for tc in response.tool_calls:
                 if self.phase == AgentPhase.WAIT_CONFIRM:
-                    self.conversation.append(Message(
-                        role="tool",
-                        content="⏸️ 当前有未确认的事务，请等待用户确认后再继续。",
-                        tool_call_id=tc.id, name=tc.name,
-                    ))
+                    self.conversation.append(
+                        Message(
+                            role="tool",
+                            content="⏸️ 当前有未确认的事务，请等待用户确认后再继续。",
+                            tool_call_id=tc.id,
+                            name=tc.name,
+                        )
+                    )
                     continue
 
-                self.emit(Event(EventType.TOOL_CALL_START, {
-                    "name": tc.name, "args": tc.arguments,
-                }))
+                self.emit(
+                    Event(EventType.TOOL_CALL_START, {"name": tc.name, "args": tc.arguments})
+                )
                 result = self.executor.execute(tc)
-                self.emit(Event(EventType.TOOL_CALL_END, {
-                    "name": tc.name, "success": result.success, "display": result.display,
-                }))
-                self.conversation.append(Message(
-                    role="tool", content=result.display,
-                    tool_call_id=tc.id, name=tc.name,
-                ))
+                self.emit(
+                    Event(
+                        EventType.TOOL_CALL_END,
+                        {"name": tc.name, "success": result.success, "display": result.display},
+                    )
+                )
+                self.conversation.append(
+                    Message(
+                        role="tool",
+                        content=result.display,
+                        tool_call_id=tc.id,
+                        name=tc.name,
+                    )
+                )
                 self._update_phase_from_result(result)
 
-                if result.success and result.payload and result.payload.get("requires_confirmation"):
-                    self.conversation.append(Message(
-                        role="system",
-                        content="修改已准备完成。必须等待用户确认后才能继续。不要调用其它修改工具。",
-                    ))
+                if (
+                    result.success
+                    and result.payload
+                    and result.payload.get("requires_confirmation")
+                ):
+                    self.conversation.append(
+                        Message(
+                            role="system",
+                            content="修改已准备完成。必须等待用户确认后才能继续。不要调用其它修改工具。",
+                        )
+                    )
                     return result.display
 
             response = self.adapter.send(

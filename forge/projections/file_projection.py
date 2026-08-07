@@ -31,8 +31,8 @@ class FileProjection(Projection):
         return "file"
 
     def _resolve(self, path: str) -> str:
-        p = Path(os.path.expanduser(path))
-        return str(p if p.is_absolute() else Path(self.project_root) / p)
+        from forge.core.security import resolve_workspace_path
+        return resolve_workspace_path(self.project_root, path)
 
     def _get_path(self, writes: list) -> Optional[str]:
         """从 memory_written 中提取文件路径（state_id=0）。"""
