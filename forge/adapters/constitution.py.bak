@@ -47,53 +47,20 @@ def check(proposal: ChangeProposal, project_root: str = ".", hub: HubClient | No
             checked_rules=["hub.lu"],
         )
 
-    data = resp.data if isinstance(resp.data, dict) else {}
+    data = resp.data
+    status_raw = data.get("status", "pass")
+    try:
+        status = CheckStatus(status_raw)
+    except ValueError:
+        status = CheckStatus.FAIL
 
-    # Case 1: old protocol format (has "passed")
-    if "passed" in data:
-        if data["passed"] is False or data["passed"] == False:
-            viols = [
-                ConstitutionViolation(rule_id="hub.lu", message=str(v))
-                for v in (data.get("violations") or [])
-            ]
-            return ConstitutionResult(
-                status=CheckStatus.FAIL,
-                violations=viols,
-                checked_rules=["hub.lu"],
-            )
-        return ConstitutionResult(
-            status=CheckStatus.PASS,
-            violations=[],
-            checked_rules=list(data.get("checked_rules") or ["hub.lu"]),
-        )
-
-    # Case 2: new protocol format (has "status")
-    if "status" in data:
-        status_raw = data["status"]
-        try:
-            status = CheckStatus(status_raw)
-        except ValueError:
-            status = CheckStatus.FAIL
-
-        viols = [
-            ConstitutionViolation(rule_id=v.get("rule_id", "?"), message=v.get("message", ""))
-            for v in (data.get("violations") or [])
-            if isinstance(v, dict)
-        ]
-        return ConstitutionResult(
-            status=status,
-            violations=viols,
-            checked_rules=list(data.get("checked_rules") or ["lu"]),
-        )
-
-    # Case 3: unrecognized response format — fail-closed
+    viols = [
+        ConstitutionViolation(rule_id=v.get("rule_id", "?"), message=v.get("message", ""))
+        for v in (data.get("violations") or [])
+        if isinstance(v, dict)
+    ]
     return ConstitutionResult(
-        status=CheckStatus.FAIL,
-        violations=[
-            ConstitutionViolation(
-                rule_id="forge.unrecognized_response",
-                message="Received unrecognized Hub response format; constitution check cannot PASS",
-            )
-        ],
-        checked_rules=["forge.unrecognized_response"],
+        status=status,
+        violations=viols,
+        checked_rules=list(data.get("checked_rules") or ["lu"]),
     )
