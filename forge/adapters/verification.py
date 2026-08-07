@@ -50,8 +50,13 @@ def verify(
     # ── 1. Receipt verification ──────────────────────────────
     if receipt is not None:
         checks.append("receipt")
-        tx_id = getattr(receipt, "tx_id", None)
-        version = getattr(receipt, "version", None)
+        # receipt may be a dict (from checkpoint) or a Receipt object.
+        if isinstance(receipt, dict):
+            tx_id = receipt.get("tx_id")
+            version = receipt.get("version")
+        else:
+            tx_id = getattr(receipt, "tx_id", None)
+            version = getattr(receipt, "version", None)
         if tx_id is None or version is None:
             receipt_ok = False
             failures.append("receipt: missing tx_id or version")
@@ -59,8 +64,12 @@ def verify(
             evidence["receipt_tx_id"] = tx_id
             evidence["receipt_version"] = version
             if delta is not None:
-                evidence["delta_objects_created"] = getattr(delta, "objects_created", [])
-                evidence["delta_memory_written"] = len(getattr(delta, "memory_written", []))
+                if isinstance(delta, dict):
+                    evidence["delta_objects_created"] = delta.get("objects_created", [])
+                    evidence["delta_memory_written"] = len(delta.get("memory_written", []))
+                else:
+                    evidence["delta_objects_created"] = getattr(delta, "objects_created", [])
+                    evidence["delta_memory_written"] = len(getattr(delta, "memory_written", []))
     else:
         # No receipt provided — fail closed.
         # Receipt is required for world state verification.

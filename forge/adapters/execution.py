@@ -156,17 +156,30 @@ class ExecutionAdapter:
         )
         if not path_map:
             return None
-        # path_map may be path→id or id→path; support both directions
+        # Support both ObjectPathMap and plain dict.
         if isinstance(path_map, dict):
             if full_path in path_map:
                 return path_map[full_path]
-            # reverse lookup
             for oid, p in path_map.items():
                 if p == full_path or str(p) == full_path:
                     try:
                         return int(oid)
                     except (TypeError, ValueError):
                         continue
+        else:
+            # ObjectPathMap or similar: try path→id lookup via known objects.
+            # ObjectPathMap is id→path, so we iterate object registry.
+            try:
+                world_ids = self.world.list_object_ids()
+            except Exception:
+                world_ids = []
+            for oid in world_ids:
+                try:
+                    mapped = path_map.get(oid)
+                    if mapped and (mapped == full_path or str(mapped) == full_path):
+                        return int(oid)
+                except Exception:
+                    continue
         return None
 
     def _safe_abort(self) -> None:
