@@ -62,9 +62,12 @@ def verify(
                 evidence["delta_objects_created"] = getattr(delta, "objects_created", [])
                 evidence["delta_memory_written"] = len(getattr(delta, "memory_written", []))
     else:
-        # No receipt provided — can't verify world state.
-        # This is acceptable for dry-run or pre-commit checks.
-        evidence["receipt"] = "not provided"
+        # No receipt provided — fail closed.
+        # Receipt is required for world state verification.
+        checks.append("receipt")
+        receipt_ok = False
+        failures.append("receipt: not provided — cannot verify world state")
+        evidence["receipt"] = "missing"
 
     # ── 2. Projection consistency ────────────────────────────
     if request.changed_files:

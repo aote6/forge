@@ -27,10 +27,7 @@ class IntentExecutor:
 
     def execute(self, intent: Intent) -> tuple[Receipt, TransactionDelta]:
         """执行并提交 Intent，返回 (Receipt, TransactionDelta)。不触发 Projection。"""
-        handler = self._handlers.get(intent.type)
-        if handler is None:
-            raise IntentExecutionError(f"unknown intent type: {intent.type}")
-        return handler(intent)
+        return self.execute_batch([intent])
 
     def execute_batch(self, intents: list[Intent]) -> tuple[Receipt, TransactionDelta]:
         """Execute multiple intents in a single Veritas transaction.
@@ -43,15 +40,22 @@ class IntentExecutor:
         session = self._world.begin_session()
         try:
             for intent in intents:
-                handler = self._handlers.get(intent.type)
-                if handler is None:
-                    raise IntentExecutionError(f"unknown intent type: {intent.type}")
-                handler(intent)
+                self._dispatch_in_session(session, intent)
         except Exception:
-            self._world._current_session = session
-            session.abort()
+            try:
+                session.abort()
+            except Exception:
+                pass
             raise
-        return self._world.commit_session()
+        receipt, delta = self._world.commit_session()
+        # Collect deleted_paths from delete intents for Projection.
+        for intent in intents:
+            dp = intent.parameters.get("_deleted_path")
+            if dp:
+                oid = intent.parameters["_deleted_object_id"]
+                delta.metadata = dict(delta.metadata or {})
+                delta.metadata.setdefault("deleted_paths", {})[oid] = dp
+        return receipt, delta
 
     def stage(self, intent: Intent) -> TransactionDelta:
         """在当前或新 session 中暂存 Intent，不提交。用于 require_confirm。"""
@@ -67,64 +71,72 @@ class IntentExecutor:
             return {}
         return handler(intent)
 
-    # ── full execute handlers ────────────────────────────────
+    # ── session-aware dispatcher ─────────────────────────────
 
-    def _handle_create_file(self, intent: Intent) -> tuple[Receipt, TransactionDelta]:
+    def _dispatch_in_session(self, session, intent: Intent) -> None:
+        """Route intent to the correct _with_session handler."""
+        handler = self._session_handlers.get(intent.type)
+        if handler is None:
+            raise IntentExecutionError(f"unknown intent type: {intent.type}")
+        handler(session, intent)
+
+    @property
+    def _session_handlers(self) -> dict:
+        return {
+            IntentType.CREATE_FILE: self._create_file_in_session,
+            IntentType.MODIFY_FILE: self._modify_file_in_session,
+            IntentType.DELETE_FILE: self._delete_file_in_session,
+            IntentType.LINK_OBJECTS: self._link_objects_in_session,
+            IntentType.UNLINK_OBJECTS: self._unlink_objects_in_session,
+            IntentType.FREEZE_OBJECT: self._freeze_object_in_session,
+        }
+
+    # ── full execute handlers (session-aware, no begin/commit) ─
+
+    def _create_file_in_session(self, session, intent: Intent) -> None:
         path = intent.parameters["path"]
         content = intent.parameters.get("content", "")
-        session = self._world.begin_session()
         obj_id = session.create_object()
         session.write(obj_id, 0, value=path)
         session.write(obj_id, 1, value=content)
-        return self._world.commit_session()
 
-    def _handle_modify_file(self, intent: Intent) -> tuple[Receipt, TransactionDelta]:
+    def _modify_file_in_session(self, session, intent: Intent) -> None:
         path = intent.parameters["path"]
         operations = intent.parameters["operations"]
         object_id = intent.parameters.get("object_id")
         if object_id is None:
             raise IntentExecutionError("modify_file requires object_id")
-        session = self._world.begin_session()
         session.write(object_id, 0, value=path)
         session.write(object_id, 2, value=json.dumps(operations))
-        return self._world.commit_session()
 
-    def _handle_delete_file(self, intent: Intent) -> tuple[Receipt, TransactionDelta]:
+    def _delete_file_in_session(self, session, intent: Intent) -> None:
         object_id = intent.parameters.get("object_id")
         path = intent.parameters.get("path", "")
         if object_id is None:
             raise IntentExecutionError("delete_file requires object_id")
-        session = self._world.begin_session()
         if path:
             session.write(object_id, 0, value=path)
         session.death(object_id)
-        receipt, delta = self._world.commit_session()
-        if path:
-            delta.metadata = dict(delta.metadata or {})
-            delta.metadata.setdefault("deleted_paths", {})[object_id] = path
-        return receipt, delta
+        # Attach deleted_paths metadata so Projection can remove the file.
+        intent.parameters["_deleted_path"] = path
+        intent.parameters["_deleted_object_id"] = object_id
 
-    def _handle_link_objects(self, intent: Intent) -> tuple[Receipt, TransactionDelta]:
+    def _link_objects_in_session(self, session, intent: Intent) -> None:
         from_id = intent.parameters["from_id"]
         to_id = intent.parameters["to_id"]
         link_type = intent.parameters.get("link_type", "owns")
-        session = self._world.begin_session()
         session.link(from_id, to_id, link_type)
-        return self._world.commit_session()
 
-    def _handle_unlink_objects(self, intent: Intent) -> tuple[Receipt, TransactionDelta]:
+    def _unlink_objects_in_session(self, session, intent: Intent) -> None:
         from_id = intent.parameters["from_id"]
         to_id = intent.parameters["to_id"]
-        session = self._world.begin_session()
         session.unlink(from_id, to_id)
-        return self._world.commit_session()
 
-    def _handle_freeze_object(self, intent: Intent) -> tuple[Receipt, TransactionDelta]:
+    def _freeze_object_in_session(self, session, intent: Intent) -> None:
         object_id = intent.parameters["object_id"]
-        session = self._world.begin_session()
         session.freeze(object_id)
-        return self._world.commit_session()
 
+    # ── stage handlers (no commit) ───────────────────────────
     # ── stage handlers (no commit) ───────────────────────────
 
     def _stage_create_file(self, intent: Intent) -> TransactionDelta:
@@ -176,17 +188,6 @@ class IntentExecutor:
             "type": "modify_file",
             "path": intent.parameters.get("path"),
             "operations": intent.parameters.get("operations"),
-        }
-
-    @property
-    def _handlers(self) -> dict:
-        return {
-            IntentType.CREATE_FILE: self._handle_create_file,
-            IntentType.MODIFY_FILE: self._handle_modify_file,
-            IntentType.DELETE_FILE: self._handle_delete_file,
-            IntentType.LINK_OBJECTS: self._handle_link_objects,
-            IntentType.UNLINK_OBJECTS: self._handle_unlink_objects,
-            IntentType.FREEZE_OBJECT: self._handle_freeze_object,
         }
 
     @property

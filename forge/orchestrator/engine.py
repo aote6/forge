@@ -212,6 +212,13 @@ class EngineeringOrchestrator:
                     return
                 self.checkpoint.completed_steps.append(p.proposal_id)
                 self._persist()
+            # Record last receipt and world version for VERIFY and crash recovery.
+            if results:
+                last_r = results[-1]
+                if getattr(last_r, "receipt_summary", None):
+                    self.checkpoint.extra["last_receipt"] = last_r.receipt_summary
+                if getattr(last_r, "world_version", None) is not None:
+                    self.checkpoint.extra["last_committed_version"] = last_r.world_version
             # Record last committed world version for crash recovery.
             # If we crash after this but before VERIFYING persist,
             # we know these transactions are already committed.
