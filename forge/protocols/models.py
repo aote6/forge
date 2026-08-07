@@ -222,10 +222,21 @@ class VerificationRequest:
 
 @dataclass
 class VerificationResult:
+    """Structured verification result with explicit check categories.
+
+    receipt_ok:   Veritas receipt integrity (tx_id, version, delta)
+    projection_ok: File projection matches delta
+    build_ok:     SMS/Kuai build/execution result (optional)
+    status:       PASS only if all applicable checks pass
+    """
     version: str = PROTOCOL_VERSION
     status: CheckStatus = CheckStatus.PASS
+    receipt_ok: bool = True
+    projection_ok: bool = True
+    build_ok: bool | None = None  # None if no build check performed
     executed_checks: List[str] = field(default_factory=list)
     failures: List[str] = field(default_factory=list)
+    evidence: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return to_jsonable(self)
@@ -238,8 +249,12 @@ class VerificationResult:
         return cls(
             version=data.get("version", PROTOCOL_VERSION),
             status=status,
+            receipt_ok=bool(data.get("receipt_ok", True)),
+            projection_ok=bool(data.get("projection_ok", True)),
+            build_ok=data.get("build_ok"),
             executed_checks=list(data.get("executed_checks") or []),
             failures=list(data.get("failures") or []),
+            evidence=dict(data.get("evidence") or {}),
         )
 
 
