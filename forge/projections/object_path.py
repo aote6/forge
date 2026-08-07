@@ -35,6 +35,16 @@ class ObjectPathMap:
     def get(self, object_id: int) -> str | None:
         return self._paths.get(object_id)
 
+    def set(self, object_id: int, path: str) -> None:
+        self._paths[object_id] = path
+
+    def find_object_id(self, path: str) -> int | None:
+        """Reverse lookup: file path → object_id."""
+        for oid, p in self._paths.items():
+            if p == path or str(p) == path:
+                return oid
+        return None
+
     def get_from_metadata(self, object_id: int) -> str | None:
         """TODO: 未来从 Veritas Object metadata 查询路径。
         当前回退到 state_id=0 的临时方案。

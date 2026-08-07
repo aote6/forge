@@ -50,7 +50,9 @@ class ExecutionAdapter:
                     intent = Intent.create_file(path=full, content=content, require_confirm=False)
                     intents_list.append(intent)
                 elif op_type in ("delete_file", "delete"):
-                    object_id = op.get("object_id") or self._resolve_object_id(full)
+                    object_id = op.get("object_id")
+                    if object_id is None:
+                        object_id = self._resolve_object_id(full)
                     if object_id is None:
                         raise IntentExecutionError(
                             f"delete requires object_id for path={target}"
@@ -59,14 +61,8 @@ class ExecutionAdapter:
                     intent.parameters["object_id"] = object_id
                     intents_list.append(intent)
                 else:
+                    # modify: MUST resolve object_id before constructing Intent.
                     object_id = op.get("object_id")
-                    operations = op.get("operations") or [{
-                        "old_text": op.get("old_text", ""),
-                        "new_text": op.get("new_text", ""),
-                        "start_line": op.get("start_line"),
-                        "end_line": op.get("end_line"),
-                        "content": op.get("content", ""),
-                    }]
                     if object_id is None:
                         object_id = self._resolve_object_id(full)
                     if object_id is None:
@@ -74,6 +70,13 @@ class ExecutionAdapter:
                             f"modify requires object_id for path={target}; "
                             "Planner must re-plan or provide object_id"
                         )
+                    operations = op.get("operations") or [{
+                        "old_text": op.get("old_text", ""),
+                        "new_text": op.get("new_text", ""),
+                        "start_line": op.get("start_line"),
+                        "end_line": op.get("end_line"),
+                        "content": op.get("content", ""),
+                    }]
                     intent = Intent.modify_file(
                         path=full, operations=operations, require_confirm=False
                     )
@@ -151,35 +154,39 @@ class ExecutionAdapter:
 
     def _resolve_object_id(self, full_path: str) -> Optional[int]:
         """Resolve host path to world object_id via projection path map if available."""
-        path_map = getattr(self.world, "_path_map", None) or getattr(
-            self.projections, "object_path_map", None
-        )
-        if not path_map:
+        # Check world._path_map first — even if empty dict, don't fall through to mock.
+        world_map = getattr(self.world, "_path_map", None)
+        if world_map is not None:
+            if hasattr(world_map, "find_object_id"):
+                result = world_map.find_object_id(full_path)
+                if result is not None:
+                    return result
+            elif isinstance(world_map, dict):
+                if full_path in world_map:
+                    return world_map[full_path]
+                for oid, p in world_map.items():
+                    if p == full_path or str(p) == full_path:
+                        try:
+                            return int(oid)
+                        except (TypeError, ValueError):
+                            continue
+            # Empty dict or no match — stop here. Do not fall through to mock.
             return None
-        # Support both ObjectPathMap and plain dict.
-        if isinstance(path_map, dict):
-            if full_path in path_map:
-                return path_map[full_path]
-            for oid, p in path_map.items():
-                if p == full_path or str(p) == full_path:
-                    try:
-                        return int(oid)
-                    except (TypeError, ValueError):
-                        continue
-        else:
-            # ObjectPathMap or similar: try path→id lookup via known objects.
-            # ObjectPathMap is id→path, so we iterate object registry.
-            try:
-                world_ids = self.world.list_object_ids()
-            except Exception:
-                world_ids = []
-            for oid in world_ids:
-                try:
-                    mapped = path_map.get(oid)
-                    if mapped and (mapped == full_path or str(mapped) == full_path):
-                        return int(oid)
-                except Exception:
-                    continue
+        proj_map = getattr(self.projections, "object_path_map", None)
+        if proj_map is not None:
+            if hasattr(proj_map, "find_object_id"):
+                result = proj_map.find_object_id(full_path)
+                if result is not None:
+                    return result
+            elif isinstance(proj_map, dict):
+                if full_path in proj_map:
+                    return proj_map[full_path]
+                for oid, p in proj_map.items():
+                    if p == full_path or str(p) == full_path:
+                        try:
+                            return int(oid)
+                        except (TypeError, ValueError):
+                            continue
         return None
 
     def _safe_abort(self) -> None:
