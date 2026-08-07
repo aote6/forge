@@ -25,7 +25,8 @@ def main():
         f" {'✅' if e.data['success'] else '❌'}"
     ))
 
-    print("⚒️ Forge v0.2 | 输入 q 退出")
+    print("⚒️ Forge Engineering Orchestrator | 输入 q 退出")
+    print("  工程任务走 Runtime.run → EngineeringOrchestrator（六 Phase 闭环）")
     print("=" * 40)
 
     while True:
@@ -36,6 +37,7 @@ def main():
             if user_input.strip().lower() in ("exit", "quit", "q"):
                 print("👋")
                 break
+            # Production path: unique Engineering Orchestrator
             response = runtime.run(user_input)
             if response:
                 print(f"\n🤖 {response}")

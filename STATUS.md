@@ -2,34 +2,33 @@
 
 ## 定位
 
-Forge 是运行在 Veritas 世界上的第一个系统软件（类似 BIOS / 第一层系统软件）。
+Forge 是运行在 Veritas 世界上的 Engineering Orchestrator（唯一工程编排入口）。
 
 依赖方向：Forge → Veritas（经 WorldRuntime → veritasd → Kernel）。
 
-## 当前能力
-
-- 宿主机工具：read_file / search_code / prepare_write / commit_write / cancel_write / run_command
-- 世界工具：world_whoami / world_info / world_list_objects / world_get_object / world_get_links /
-  world_begin / world_create_object / world_freeze / world_death / world_link / world_unlink /
-  world_commit / world_abort
-- WorldRuntime：Identity（.forge/world_identity）+ 长事务 Session + Receipt
-- 双模型支持：gg（Gemini）/ dp（DeepSeek）
-
-## 架构
+## 生产 Runtime（唯一）
 
 ```
-LLM Tools (world_*)
-  → WorldRuntime
-    → WorldAdapter (JSON Lines)
-      → veritasd
-        → WorldService
-          → Kernel::handle / commit
+User Task
+  → Runtime.run(task)
+    → EngineeringOrchestrator.run()
+      → UNDERSTAND (Hub → zhiwang)
+      → PLAN       (Planner + PlanValidator)
+      → CHECK      (Hub → lu)
+      → EXECUTE    (ExecutionAdapter → IntentExecutor → Veritas → Projection)
+      → VERIFY     (Hub → sms)
+      → COMPLETE / FAILED  (TaskCheckpoint)
 ```
 
-LLM 不得直接调用 VeritasClient 或 KernelCall。
+- `Runtime.run` 是唯一生产工程入口。
+- `Runtime.run_legacy` 仅保留为交互式只读工具循环，禁止用于工程变更。
+- Hub 失败即 Task Failed（无本地 fallback）。
+- modify / delete 必须解析到 world object_id，禁止静默 create。
+- VERIFY 失败重新进入 UNDERSTAND → PLAN（最多 MAX_SELF_CORRECTION 次）。
 
 ## 已知限制
 
 - veritasd 需在 PATH 或默认路径可用
 - 单活跃 Session（Runtime 级）
-- 本地文件事务与世界事务仍分离
+- Hub（zhiwang / lu / sms）为生产强制依赖
+- 大仓库内容加载受字符预算限制；文件树列表始终完整
