@@ -76,6 +76,10 @@ class WorldRuntime:
     def world_info(self) -> WorldInfo:
         return self._adapter.world_info()
 
+    def get_version(self) -> int:
+        """Return current world version for crash recovery checks."""
+        return self._adapter.world_info().version
+
     def list_objects(self) -> list[ObjectInfo]:
         return self._adapter.list_objects()
 
