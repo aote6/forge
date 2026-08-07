@@ -22,6 +22,18 @@ def check(proposal: ChangeProposal, project_root: str = ".", hub: HubClient | No
             has_content = True
             break
 
+    if not has_content:
+        return ConstitutionResult(
+            status=CheckStatus.FAIL,
+            violations=[
+                ConstitutionViolation(
+                    rule_id="forge.content_required",
+                    message="ChangeProposal lacks content/old_text/new_text; constitution cannot PASS",
+                )
+            ],
+            checked_rules=["forge.content_required"],
+        )
+
     client = hub or HubClient(project_root=project_root)
     resp = client.invoke(
         capability="lu",
@@ -30,17 +42,6 @@ def check(proposal: ChangeProposal, project_root: str = ".", hub: HubClient | No
     )
 
     if not resp.ok:
-        if not has_content:
-            return ConstitutionResult(
-                status=CheckStatus.FAIL,
-                violations=[
-                    ConstitutionViolation(
-                        rule_id="forge.content_required",
-                        message="ChangeProposal lacks content/old_text/new_text; constitution cannot PASS",
-                    )
-                ],
-                checked_rules=["forge.content_required"],
-            )
         return ConstitutionResult(
             status=CheckStatus.FAIL,
             violations=[ConstitutionViolation(rule_id="hub.lu", message=resp.error)],
