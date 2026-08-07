@@ -32,6 +32,27 @@ class IntentExecutor:
             raise IntentExecutionError(f"unknown intent type: {intent.type}")
         return handler(intent)
 
+    def execute_batch(self, intents: list[Intent]) -> tuple[Receipt, TransactionDelta]:
+        """Execute multiple intents in a single Veritas transaction.
+
+        All operations share one begin_session/commit_session pair.
+        If any intent fails, the entire transaction is aborted.
+        """
+        if not intents:
+            raise IntentExecutionError("execute_batch requires at least one intent")
+        session = self._world.begin_session()
+        try:
+            for intent in intents:
+                handler = self._handlers.get(intent.type)
+                if handler is None:
+                    raise IntentExecutionError(f"unknown intent type: {intent.type}")
+                handler(intent)
+        except Exception:
+            self._world._current_session = session
+            session.abort()
+            raise
+        return self._world.commit_session()
+
     def stage(self, intent: Intent) -> TransactionDelta:
         """在当前或新 session 中暂存 Intent，不提交。用于 require_confirm。"""
         handler = self._stage_handlers.get(intent.type)
