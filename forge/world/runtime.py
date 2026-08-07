@@ -34,6 +34,31 @@ class WorldRuntime:
             self._online = self._adapter.ping()
         except Exception:
             self._online = False
+        self._rebuild_path_map()
+
+    def _rebuild_path_map(self) -> None:
+        """Rebuild ObjectPathMap from Veritas receipt history.
+
+        Called on init to recover path→object mapping after restart.
+        Does not depend on disk cache — uses Veritas receipts_since(0).
+        """
+        try:
+            from forge.projections.object_path import ObjectPathMap
+        except ImportError:
+            return
+        try:
+            receipts = self.get_receipts_since(0)
+        except Exception:
+            return
+        if not hasattr(self, "_path_map"):
+            self._path_map = ObjectPathMap()
+        for receipt in receipts:
+            delta = getattr(receipt, "delta", None)
+            if delta is not None:
+                try:
+                    self._path_map.update_from_delta(delta)
+                except Exception:
+                    pass
 
     @property
     def adapter(self) -> WorldAdapter:
