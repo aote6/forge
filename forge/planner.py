@@ -61,15 +61,22 @@ class Planner:
     def plan(self, task: str, repo: RepoContext, project_root: str = ".") -> tuple[Plan, dict]:
         self.validator = PlanValidator(project_root)
 
-        files_summary = "\n".join(repo.file_tree[:80])
-        if len(repo.file_tree) > 80:
-            files_summary += f"\n... 还有 {len(repo.file_tree) - 80} 个文件"
+        # Full file tree is always provided (names never silently truncated).
+        files_summary = "\n".join(repo.file_tree) if repo.file_tree else "(empty repo)"
 
-        # 读取文件内容，带行号
+        # Prefer changed_files then rest of tree for content; tree listing is complete.
+        content_candidates = list(dict.fromkeys(
+            list(repo.changed_files or []) + list(repo.file_tree or [])
+        ))
         file_contents = ""
         total_chars = 0
-        for f in repo.file_tree[:30]:
-            if total_chars > 8000:
+        MAX_CONTENT_CHARS = 48000
+        for f in content_candidates:
+            if total_chars > MAX_CONTENT_CHARS:
+                file_contents += (
+                    f"\n... content budget reached; remaining files listed in tree only "
+                    f"({len(content_candidates)} candidates)\n"
+                )
                 break
             filepath = os.path.join(project_root, f)
             if not os.path.exists(filepath):
@@ -77,8 +84,10 @@ class Planner:
             try:
                 with open(filepath, "r", encoding="utf-8") as fh:
                     lines = fh.readlines()
-                numbered = "".join(f"{i+1:04d}  {line}" for i, line in enumerate(lines[:100]))
-                file_contents += f"\n--- {f} (lines 1-{min(len(lines),100)}) ---\n{numbered}\n"
+                limit = 400 if len(lines) > 400 else len(lines)
+                numbered = "".join(f"{i+1:04d}  {line}" for i, line in enumerate(lines[:limit]))
+                suffix = "" if limit == len(lines) else f" (showing 1-{limit} of {len(lines)})"
+                file_contents += f"\n--- {f}{suffix} ---\n{numbered}\n"
                 total_chars += len(numbered)
             except Exception:
                 pass
@@ -139,34 +148,6 @@ class Planner:
 
 
 def plan_to_proposals(plan: Plan, raw_plan_dict: dict = None) -> list:
-    from forge.protocols.constitution import ChangeProposal
-
-    raw_steps = {}
-    if raw_plan_dict:
-        for s in raw_plan_dict.get("steps", []):
-            raw_steps[s.get("step_id", "")] = s
-
-    proposals = []
-    for step in plan.steps:
-        raw = raw_steps.get(step.step_id, {})
-        proposal = ChangeProposal(
-            proposal_id=f"{plan.plan_id}_{step.step_id}",
-            plan_id=plan.plan_id,
-            target_files=step.target_files,
-            operations=[{
-                "type": step.operation_type,
-                "desc": step.description,
-                "step_id": step.step_id,
-                "target_files": step.target_files,
-                "dependencies": step.dependencies,
-                "content": raw.get("content", ""),
-                "old_text": raw.get("old_text", ""),
-                "new_text": raw.get("new_text", ""),
-                "start_line": raw.get("start_line"),
-                "end_line": raw.get("end_line"),
-            }],
-            reason=f"{plan.goal} — {step.description}",
-            expected_effects=[f"{step.operation_type}: {', '.join(step.target_files)}"]
-        )
-        proposals.append(proposal)
-    return proposals
+    """Canonical converter lives in orchestrator.engine; re-export for callers."""
+    from forge.orchestrator.engine import plan_to_proposals as _canonical
+    return _canonical(plan)

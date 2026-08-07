@@ -1,7 +1,10 @@
 """Runtime — session shell for Forge.
 
-Owns: user session, conversation, tool loop (v1), event bus.
-Does NOT own engineering phase logic — that lives in EngineeringOrchestrator.
+Production engineering path is uniquely:
+  Runtime.run(task) → EngineeringOrchestrator.run()
+
+The legacy tool-loop (run_legacy) is retained only for interactive
+read-only discovery and is NOT used for any engineering mutation task.
 """
 from __future__ import annotations
 
@@ -143,9 +146,12 @@ class Runtime:
                 break
         return event
 
-    def run_v2(self, task: str, task_id: str | None = None) -> str:
-        """Engineering task entry — delegates entirely to EngineeringOrchestrator."""
-        # Fresh world session scope per orchestrated task (no cross-task session share)
+    def run(self, task: str, task_id: str | None = None) -> str:
+        """Production engineering entry — sole path into EngineeringOrchestrator.
+
+        All engineering tasks MUST pass through the six-phase machine.
+        There is no alternate production mutation path.
+        """
         orch = EngineeringOrchestrator(
             project_root=self.workspace.project_root,
             world=self.world,
@@ -154,6 +160,9 @@ class Runtime:
             checkpoint_store=self._task_memory,
         )
         return orch.run(task, task_id=task_id)
+
+    # Backward-compat alias
+    run_v2 = run
 
     def _update_phase_from_result(self, result: ToolResult):
         if not result.success or not result.payload:
@@ -172,7 +181,12 @@ class Runtime:
         if self.phase in (AgentPhase.IDLE, AgentPhase.DISCOVERY):
             self.phase = AgentPhase.DISCOVERY
 
-    def run(self, user_input: str) -> str:
+    def run_legacy(self, user_input: str) -> str:
+        """DEPRECATED interactive tool-loop.
+
+        Must not be used for engineering mutation tasks.
+        Production path is Runtime.run → EngineeringOrchestrator.
+        """
         if self.phase == AgentPhase.WAIT_CONFIRM:
             if is_confirm(user_input):
                 if self._confirm_fn is None:

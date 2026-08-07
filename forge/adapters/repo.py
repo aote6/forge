@@ -6,7 +6,10 @@ from forge.protocols.models import RepoContext
 
 
 def get_repo_context(project_root: str, hub: HubClient | None = None) -> RepoContext:
-    """Return RepoContext via Hub capability 'zhiwang' / action 'repo_context'."""
+    """Return RepoContext via Hub capability 'zhiwang'. Hub failure fails the task.
+
+    No local os.walk fallback — Hub is the sole production tool entry.
+    """
     client = hub or HubClient(project_root=project_root)
     resp = client.invoke(
         capability="zhiwang",
@@ -14,8 +17,9 @@ def get_repo_context(project_root: str, hub: HubClient | None = None) -> RepoCon
         payload={"path": project_root},
     )
     if not resp.ok:
-        # Fallback: minimal local context so orchestrator can still plan offline
-        return _local_fallback(project_root, error=resp.error)
+        raise RuntimeError(
+            f"Hub zhiwang unavailable — cannot build RepoContext: {resp.error}"
+        )
 
     data = resp.data
     return RepoContext(
@@ -26,24 +30,4 @@ def get_repo_context(project_root: str, hub: HubClient | None = None) -> RepoCon
         changed_files=list(data.get("changed_files") or []),
         recent_changes=list(data.get("recent_changes") or []),
         status_excerpt=data.get("status_excerpt"),
-    )
-
-
-def _local_fallback(project_root: str, error: str = "") -> RepoContext:
-    import os
-    tree = []
-    for root, dirs, files in os.walk(project_root):
-        dirs[:] = [d for d in dirs if d not in {".git", ".forge", "__pycache__", "node_modules"}]
-        for f in files:
-            rel = os.path.relpath(os.path.join(root, f), project_root)
-            tree.append(rel)
-            if len(tree) >= 500:
-                break
-        if len(tree) >= 500:
-            break
-    return RepoContext(
-        repo_id=project_root,
-        commit_hash="",
-        file_tree=tree,
-        status_excerpt=f"hub/zhiwang unavailable: {error}" if error else "local fallback",
     )

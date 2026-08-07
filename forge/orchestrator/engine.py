@@ -89,8 +89,11 @@ class EngineeringOrchestrator:
         ):
             self.checkpoint = saved
             self.phase = OrchestratorPhase(saved.phase)
+            # Preserve original goal on resume; do not overwrite with new task string.
+            # completed_steps remain authoritative so we continue, not re-execute.
             print(
-                f"[orchestrator] resume {task_id} phase={self.phase.value}",
+                f"[orchestrator] resume {task_id} phase={self.phase.value} "
+                f"completed={len(self.checkpoint.completed_steps or [])}",
                 file=sys.stderr,
             )
         else:
@@ -100,8 +103,8 @@ class EngineeringOrchestrator:
                 goal=task,
             )
             self.phase = OrchestratorPhase.UNDERSTANDING
-
-        self.checkpoint.goal = task or self.checkpoint.goal
+            if task:
+                self.checkpoint.goal = task
 
         while self.phase not in TERMINAL:
             try:
@@ -215,13 +218,17 @@ class EngineeringOrchestrator:
             if vres.status == CheckStatus.FAIL:
                 self._correction_count += 1
                 if self._correction_count < MAX_SELF_CORRECTION:
-                    # Re-enter execute only for failed files; keep completed_steps
-                    self.phase = OrchestratorPhase.EXECUTING
-                    # Clear completed so retry can re-run (simple policy)
-                    self.checkpoint.completed_steps = []
+                    # VERIFY fail must re-enter PLAN so RepoContext and Plan
+                    # are regenerated; old_text / line numbers are stale.
                     self.checkpoint.errors.append(
                         f"verify fail retry {self._correction_count}: {vres.failures}"
                     )
+                    self.checkpoint.plan = None
+                    self.checkpoint.change_proposals = []
+                    self.checkpoint.completed_steps = []
+                    self.checkpoint.current_step = None
+                    self.checkpoint.execution_results = []
+                    self.phase = OrchestratorPhase.UNDERSTANDING
                     self._persist()
                     return
                 self.phase = OrchestratorPhase.FAILED
