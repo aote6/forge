@@ -55,3 +55,6 @@ class TransactionDelta:
     memory_written: list = field(default_factory=list)  # list of MemoryWriteView-like dicts
     capability_events: list[str] = field(default_factory=list)
     effects: list[tuple] = field(default_factory=list)
+    # Forge-side annotation (e.g. deleted_paths: {object_id: path}).
+    # Not part of Veritas canonical delta; attached after commit for Projection.
+    metadata: dict = field(default_factory=dict)

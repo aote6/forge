@@ -187,7 +187,7 @@ class EngineeringOrchestrator:
             proposals = self.checkpoint.change_proposals or plan_to_proposals(plan)
             results = []
             for p in proposals:
-                # Skip already completed
+                # Skip already completed (including after VERIFY→PLAN re-entry)
                 if p.proposal_id in self.checkpoint.completed_steps:
                     continue
                 self.checkpoint.current_step = p.proposal_id
@@ -196,7 +196,17 @@ class EngineeringOrchestrator:
                 results.append(er)
                 self.checkpoint.execution_results.append(er)
                 if not er.success:
-                    self.checkpoint.errors.append(er.error)
+                    err = er.error or ""
+                    self.checkpoint.errors.append(err)
+                    if "projection_failed" in err or (
+                        isinstance(er.receipt_summary, dict)
+                        and er.receipt_summary.get("projection_failed")
+                    ):
+                        # World committed; host diverge — do not COMPLETE.
+                        self.checkpoint.extra["projection_failed"] = True
+                        self.checkpoint.extra["last_receipt"] = er.receipt_summary
+                        self.checkpoint.extra["last_tx_id"] = er.tx_id
+                        self.checkpoint.extra["last_world_version"] = er.world_version
                     self.phase = OrchestratorPhase.FAILED
                     self._persist()
                     return
@@ -217,18 +227,27 @@ class EngineeringOrchestrator:
             self.checkpoint.verification_results.append(vres)
             if vres.status == CheckStatus.FAIL:
                 self._correction_count += 1
+                # Preserve world evidence — never re-execute committed intents.
+                committed = [
+                    er.to_dict() if hasattr(er, "to_dict") else er
+                    for er in (self.checkpoint.execution_results or [])
+                    if getattr(er, "success", False)
+                ]
+                self.checkpoint.extra["last_verify_failures"] = list(
+                    vres.failures or []
+                )
+                self.checkpoint.extra["committed_receipts"] = committed
+                self.checkpoint.errors.append(
+                    f"verify fail retry {self._correction_count}: {vres.failures}"
+                )
                 if self._correction_count < MAX_SELF_CORRECTION:
-                    # VERIFY fail must re-enter PLAN so RepoContext and Plan
-                    # are regenerated; old_text / line numbers are stale.
-                    self.checkpoint.errors.append(
-                        f"verify fail retry {self._correction_count}: {vres.failures}"
-                    )
+                    # VERIFY FAIL → PLAN only. Keep completed_steps and
+                    # execution_results so committed Intents are not replayed.
                     self.checkpoint.plan = None
                     self.checkpoint.change_proposals = []
-                    self.checkpoint.completed_steps = []
                     self.checkpoint.current_step = None
-                    self.checkpoint.execution_results = []
-                    self.phase = OrchestratorPhase.UNDERSTANDING
+                    # completed_steps / execution_results intentionally retained
+                    self.phase = OrchestratorPhase.PLANNING
                     self._persist()
                     return
                 self.phase = OrchestratorPhase.FAILED

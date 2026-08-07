@@ -44,13 +44,16 @@ class TestUniqueRuntime(unittest.TestCase):
 
 
 class TestVerifyReplans(unittest.TestCase):
-    def test_verify_fail_returns_to_understanding(self):
+    def test_verify_fail_returns_to_planning(self):
         src = inspect.getsource(EngineeringOrchestrator._step)
         verify_idx = src.find("VERIFYING")
         section = src[verify_idx:]
-        self.assertIn("OrchestratorPhase.UNDERSTANDING", section)
-        # Must clear plan so PLAN regenerates
+        # VERIFY FAIL → PLAN (not EXECUTING, not UNDERSTANDING with wipe)
+        self.assertIn("OrchestratorPhase.PLANNING", section)
         self.assertIn("self.checkpoint.plan = None", section)
+        # Must preserve committed evidence
+        self.assertIn("committed_receipts", section)
+        self.assertNotIn("self.checkpoint.completed_steps = []", section)
 
 
 class TestModifyNoCreateFallback(unittest.TestCase):

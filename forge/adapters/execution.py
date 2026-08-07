@@ -83,8 +83,34 @@ class ExecutionAdapter:
                     intent.parameters["object_id"] = object_id
                     receipt, delta = self.executor.execute(intent)
 
-                # Projection uses real delta from commit — never forged
-                self.projections.project(receipt, delta)
+                # Projection uses real delta from commit — never forged.
+                # World is already committed; projection failure must surface
+                # as execution failure with receipt retained for recovery.
+                proj_results = self.projections.project(receipt, delta)
+                failed = [
+                    r for r in (proj_results or [])
+                    if hasattr(r, "success") and not r.success
+                ]
+                if failed:
+                    reasons = "; ".join(
+                        getattr(r, "reason", "") or r.name for r in failed
+                    )
+                    return ExecutionResult(
+                        proposal_id=proposal.proposal_id,
+                        success=False,
+                        tx_id=getattr(receipt, "tx_id", None),
+                        world_version=getattr(receipt, "version", None),
+                        files=files,
+                        error=f"projection_failed: {reasons}",
+                        receipt_summary={
+                            "tx_id": getattr(receipt, "tx_id", None),
+                            "version": getattr(receipt, "version", None),
+                            "projection_failed": True,
+                            "projection_reasons": [
+                                getattr(r, "reason", "") for r in failed
+                            ],
+                        },
+                    )
 
             return ExecutionResult(
                 proposal_id=proposal.proposal_id,
