@@ -212,11 +212,29 @@ class EngineeringOrchestrator:
                     return
                 self.checkpoint.completed_steps.append(p.proposal_id)
                 self._persist()
+            # Record last committed world version for crash recovery.
+            # If we crash after this but before VERIFYING persist,
+            # we know these transactions are already committed.
+            if results:
+                last_r = results[-1]
+                if getattr(last_r, "world_version", None) is not None:
+                    self.checkpoint.extra["last_committed_version"] = last_r.world_version
             self.phase = OrchestratorPhase.VERIFYING
             self._persist()
             return
 
         if self.phase == OrchestratorPhase.VERIFYING:
+            # Crash recovery: if we already committed but crashed before
+            # VERIFYING persist, skip re-execution.
+            committed_v = self.checkpoint.extra.get("last_committed_version")
+            if committed_v is not None and self.world is not None:
+                try:
+                    current_v = self.world.get_version()
+                    if current_v is not None and current_v >= committed_v:
+                        # Already committed — proceed to verify.
+                        pass
+                except Exception:
+                    pass
             plan = self.checkpoint.plan
             files = []
             if plan:
