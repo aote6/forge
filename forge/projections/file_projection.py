@@ -133,7 +133,7 @@ class FileProjection(Projection):
                 diffs[path] = preview
 
         for object_id in delta.objects_deleted:
-            path = self._path_for_object(object_id)
+            path = self._path_for_object(object_id, delta)
             if path:
                 files_deleted.append(path)
                 diffs[path] = "[文件将被删除]"
@@ -151,67 +151,106 @@ class FileProjection(Projection):
         }
 
     def apply(self, receipt: Receipt, delta: TransactionDelta):
-        # 幂等依赖 ProjectionManager._applied_tx 保证同 tx_id 不重复调用
-        applied = []
+        """Materialize delta onto the host filesystem.
 
-        for object_id, writes in self._group_writes_by_object(delta).items():
-            path = self._get_path(writes)
-            if path is None:
-                continue
+        On failure: do NOT pretend the world rolled back. Raise so the caller
+        can mark projection_failed and enter recovery. Optional local restore
+        is best-effort only and never claims success after a partial apply.
+        """
+        from forge.projections.base import ProjectionResult
 
-            content = self._get_content(writes)
-            operations = self._get_operations(writes)
+        applied: list[str] = []
 
-            original = ""
-            if self.fm.exists(path):
-                try:
-                    original = self.fm.read(path)
-                except Exception:
-                    pass
-                try:
-                    self.backup.backup(path)
-                except Exception:
-                    pass
+        try:
+            for object_id, writes in self._group_writes_by_object(delta).items():
+                path = self._get_path(writes)
+                if path is None:
+                    continue
 
-            if operations:
-                new_content = self.patch_engine.apply_edits(original, self._dicts_to_edits(operations))
-            elif content is not None:
-                new_content = content
-            else:
-                continue
+                content = self._get_content(writes)
+                operations = self._get_operations(writes)
 
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            self.fm.write(path, new_content)
-            applied.append(path)
-
-            ok, msg = ValidatorRegistry.validate(path)
-            if not ok:
-                for p in applied:
+                original = ""
+                if self.fm.exists(path):
                     try:
-                        self.backup.restore_latest(p)
+                        original = self.fm.read(path)
                     except Exception:
                         pass
-                raise RuntimeError(f"语法校验失败: {path}: {msg}")
+                    try:
+                        self.backup.backup(path)
+                    except Exception:
+                        pass
 
-        for object_id in delta.objects_deleted:
-            path = self._path_for_object(object_id)
-            if path and self.fm.exists(path):
-                try:
-                    self.backup.backup(path)
-                except Exception:
-                    pass
-                os.remove(path)
+                if operations:
+                    new_content = self.patch_engine.apply_edits(
+                        original, self._dicts_to_edits(operations)
+                    )
+                elif content is not None:
+                    new_content = content
+                else:
+                    continue
 
-        from forge.projections.base import ProjectionResult
-        return ProjectionResult(name=self.name, success=True)
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                self.fm.write(path, new_content)
+                applied.append(path)
 
-    def _path_for_object(self, object_id: int) -> Optional[str]:
-        if hasattr(self, "_path_map") and self._path_map is not None:
-            return self.object_path_map.get(object_id)
+                ok, msg = ValidatorRegistry.validate(path)
+                if not ok:
+                    # Best-effort local restore; world remains committed.
+                    for p in applied:
+                        try:
+                            self.backup.restore_latest(p)
+                        except Exception:
+                            pass
+                    raise RuntimeError(
+                        f"projection_failed: syntax validation failed for {path}: {msg}"
+                    )
+
+            for object_id in delta.objects_deleted:
+                path = self._path_for_object(object_id, delta)
+                if path and self.fm.exists(path):
+                    try:
+                        self.backup.backup(path)
+                    except Exception:
+                        pass
+                    os.remove(path)
+                    applied.append(path)
+
+            return ProjectionResult(name=self.name, success=True)
+        except Exception as e:
+            return ProjectionResult(
+                name=self.name,
+                success=False,
+                reason=str(e),
+                retryable=True,
+            )
+
+    def _path_for_object(
+        self, object_id: int, delta: Optional[TransactionDelta] = None
+    ) -> Optional[str]:
+        """Resolve deleted object path from delta.metadata first, then path map."""
+        if delta is not None:
+            meta = getattr(delta, "metadata", None) or {}
+            deleted = meta.get("deleted_paths") or {}
+            # keys may be int or str after JSON round-trip
+            if object_id in deleted:
+                return self._resolve(str(deleted[object_id]))
+            if str(object_id) in deleted:
+                return self._resolve(str(deleted[str(object_id)]))
+
+        path_map = self.object_path_map
+        if path_map is None:
+            return None
+        if hasattr(path_map, "get"):
+            p = path_map.get(object_id)
+            if p:
+                return self._resolve(str(p))
         return None
 
     def set_path_mapping(self, object_id: int, path: str) -> None:
-        pass
+        if self.object_path_map is not None and hasattr(self.object_path_map, "set"):
+            self.object_path_map.set(object_id, path)
 
     def remove_path_mapping(self, object_id: int) -> None:
-        pass
+        if self.object_path_map is not None and hasattr(self.object_path_map, "remove"):
+            self.object_path_map.remove(object_id)

@@ -1,117 +1,118 @@
-"""Hub Adapter v2 — 类型化 API，全部返回协议对象"""
-import subprocess
-import json
-import os
-import sys
-import time
+"""DEPRECATED direct-node Hub adapter.
 
+Production code MUST use forge.adapters.hub_client.HubClient.invoke().
+
+This module no longer spawns ~/hub/nodes/*/main.py. All public functions
+delegate to HubClient or raise, so there is no Forge → node script bypass.
+"""
+from __future__ import annotations
+
+import warnings
+from typing import List, Optional
+
+from forge.adapters.hub_client import HubClient
 from forge.protocols.models import (
-    RepoContext, ConstitutionResult, VerificationResult,
-    CheckStatus, ConstitutionViolation
+    CheckStatus,
+    ConstitutionResult,
+    ConstitutionViolation,
+    RepoContext,
+    VerificationResult,
 )
 
-HUB_HOME = os.path.expanduser("~/hub")
-NODES_DIR = os.path.join(HUB_HOME, "nodes")
 
-
-def _call_node(node_name: str, action: str, payload: dict = None, timeout: int = 60) -> dict:
-    """统一节点调用，返回原始 dict"""
-    node_dir = os.path.join(NODES_DIR, node_name)
-    node_json = os.path.join(node_dir, "node.json")
-    if not os.path.exists(node_json):
-        return {"passed": False, "error": f"节点不存在: {node_name}"}
-
-    with open(node_json) as f:
-        meta = json.load(f)
-
-    entry = os.path.join(node_dir, meta.get("entry", "main.py"))
-    if not os.path.exists(entry):
-        return {"passed": False, "error": f"入口不存在: {entry}"}
-
-    request = {
-        "request_id": f"{node_name}_{int(time.time())}",
-        "node": node_name,
-        "action": action,
-        "payload": payload or {}
-    }
-
-    print(f"  [Hub] -> {node_name}: {action}", file=sys.stderr)
-
-    try:
-        result = subprocess.run(
-            ["python3", entry],
-            input=json.dumps(request, ensure_ascii=False),
-            capture_output=True, text=True,
-            timeout=timeout, cwd=node_dir
-        )
-    except subprocess.TimeoutExpired:
-        return {"passed": False, "error": "超时"}
-    except Exception as e:
-        return {"passed": False, "error": str(e)}
-
-    if result.returncode != 0:
-        return {"passed": False, "error": result.stderr[:500]}
-
-    try:
-        return json.loads(result.stdout.strip())
-    except json.JSONDecodeError:
-        return {"passed": False, "error": f"非JSON: {result.stdout[:200]}"}
-
-
-def get_repo_context(project_path: str) -> RepoContext:
-    r = _call_node("zhiwang", "snapshot", {"project": project_path})
-    return RepoContext(
-        repo_id=r.get("repo_id", project_path),
-        commit_hash=r.get("commit_hash", ""),
-        branch=r.get("branch", ""),
-        file_tree=r.get("file_tree", []),
-        recent_commits=r.get("recent_commits", []),
-        changed_files=r.get("changed_files", []),
-        status_excerpt=r.get("status_excerpt", "")
+def _warn_deprecated(name: str) -> None:
+    warnings.warn(
+        f"hub_adapter.{name} is deprecated; use HubClient.invoke() via "
+        f"repo / constitution / verification adapters.",
+        DeprecationWarning,
+        stacklevel=3,
     )
 
 
+def _call_node(*_args, **_kwargs) -> dict:
+    """Removed. Direct node subprocess is forbidden."""
+    raise RuntimeError(
+        "hub_adapter._call_node is removed. "
+        "Use forge.adapters.hub_client.HubClient.invoke()."
+    )
+
+
+def get_repo_context(project_path: str) -> RepoContext:
+    _warn_deprecated("get_repo_context")
+    from forge.adapters.repo import get_repo_context as _via_client
+
+    return _via_client(project_path)
+
+
 def check_constitution(target: str, old_text: str, new_text: str) -> ConstitutionResult:
-    r = _call_node("lu", "check", {
-        "target": target, "old_text": old_text, "new_text": new_text
-    })
-    if r.get("passed", False):
-        return ConstitutionResult(status=CheckStatus.PASS, checked_rules=r.get("checked_rules", ["lu"]))
-    else:
+    _warn_deprecated("check_constitution")
+    client = HubClient(project_root=".")
+    resp = client.invoke(
+        capability="lu",
+        action="check",
+        payload={"target": target, "old_text": old_text, "new_text": new_text},
+    )
+    if not resp.ok:
         return ConstitutionResult(
             status=CheckStatus.FAIL,
-            violations=[ConstitutionViolation(rule_id="lu", message=r.get("error", "; ".join(r.get("violations", []))))],
-            checked_rules=r.get("checked_rules", ["lu"])
+            violations=[ConstitutionViolation(rule_id="hub.lu", message=resp.error)],
+            checked_rules=["hub.lu"],
         )
+    data = resp.data
+    if data.get("passed") or data.get("status") == "pass" or data.get("decision") == "ALLOW":
+        return ConstitutionResult(
+            status=CheckStatus.PASS,
+            checked_rules=list(data.get("checked_rules") or data.get("rule_ids") or ["lu"]),
+        )
+    return ConstitutionResult(
+        status=CheckStatus.FAIL,
+        violations=[
+            ConstitutionViolation(
+                rule_id="lu",
+                message=data.get("error")
+                or data.get("evidence")
+                or "; ".join(data.get("violations") or []),
+            )
+        ],
+        checked_rules=list(data.get("checked_rules") or data.get("rule_ids") or ["lu"]),
+    )
 
 
-def lu_patch(target: str, old_text: str, new_text: str,
-             start_line: int = None, end_line: int = None) -> bool:
-    r = _call_node("lu", "patch", {
-        "target": target, "old_text": old_text, "new_text": new_text,
-        "start_line": start_line, "end_line": end_line
-    })
-    return r.get("passed", False)
+def lu_patch(
+    target: str,
+    old_text: str,
+    new_text: str,
+    start_line: Optional[int] = None,
+    end_line: Optional[int] = None,
+) -> bool:
+    """Write via Hub/Lu is forbidden. Always raises."""
+    raise RuntimeError(
+        "hub_adapter.lu_patch write path removed. "
+        "Host mutation: Intent → Veritas → Projection only."
+    )
 
 
 def lu_create(target: str, content: str) -> bool:
-    r = _call_node("lu", "create", {"target": target, "new_text": content})
-    return r.get("passed", False)
+    raise RuntimeError(
+        "hub_adapter.lu_create write path removed. "
+        "Host mutation: Intent → Veritas → Projection only."
+    )
 
 
 def lu_delete(target: str) -> bool:
-    r = _call_node("lu", "delete", {"target": target})
-    return r.get("passed", False)
+    raise RuntimeError(
+        "hub_adapter.lu_delete write path removed. "
+        "Host mutation: Intent → Veritas → Projection only."
+    )
 
 
-def run_verification(changed_files: list, change_type: str = "modify") -> VerificationResult:
-    r = _call_node("sms", "verify", {
-        "changed_files": changed_files, "change_type": change_type
-    })
-    if r.get("passed", False):
-        return VerificationResult(status=CheckStatus.PASS, executed_checks=r.get("executed_checks", ["sms"]))
-    else:
-        return VerificationResult(
-            status=CheckStatus.FAIL,
-            failures=r.get("failures", [r.get("error", "")])
-        )
+def run_verification(
+    changed_files: List[str], change_type: str = "modify"
+) -> VerificationResult:
+    _warn_deprecated("run_verification")
+    from forge.adapters.verification import verify
+    from forge.protocols.models import VerificationRequest
+
+    return verify(
+        VerificationRequest(changed_files=list(changed_files), change_type=change_type)
+    )
