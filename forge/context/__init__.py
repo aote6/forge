@@ -1,0 +1,28 @@
+"""RepositoryContext Runtime v1 — machine-verifiable repository snapshot.
+
+Usage:
+    from forge.context import build_context
+
+    ctx = build_context("/path/to/repo")
+    # ctx.to_dict() for checkpoint persistence
+    # ctx.files_with_content() for Planner input
+"""
+
+from forge.context.repository import build_context
+from forge.context.models import (
+    RepositoryContext,
+    GitInfo,
+    FileEntry,
+    ContextError,
+)
+from forge.context.errors import ContextFatalError, PartialContextError
+
+__all__ = [
+    "build_context",
+    "RepositoryContext",
+    "GitInfo",
+    "FileEntry",
+    "ContextError",
+    "ContextFatalError",
+    "PartialContextError",
+]
