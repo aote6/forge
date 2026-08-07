@@ -34,6 +34,7 @@ class ExecutionAdapter:
             raise TypeError("execute_proposal requires ChangeProposal")
 
         files: List[str] = []
+        intents_list: list = []
         try:
             for op in proposal.operations:
                 op_type = op.get("type") or op.get("operation_type") or "modify"
@@ -41,14 +42,13 @@ class ExecutionAdapter:
                 if not targets:
                     continue
                 target = targets[0]
-                # Security: every path through resolver
                 full = resolve_workspace_path(self.project_root, target)
                 files.append(target)
 
                 if op_type in ("create_file", "create"):
                     content = op.get("content", "")
                     intent = Intent.create_file(path=full, content=content, require_confirm=False)
-                    receipt, delta = self.executor.execute(intent)
+                    intents_list.append(intent)
                 elif op_type in ("delete_file", "delete"):
                     object_id = op.get("object_id") or self._resolve_object_id(full)
                     if object_id is None:
@@ -57,10 +57,8 @@ class ExecutionAdapter:
                         )
                     intent = Intent.delete_file(path=full, require_confirm=False)
                     intent.parameters["object_id"] = object_id
-                    receipt, delta = self.executor.execute(intent)
+                    intents_list.append(intent)
                 else:
-                    # modify: MUST resolve to an existing world object.
-                    # Never silently fall back to create_file(overwrite=True).
                     object_id = op.get("object_id")
                     operations = op.get("operations") or [{
                         "old_text": op.get("old_text", ""),
@@ -70,7 +68,6 @@ class ExecutionAdapter:
                         "content": op.get("content", ""),
                     }]
                     if object_id is None:
-                        # Attempt path→object resolution via world path map
                         object_id = self._resolve_object_id(full)
                     if object_id is None:
                         raise IntentExecutionError(
@@ -81,36 +78,40 @@ class ExecutionAdapter:
                         path=full, operations=operations, require_confirm=False
                     )
                     intent.parameters["object_id"] = object_id
-                    receipt, delta = self.executor.execute(intent)
+                    intents_list.append(intent)
 
-                # Projection uses real delta from commit — never forged.
-                # World is already committed; projection failure must surface
-                # as execution failure with receipt retained for recovery.
-                proj_results = self.projections.project(receipt, delta)
-                failed = [
-                    r for r in (proj_results or [])
-                    if hasattr(r, "success") and not r.success
-                ]
-                if failed:
-                    reasons = "; ".join(
-                        getattr(r, "reason", "") or r.name for r in failed
-                    )
-                    return ExecutionResult(
-                        proposal_id=proposal.proposal_id,
-                        success=False,
-                        tx_id=getattr(receipt, "tx_id", None),
-                        world_version=getattr(receipt, "version", None),
-                        files=files,
-                        error=f"projection_failed: {reasons}",
-                        receipt_summary={
-                            "tx_id": getattr(receipt, "tx_id", None),
-                            "version": getattr(receipt, "version", None),
-                            "projection_failed": True,
-                            "projection_reasons": [
-                                getattr(r, "reason", "") for r in failed
-                            ],
-                        },
-                    )
+            # Single Veritas transaction for entire proposal.
+            if intents_list:
+                receipt, delta = self.executor.execute_batch(intents_list)
+            else:
+                raise IntentExecutionError("proposal has no executable operations")
+
+            # Projection uses real delta from commit — never forged.
+            proj_results = self.projections.project(receipt, delta)
+            failed = [
+                r for r in (proj_results or [])
+                if hasattr(r, "success") and not r.success
+            ]
+            if failed:
+                reasons = "; ".join(
+                    getattr(r, "reason", "") or r.name for r in failed
+                )
+                return ExecutionResult(
+                    proposal_id=proposal.proposal_id,
+                    success=False,
+                    tx_id=getattr(receipt, "tx_id", None),
+                    world_version=getattr(receipt, "version", None),
+                    files=files,
+                    error=f"projection_failed: {reasons}",
+                    receipt_summary={
+                        "tx_id": getattr(receipt, "tx_id", None),
+                        "version": getattr(receipt, "version", None),
+                        "projection_failed": True,
+                        "projection_reasons": [
+                            getattr(r, "reason", "") for r in failed
+                        ],
+                    },
+                )
 
             return ExecutionResult(
                 proposal_id=proposal.proposal_id,
@@ -129,15 +130,23 @@ class ExecutionAdapter:
                 proposal_id=proposal.proposal_id,
                 success=False,
                 files=files,
-                error=f"security: {e}",
+                error=f"path_security: {e}",
             )
-        except (IntentExecutionError, RuntimeError, OSError, ValueError) as e:
+        except IntentExecutionError as e:
             self._safe_abort()
             return ExecutionResult(
                 proposal_id=proposal.proposal_id,
                 success=False,
                 files=files,
                 error=str(e),
+            )
+        except Exception as e:
+            self._safe_abort()
+            return ExecutionResult(
+                proposal_id=proposal.proposal_id,
+                success=False,
+                files=files,
+                error=f"{type(e).__name__}: {e}",
             )
 
     def _resolve_object_id(self, full_path: str) -> Optional[int]:
