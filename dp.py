@@ -7,7 +7,7 @@ from forge.runtime import Runtime
 from forge.events import EventType
 from forge.adapters.deepseek import DeepSeekAdapter
 
-project_root = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~")
+project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 adapter = DeepSeekAdapter(model_name="deepseek-v4-flash")
 tag = "DeepSeek"
 
