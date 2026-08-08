@@ -1,6 +1,10 @@
 """Planner — LLM 输出行号+新内容 → Forge 从仓库提取 old_text → Validator 校验
 
-原则：old_text 永远来自真实仓库，LLM 只负责"决定改哪里"。
+原则：
+- old_text 永远来自真实仓库，LLM 只负责"决定改哪里"。
+- impact / callers / ambiguous symbols 由 RepositoryIndex 机器推导，
+  再与 LLM 输出合并；Validator 是最终硬门槛。
+- step dependencies 经拓扑排序后再执行。
 """
 import json
 import re
@@ -13,13 +17,21 @@ from forge.protocols.repository import RepoContext
 from forge.protocols.planning import Plan, PlanStep
 from forge.plan_validator import PlanValidator
 from forge.adapters.base import BaseAdapter, Message
+from forge.context.planning import (
+    apply_machine_impact_to_plan,
+    compute_impact_set,
+    format_impact_section,
+    prioritize_content_files,
+)
 
-PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文件列表、文件内容（带行号）、以及用户任务。
+PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文件列表、机器推导的 impact 信息、文件内容（带行号）、以及用户任务。
 
 输出严格的 JSON，不要包含任何其他文字：
 {
   "goal": "用户任务的简洁重述",
   "assumptions": ["假设1"],
+  "impact_files": ["机器或任务相关的受影响文件"],
+  "impact_symbols": ["相关 symbol 名"],
   "steps": [
     {
       "step_id": "step_1",
@@ -41,6 +53,11 @@ PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文�
 3. create_file 时必须提供 content，即完整的新文件内容
 4. start_line/end_line 必须在文件行数范围内
 5. 只输出 JSON，不要输出任何解释文字
+6. modify/delete 的 target_files 必须落在 impact_files 内（若提供了 impact_files）
+7. create_file 不受 impact_files 限制
+8. 多文件 API 修改时：先改 definition，再改 callers，再改 tests；用 dependencies 表达顺序
+9. 对 AMBIGUOUS symbols，不得擅自选择错误定义文件；只改任务明确指向的文件
+10. 不要修改 Machine impact set 之外的无关文件，除非任务明确要求 create_file
 """
 
 
@@ -53,7 +70,7 @@ def _make_plan_id() -> str:
 
 
 class Planner:
-    """LLM 输出行号+新内容 → Forge 提取 old_text → Validator"""
+    """LLM 输出行号+新内容 → Forge 提取 old_text → Validator + machine impact."""
 
     def __init__(self, adapter: BaseAdapter):
         self.adapter = adapter
@@ -69,13 +86,36 @@ class Planner:
     ) -> tuple[Plan, dict]:
         self.validator = PlanValidator(project_root)
 
+        # Machine impact from P2 index (before LLM).
+        seed_files = []
+        if repair_constraints is not None:
+            rc = repair_constraints
+            if hasattr(rc, "must_touch_files"):
+                seed_files.extend(list(rc.must_touch_files or []))
+                seed_files.extend(list(rc.required_impact_files or []))
+                seed_files.extend(list(rc.force_create_files or []))
+            elif isinstance(rc, dict):
+                seed_files.extend(list(rc.get("must_touch_files") or []))
+                seed_files.extend(list(rc.get("required_impact_files") or []))
+                seed_files.extend(list(rc.get("force_create_files") or []))
+        if failure is not None:
+            fd = failure.to_dict() if hasattr(failure, "to_dict") else dict(failure)
+            seed_files.extend(list(fd.get("files") or []))
+
+        machine = compute_impact_set(
+            index, task=task, seed_files=seed_files or None
+        )
+        impact_section = format_impact_section(machine)
+
         # Full file tree is always provided (names never silently truncated).
         files_summary = "\n".join(repo.file_tree) if repo and repo.file_tree else "(empty repo)"
 
-        # Prefer changed_files then rest of tree for content; tree listing is complete.
-        content_candidates = list(dict.fromkeys(
-            list((repo.changed_files if repo else None) or []) + list((repo.file_tree if repo else None) or [])
-        ))
+        # Prefer impact files for content, then changed, then rest.
+        content_candidates = prioritize_content_files(
+            list((repo.file_tree if repo else None) or []),
+            list(machine.get("impact_files") or []),
+            list((repo.changed_files if repo else None) or []),
+        )
         file_contents = ""
         total_chars = 0
         MAX_CONTENT_CHARS = 48000
@@ -102,10 +142,11 @@ class Planner:
 
         # Priority 2: structured repository model from index (not str(index)).
         model_section = "(no repository index)"
-        focus = []
         if index is not None:
-            from forge.context.index import extract_focus_symbols
-            focus = extract_focus_symbols(task)
+            focus = list(machine.get("impact_symbols") or [])
+            if not focus:
+                from forge.context.index import extract_focus_symbols
+                focus = extract_focus_symbols(task)
             model_section = index.summary_for_planner(focus_symbols=focus or None)
 
         failure_section = "(no structured failure)"
@@ -123,11 +164,17 @@ class Planner:
             cd = repair_constraints.to_dict() if hasattr(repair_constraints, "to_dict") else dict(repair_constraints)
             constraints_section = str(cd)
 
+        # Seed impact into expected JSON fields for the LLM.
+        seeded_impact = machine.get("impact_files") or []
+        seeded_symbols = machine.get("impact_symbols") or []
+
         user_prompt = f"""仓库文件列表:
 {files_summary}
 
 Repository model (machine facts — prefer over guessing):
 {model_section}
+
+{impact_section}
 
 Structured failure (machine classified — repair must address this):
 {failure_section}
@@ -135,15 +182,18 @@ Structured failure (machine classified — repair must address this):
 Repair constraints (machine enforced by validator):
 {constraints_section}
 
-文件内容（带行号，用于精确定位修改位置）:
+文件内容（带行号，impact 文件优先加载）:
 {file_contents}
 
 用户任务: {task}
 
-请输出执行计划的 JSON（modify 时用 start_line/end_line 指定行号，new_text 指定新内容）。
-若任务涉及已知 symbol，JSON 可含 impact_files（受影响文件列表）与 impact_symbols。
-modify/delete 的 target_files 必须落在 impact_files 内（若提供了 impact_files）。
-create_file 不受 impact_files 限制。:"""
+请输出执行计划的 JSON。
+机器已推导 impact_files 候选: {seeded_impact}
+机器已推导 impact_symbols 候选: {seeded_symbols}
+请在 JSON 中填写 impact_files / impact_symbols（可补充，不可无理由缩小到遗漏已知 callers）。
+modify/delete 的 target_files 必须落在 impact_files 内。
+多步骤时用 dependencies 表达「先 definition 后 callers 后 tests」。
+create_file 不受 impact_files 限制。"""
 
         messages = [
             Message(role="system", content=PLANNER_SYSTEM_PROMPT),
@@ -157,7 +207,7 @@ create_file 不受 impact_files 限制。:"""
         print(f"[Planner DEBUG] total messages: {len(messages)}", file=sys.stderr)
         response = self.adapter.send(messages, tools=[])
         print(f"[Planner DEBUG] raw response len={len(response.content or '')}", file=sys.stderr)
-        print(f"[Planner DEBUG] raw response:\n{repr(response.content[:500])}", file=sys.stderr)
+        print(f"[Planner DEBUG] raw response:\n{repr((response.content or '')[:500])}", file=sys.stderr)
         raw_text = (response.content or "").strip()
         print(f"[Planner] LLM 响应长度: {len(raw_text)} 字符", file=sys.stderr)
 
@@ -166,33 +216,39 @@ create_file 不受 impact_files 限制。:"""
             print(f"[Planner] 无法提取 JSON, 原始响应:\n{raw_text}", file=sys.stderr)
             raise PlanValidationError(f"无法从 LLM 响应中提取 JSON:\n{raw_text[:500]}")
 
-        plan, enriched = self.validator.validate(plan_dict, repo, repair_constraints=repair_constraints)
-        # Priority 2: if index present and plan lacks impact_files, derive from focus symbols.
-        if index is not None and not plan.impact_files:
-            from forge.context.index import extract_focus_symbols
-            symbols = list(plan.impact_symbols) or extract_focus_symbols(task)
-            files: set[str] = set()
-            used_syms = []
-            for name in symbols:
-                aff = index.affected_files(name)
-                if aff:
-                    files.update(aff)
-                    used_syms.append(name)
-            if files:
-                plan.impact_files = sorted(files)
-                plan.impact_symbols = used_syms
-                enriched["impact_files"] = plan.impact_files
-                enriched["impact_symbols"] = plan.impact_symbols
-                # Re-check boundary after enrichment
-                allowed = set(plan.impact_files)
-                for step in plan.steps:
-                    if step.operation_type in ("modify", "delete_file", "delete"):
-                        for tf in step.target_files:
-                            if tf not in allowed:
-                                raise PlanValidationError(
-                                    f"{step.step_id}: target '{tf}' outside "
-                                    f"index-derived impact_files {sorted(allowed)}"
-                                )
+        # Pre-seed impact into plan_dict so Validator sees a boundary even if LLM omitted it.
+        if seeded_impact and not plan_dict.get("impact_files"):
+            plan_dict["impact_files"] = list(seeded_impact)
+        if seeded_symbols and not plan_dict.get("impact_symbols"):
+            plan_dict["impact_symbols"] = list(seeded_symbols)
+
+        plan, enriched = self.validator.validate(
+            plan_dict, repo, repair_constraints=repair_constraints
+        )
+
+        # Always merge machine impact (union) and topologically order steps.
+        apply_machine_impact_to_plan(plan, machine)
+        enriched["impact_files"] = list(plan.impact_files)
+        enriched["impact_symbols"] = list(plan.impact_symbols)
+        enriched["machine_impact"] = {
+            "impact_files": machine.get("impact_files"),
+            "impact_symbols": machine.get("impact_symbols"),
+            "ambiguous_symbols": machine.get("ambiguous_symbols"),
+            "callers_by_symbol": machine.get("callers_by_symbol"),
+        }
+
+        # Re-check modify/delete boundary after merge.
+        if plan.impact_files:
+            allowed = set(plan.impact_files)
+            for step in plan.steps:
+                if step.operation_type in ("modify", "delete_file", "delete"):
+                    for tf in step.target_files:
+                        if tf not in allowed:
+                            raise PlanValidationError(
+                                f"{step.step_id}: target '{tf}' outside "
+                                f"merged impact_files {sorted(allowed)}"
+                            )
+
         return plan, enriched
 
     def _extract_json(self, raw: str) -> Optional[dict]:
