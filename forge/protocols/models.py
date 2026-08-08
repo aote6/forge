@@ -118,6 +118,10 @@ class Plan:
     goal: str = ""
     steps: List[PlanStep] = field(default_factory=list)
     assumptions: List[str] = field(default_factory=list)
+    # Repository snapshot binding (Priority 1). snapshot_id == tree_hash.
+    snapshot_id: str = ""
+    tree_hash: str = ""
+    commit_hash: str = ""
 
     def to_dict(self) -> dict:
         return to_jsonable(self)
@@ -131,6 +135,9 @@ class Plan:
             goal=data.get("goal", ""),
             steps=steps,
             assumptions=list(data.get("assumptions") or []),
+            snapshot_id=data.get("snapshot_id", "") or "",
+            tree_hash=data.get("tree_hash", "") or "",
+            commit_hash=data.get("commit_hash", "") or "",
         )
 
 
@@ -305,6 +312,10 @@ class TaskCheckpoint:
     created_at: str = field(default_factory=_utcnow)
     updated_at: str = field(default_factory=_utcnow)
     extra: Dict[str, Any] = field(default_factory=dict)
+    # Repository snapshot at UNDERSTAND / PLAN time (Priority 1)
+    snapshot_id: str = ""
+    tree_hash: str = ""
+    commit_hash: str = ""
 
     def to_dict(self) -> dict:
         return to_jsonable(self)
@@ -348,4 +359,7 @@ class TaskCheckpoint:
             created_at=data.get("created_at") or _utcnow(),
             updated_at=data.get("updated_at") or _utcnow(),
             extra=dict(data.get("extra") or {}),
+            snapshot_id=data.get("snapshot_id", "") or "",
+            tree_hash=data.get("tree_hash", "") or "",
+            commit_hash=data.get("commit_hash", "") or "",
         )

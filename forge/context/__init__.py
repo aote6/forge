@@ -26,3 +26,17 @@ __all__ = [
     "ContextFatalError",
     "PartialContextError",
 ]
+
+from forge.context.snapshot import (
+    RepositorySnapshot,
+    StaleSnapshotError,
+    assert_snapshot_match,
+    take_snapshot,
+)
+
+__all__ = list(__all__) + [
+    "RepositorySnapshot",
+    "StaleSnapshotError",
+    "assert_snapshot_match",
+    "take_snapshot",
+]
