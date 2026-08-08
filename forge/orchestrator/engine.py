@@ -252,6 +252,15 @@ class EngineeringOrchestrator:
             plan.commit_hash = snap.commit_hash
             # Priority 6: machine expected_symbols from same plan-bound index
             derive_expected_symbols_for_plan(plan, idx)
+            # Priority 7: persist obligations derived from same index (audit/repair)
+            from forge.context.planning import compute_obligations
+            self.checkpoint.extra["obligations"] = compute_obligations(
+                idx,
+                task=self.checkpoint.goal or "",
+                repair_constraints=(
+                    self.checkpoint.extra.get("repair_constraints")
+                ),
+            )
             self.checkpoint.plan = plan
             self.phase = OrchestratorPhase.CHECKING
             self._persist()

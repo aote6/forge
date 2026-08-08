@@ -218,7 +218,7 @@ class TestPlannerMachineIntegration(unittest.TestCase):
             plan_dict = {
                 "goal": "change calculate API",
                 "assumptions": [],
-                "impact_files": ["core.py"],
+                "impact_files": ["core.py", "service_a.py", "service_b.py", "tests/test_core.py"],
                 "impact_symbols": ["calculate"],
                 "steps": [
                     {
@@ -229,7 +229,25 @@ class TestPlannerMachineIntegration(unittest.TestCase):
                         "start_line": 1,
                         "end_line": 2,
                         "new_text": "def calculate(x, y=0):\n    return x + y + 1\n",
-                    }
+                    },
+                    {
+                        "step_id": "s2",
+                        "description": "update a",
+                        "target_files": ["service_a.py"],
+                        "operation_type": "modify",
+                        "start_line": 1,
+                        "end_line": 4,
+                        "new_text": "from core import calculate\n\ndef run_a():\n    return calculate(1, 0)\n",
+                    },
+                    {
+                        "step_id": "s3",
+                        "description": "update b",
+                        "target_files": ["service_b.py"],
+                        "operation_type": "modify",
+                        "start_line": 1,
+                        "end_line": 4,
+                        "new_text": "from core import calculate\n\ndef run_b():\n    return calculate(2, 0)\n",
+                    },
                 ],
             }
             planner = Planner(_mock_adapter(plan_dict))
@@ -299,7 +317,7 @@ class TestPlannerMachineIntegration(unittest.TestCase):
             idx = RepositoryIndex.build(str(root))
             plan_dict = {
                 "goal": "migrate API",
-                "impact_files": ["core.py", "service_a.py", "tests/test_core.py"],
+                "impact_files": ["core.py", "service_a.py", "service_b.py", "tests/test_core.py"],
                 "steps": [
                     {
                         "step_id": "s_test",
@@ -320,6 +338,16 @@ class TestPlannerMachineIntegration(unittest.TestCase):
                         "start_line": 1,
                         "end_line": 4,
                         "new_text": "from core import calculate\n\ndef run_a():\n    return calculate(1, 0)\n",
+                    },
+                    {
+                        "step_id": "s_b",
+                        "description": "update service b",
+                        "target_files": ["service_b.py"],
+                        "operation_type": "modify",
+                        "dependencies": ["s_def"],
+                        "start_line": 1,
+                        "end_line": 4,
+                        "new_text": "from core import calculate\n\ndef run_b():\n    return calculate(2, 0)\n",
                     },
                     {
                         "step_id": "s_def",
@@ -344,7 +372,12 @@ class TestPlannerMachineIntegration(unittest.TestCase):
                 index=idx,
             )
             ids = [s.step_id for s in plan.steps]
-            self.assertEqual(ids, ["s_def", "s_svc", "s_test"])
+            self.assertEqual(ids[0], "s_def")
+            self.assertIn("s_svc", ids)
+            self.assertIn("s_b", ids)
+            self.assertIn("s_test", ids)
+            self.assertLess(ids.index("s_def"), ids.index("s_svc"))
+            self.assertLess(ids.index("s_svc"), ids.index("s_test"))
 
     def test_repair_constraints_still_enforced(self):
         with tempfile.TemporaryDirectory() as td:

@@ -20,7 +20,9 @@ from forge.adapters.base import BaseAdapter, Message
 from forge.context.planning import (
     apply_machine_impact_to_plan,
     compute_impact_set,
+    compute_obligations,
     format_impact_section,
+    format_obligations_section,
     prioritize_content_files,
 )
 
@@ -105,7 +107,14 @@ class Planner:
         machine = compute_impact_set(
             index, task=task, seed_files=seed_files or None
         )
+        obligations = compute_obligations(
+            index,
+            task=task,
+            machine=machine,
+            repair_constraints=repair_constraints,
+        )
         impact_section = format_impact_section(machine)
+        obligations_section = format_obligations_section(obligations)
 
         # Full file tree is always provided (names never silently truncated).
         files_summary = "\n".join(repo.file_tree) if repo and repo.file_tree else "(empty repo)"
@@ -176,6 +185,8 @@ Repository model (machine facts — prefer over guessing):
 
 {impact_section}
 
+{obligations_section}
+
 Structured failure (machine classified — repair must address this):
 {failure_section}
 
@@ -192,6 +203,7 @@ Repair constraints (machine enforced by validator):
 机器已推导 impact_symbols 候选: {seeded_symbols}
 请在 JSON 中填写 impact_files / impact_symbols（可补充，不可无理由缩小到遗漏已知 callers）。
 modify/delete 的 target_files 必须落在 impact_files 内。
+REQUIRED obligations 的 file 必须出现在某个 step 的 target_files 中（机器强制）。
 多步骤时用 dependencies 表达「先 definition 后 callers 后 tests」。
 create_file 不受 impact_files 限制。"""
 
@@ -223,7 +235,10 @@ create_file 不受 impact_files 限制。"""
             plan_dict["impact_symbols"] = list(seeded_symbols)
 
         plan, enriched = self.validator.validate(
-            plan_dict, repo, repair_constraints=repair_constraints
+            plan_dict,
+            repo,
+            repair_constraints=repair_constraints,
+            obligations=obligations,
         )
 
         # Always merge machine impact (union) and topologically order steps.
@@ -236,6 +251,7 @@ create_file 不受 impact_files 限制。"""
             "ambiguous_symbols": machine.get("ambiguous_symbols"),
             "callers_by_symbol": machine.get("callers_by_symbol"),
         }
+        enriched["obligations"] = list(obligations)
 
         # Re-check modify/delete boundary after merge.
         if plan.impact_files:

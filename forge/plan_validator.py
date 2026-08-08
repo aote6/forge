@@ -13,7 +13,7 @@ class PlanValidator:
     def __init__(self, project_root: str = "."):
         self.project_root = project_root
 
-    def validate(self, plan_dict: dict, repo: RepoContext, repair_constraints=None) -> tuple[Plan, dict]:
+    def validate(self, plan_dict: dict, repo: RepoContext, repair_constraints=None, obligations=None) -> tuple[Plan, dict]:
         """校验并补充 old_text。返回 (Plan, enriched_dict)"""
         if not isinstance(plan_dict, dict):
             raise PlanValidationError("Plan 必须是 dict")
@@ -177,6 +177,21 @@ class PlanValidator:
                         f"repair plan must touch at least one of {sorted(must_touch)}; "
                         f"got {sorted(touched)}"
                     )
+
+        # Priority 7: required obligation coverage (machine lower bound)
+        if obligations:
+            from forge.context.planning import missing_required_obligations
+            from forge.protocols.models import Plan as _Plan, PlanStep as _PS
+            # temporary plan-like for coverage check
+            tmp = _Plan(goal=goal, steps=steps)
+            missing = missing_required_obligations(tmp, obligations)
+            if missing:
+                desc = ", ".join(
+                    f"{m.get('role')}:{m.get('symbol')}@{m.get('file')}" for m in missing
+                )
+                raise PlanValidationError(
+                    f"plan missing required obligations: {desc}"
+                )
 
         import time
         plan = Plan(

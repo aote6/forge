@@ -286,3 +286,240 @@ def collect_plan_target_files(plan) -> list[str]:
     for s in getattr(plan, "steps", None) or []:
         files.extend(getattr(s, "target_files", None) or [])
     return list(dict.fromkeys(files))
+
+
+def _is_test_path(path: str) -> bool:
+    p = (path or "").replace("\\", "/").lower()
+    base = p.rsplit("/", 1)[-1]
+    return (
+        "/tests/" in f"/{p}"
+        or p.startswith("tests/")
+        or base.startswith("test_")
+        or base.endswith("_test.py")
+    )
+
+
+def compute_obligations(
+    index,
+    task: str = "",
+    focus_symbols: Optional[list[str]] = None,
+    machine: Optional[dict[str, Any]] = None,
+    repair_constraints=None,
+) -> list[dict[str, Any]]:
+    """Derive mutation obligations from Index (P7).
+
+    Roles:
+      definition  — unique definition site of a focus symbol (required)
+      caller      — non-definition file with Name/Attribute reference (required)
+      import_site — file that only imports the name, no other refs (advisory)
+      test        — test-path reference/import sites (advisory by default)
+
+    Ambiguous multi-definition symbols produce advisory-only rows
+    (required=False) so Validator does not force a wrong file.
+
+    create_file / no index hits → empty list.
+    """
+    from forge.context.index import extract_focus_symbols
+
+    if machine is None:
+        machine = compute_impact_set(index, task=task, focus_symbols=focus_symbols)
+    symbols = list(focus_symbols or machine.get("impact_symbols") or [])
+    if not symbols and task:
+        symbols = extract_focus_symbols(task)
+
+    obligations: list[dict[str, Any]] = []
+    if index is None or not symbols:
+        return obligations
+
+    ambiguous = dict(machine.get("ambiguous_symbols") or {})
+    definitions = dict(machine.get("definitions_by_symbol") or {})
+    callers_map = dict(machine.get("callers_by_symbol") or {})
+
+    for name in symbols:
+        def_files = list(definitions.get(name) or [])
+        if not def_files:
+            # try live index
+            def_files = sorted({d.file_path for d in index.find_definition(name)})
+        is_ambiguous = name in ambiguous or len(def_files) > 1
+
+        if is_ambiguous:
+            for f in sorted(set(def_files)):
+                obligations.append(
+                    {
+                        "file": f,
+                        "symbol": name,
+                        "role": "definition",
+                        "required": False,
+                        "reason": f"ambiguous definition of '{name}' in multiple files",
+                        "ambiguous": True,
+                    }
+                )
+            continue
+
+        if not def_files:
+            continue
+
+        def_file = def_files[0]
+        obligations.append(
+            {
+                "file": def_file,
+                "symbol": name,
+                "role": "definition",
+                "required": True,
+                "reason": f"unique definition of '{name}'",
+                "ambiguous": False,
+            }
+        )
+
+        # Reference files (Name/Attribute) excluding definition
+        ref_files: set[str] = set()
+        for r in index.find_references(name):
+            if r.file_path != def_file:
+                ref_files.add(r.file_path)
+
+        # Import-only sites
+        import_files: set[str] = set()
+        for imp in getattr(index, "imports", None) or []:
+            if name in (imp.names or ()) and imp.file_path != def_file:
+                import_files.add(imp.file_path)
+
+        for f in sorted(ref_files):
+            if _is_test_path(f):
+                obligations.append(
+                    {
+                        "file": f,
+                        "symbol": name,
+                        "role": "test",
+                        "required": False,
+                        "reason": f"test path references '{name}' (advisory)",
+                        "ambiguous": False,
+                    }
+                )
+            else:
+                obligations.append(
+                    {
+                        "file": f,
+                        "symbol": name,
+                        "role": "caller",
+                        "required": True,
+                        "reason": f"code reference to '{name}'",
+                        "ambiguous": False,
+                    }
+                )
+
+        for f in sorted(import_files - ref_files):
+            # import without other refs in that file
+            if _is_test_path(f):
+                obligations.append(
+                    {
+                        "file": f,
+                        "symbol": name,
+                        "role": "test",
+                        "required": False,
+                        "reason": f"test import of '{name}' (advisory)",
+                        "ambiguous": False,
+                    }
+                )
+            else:
+                obligations.append(
+                    {
+                        "file": f,
+                        "symbol": name,
+                        "role": "import_site",
+                        "required": False,
+                        "reason": f"import site of '{name}' without local refs (advisory)",
+                        "ambiguous": False,
+                    }
+                )
+
+    # Intersect with repair constraints (fail-closed narrowing)
+    if repair_constraints is not None:
+        rc = repair_constraints
+        if isinstance(rc, dict):
+            from forge.failures import RepairConstraints
+
+            rc = RepairConstraints.from_dict(rc)
+        allowed: set[str] | None = None
+        must = set(getattr(rc, "must_touch_files", None) or [])
+        req_imp = set(getattr(rc, "required_impact_files", None) or [])
+        force = set(getattr(rc, "force_create_files", None) or [])
+        if must or req_imp or force:
+            allowed = must | req_imp | force
+        if allowed is not None:
+            narrowed: list[dict[str, Any]] = []
+            for o in obligations:
+                if o.get("required") and o.get("file") not in allowed:
+                    # demote rather than force conflict: required outside repair
+                    # becomes advisory with conflict reason; coverage uses required only
+                    o = dict(o)
+                    o["required"] = False
+                    o["reason"] = (
+                        o.get("reason", "")
+                        + f" [demoted: outside repair_constraints {sorted(allowed)}]"
+                    )
+                    o["repair_conflict"] = True
+                narrowed.append(o)
+            obligations = narrowed
+
+    # deterministic order
+    obligations.sort(
+        key=lambda o: (
+            0 if o.get("required") else 1,
+            o.get("role") or "",
+            o.get("file") or "",
+            o.get("symbol") or "",
+        )
+    )
+    return obligations
+
+
+def required_obligation_files(obligations: list[dict[str, Any]]) -> list[str]:
+    files = []
+    seen = set()
+    for o in obligations or []:
+        if not o.get("required"):
+            continue
+        f = o.get("file")
+        if f and f not in seen:
+            seen.add(f)
+            files.append(f)
+    return files
+
+
+def plan_mutation_files(plan) -> set[str]:
+    """Files the plan actually mutates (modify/create/delete targets)."""
+    out: set[str] = set()
+    if plan is None:
+        return out
+    for s in getattr(plan, "steps", None) or []:
+        for f in getattr(s, "target_files", None) or []:
+            out.add(f)
+    return out
+
+
+def missing_required_obligations(
+    plan,
+    obligations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Required obligations whose file is not among plan mutation targets."""
+    covered = plan_mutation_files(plan)
+    missing = []
+    for o in obligations or []:
+        if not o.get("required"):
+            continue
+        if o.get("file") not in covered:
+            missing.append(o)
+    return missing
+
+
+def format_obligations_section(obligations: list[dict[str, Any]]) -> str:
+    if not obligations:
+        return "Machine obligations: (none)"
+    lines = ["Machine obligations (required must appear as plan targets):"]
+    for o in obligations:
+        tag = "REQUIRED" if o.get("required") else "advisory"
+        lines.append(
+            f"  [{tag}] {o.get('role')} {o.get('symbol')} @ {o.get('file')}"
+            f" — {o.get('reason')}"
+        )
+    return "\n".join(lines)
