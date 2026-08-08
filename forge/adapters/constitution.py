@@ -35,11 +35,28 @@ def check(proposal: ChangeProposal, project_root: str = ".", hub: HubClient | No
         )
 
     client = hub or HubClient(project_root=project_root)
-    resp = client.invoke(
-        capability="lu",
-        action="constitution_check",
-        payload={"proposal": proposal.to_dict()},
-    )
+    # create_file operations don't need lu content check (file doesn't exist yet)
+    op_type = proposal.operations[0].get("type", "") if proposal.operations else ""
+    if op_type == "create_file":
+        resp = client.invoke(
+            capability="lu",
+            action="check",
+            payload={"action": "check", "target": "", "old_text": "", "new_text": ""},
+        )
+    else:
+        # Build lu-compatible payload from proposal
+        lu_payload = {"action": "check"}
+        for op in proposal.operations:
+            if op.get("target_files"):
+                lu_payload["target"] = op["target_files"][0]
+            lu_payload["old_text"] = op.get("old_text") or ""
+            lu_payload["new_text"] = op.get("new_text") or op.get("content") or ""
+            break  # lu check handles one file at a time
+        resp = client.invoke(
+            capability="lu",
+            action="check",
+            payload=lu_payload,
+        )
 
     if not resp.ok:
         return ConstitutionResult(
