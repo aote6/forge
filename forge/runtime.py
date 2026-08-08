@@ -186,10 +186,17 @@ class Runtime:
                 planner=self._planner,
                 checkpoint_store=self._task_memory,
             )
-            return orch.run(task, task_id=task_id)
+            result = orch.run(task, task_id=task_id)
+            # Contract: always return a non-None str so callers can safely slice/print.
+            if result is None:
+                return "❌ 任务失败: orchestrator returned no result"
+            return result if isinstance(result, str) else str(result)
 
         # Lightweight tool-calling conversation loop
-        return self._run_conversation(task)
+        result = self._run_conversation(task)
+        if result is None:
+            return "(no response)"
+        return result if isinstance(result, str) else str(result)
 
 
     def _run_conversation(self, task: str) -> str:

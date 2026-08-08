@@ -304,6 +304,12 @@ def extract_focus_symbols(task: str) -> list[str]:
         "the", "and", "for", "with", "from", "this", "that", "modify", "create",
         "delete", "update", "rename", "fix", "refactor", "class", "function",
         "method", "file", "files", "module", "please", "into", "all", "callers",
+        # Common field / schema / instruction words — not symbols to refactor
+        "name", "description", "parameters", "content", "type", "required",
+        "properties", "object", "string", "integer", "array", "boolean",
+        "return", "returns", "value", "values", "path", "default", "optional",
+        "tools", "schemas", "forge", "loop", "tool", "list", "only", "must",
+        "exact", "field", "fields", "keep", "remove", "replace",
     }
     out = []
     seen = set()

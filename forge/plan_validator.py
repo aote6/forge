@@ -69,6 +69,10 @@ class PlanValidator:
             if op == "create_file":
                 if "content" not in s:
                     raise PlanValidationError(f"{sid}: create_file 缺少 content")
+                if s.get("content") is None:
+                    raise PlanValidationError(f"{sid}: create_file 的 content 不能为 null")
+                if not isinstance(s.get("content"), str):
+                    raise PlanValidationError(f"{sid}: create_file 的 content 必须是 string")
 
             elif op == "modify":
                 start_line = s.get("start_line")
@@ -78,7 +82,18 @@ class PlanValidator:
                 if start_line < 1 or end_line < start_line:
                     raise PlanValidationError(f"{sid}: 无效行号范围 {start_line}-{end_line}")
 
-                new_text = s.get("new_text", "")
+                # new_text is required for modify (key must be present).
+                # Empty string is allowed (delete the line range).
+                if "new_text" not in s:
+                    raise PlanValidationError(
+                        f"{sid}: modify 缺少 new_text（替换 start_line..end_line 的新内容；"
+                        f"删除整行时可为空字符串）"
+                    )
+                new_text = s.get("new_text")
+                if new_text is None:
+                    raise PlanValidationError(f"{sid}: modify 的 new_text 不能为 null")
+                if not isinstance(new_text, str):
+                    raise PlanValidationError(f"{sid}: modify 的 new_text 必须是 string")
 
                 for tf in targets:
                     filepath = os.path.join(self.project_root, tf)
@@ -101,14 +116,17 @@ class PlanValidator:
             if not isinstance(deps, list):
                 raise PlanValidationError(f"{sid}: dependencies 必须是 list")
 
-            import sys
-            print(f"[Validator DEBUG] step {sid}: content={repr(s.get('content', 'MISSING'))}", file=sys.stderr)
+            # content is only required for create_file; for modify use new_text.
+            # Do not treat absent content as an error or print a misleading MISSING.
+            step_content = s.get("content", "") if op == "create_file" else s.get("content", "")
+            if step_content is None:
+                step_content = ""
             steps.append(PlanStep(
                 step_id=sid, description=desc, target_files=targets,
                 operation_type=op, dependencies=deps,
-                content=s.get("content", ""),
-                old_text=s.get("old_text", enriched.get("old_text", "")),
-                new_text=s.get("new_text", ""),
+                content=step_content if isinstance(step_content, str) else str(step_content),
+                old_text=s.get("old_text", enriched.get("old_text", "")) or "",
+                new_text=s.get("new_text", "") if s.get("new_text") is not None else "",
                 start_line=s.get("start_line"),
                 end_line=s.get("end_line"),
                 expected_symbols=list(s.get("expected_symbols") or []),

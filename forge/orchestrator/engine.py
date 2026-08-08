@@ -135,23 +135,30 @@ class EngineeringOrchestrator:
             try:
                 self._step()
             except Exception as e:
-                self.checkpoint.errors.append(str(e))
-                self.phase = OrchestratorPhase.FAILED
-                self.checkpoint.phase = self.phase.value
-                self.store.save(self.checkpoint)
+                if self.checkpoint is not None:
+                    self.checkpoint.errors.append(str(e))
+                    self.phase = OrchestratorPhase.FAILED
+                    self.checkpoint.phase = self.phase.value
+                    try:
+                        self.store.save(self.checkpoint)
+                    except Exception:
+                        pass
                 return f"❌ 任务失败: {e}"
 
         if self.phase == OrchestratorPhase.COMPLETED:
-            plan = self.checkpoint.plan
+            plan = self.checkpoint.plan if self.checkpoint else None
             n = len(plan.steps) if plan else 0
+            goal = self.checkpoint.goal if self.checkpoint else task
             return (
-                f"✅ 任务完成: {self.checkpoint.goal}\n"
+                f"✅ 任务完成: {goal}\n"
                 f"   步骤: {n} 个\n"
                 f"   phase: completed"
             )
+        goal = self.checkpoint.goal if self.checkpoint else task
+        errors = list(self.checkpoint.errors) if self.checkpoint else []
         return (
-            f"❌ 任务失败: {self.checkpoint.goal}\n"
-            f"   errors: {self.checkpoint.errors}"
+            f"❌ 任务失败: {goal}\n"
+            f"   errors: {errors}"
         )
 
     def _persist(self) -> None:
