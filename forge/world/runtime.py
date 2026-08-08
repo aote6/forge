@@ -23,9 +23,13 @@ class WorldRuntime:
         project_root: str | Path = ".",
         binary: str = "veritasd",
         adapter: WorldAdapter | None = None,
+        wal_path: str | Path | None = None,
     ):
         self.project_root = str(Path(project_root).expanduser().resolve())
-        self._adapter = adapter or WorldAdapter(self.project_root, binary=binary)
+        # Pass wal_path through so adapter always enables durable WAL.
+        self._adapter = adapter or WorldAdapter(
+            self.project_root, binary=binary, wal_path=wal_path
+        )
         self._identity = IdentityStore(self.project_root)
         self._object_id: Optional[int] = None
         self._current_session: Optional[WorldSession] = None
@@ -40,7 +44,8 @@ class WorldRuntime:
         """Rebuild ObjectPathMap from Veritas receipt history.
 
         Called on init to recover path→object mapping after restart.
-        Does not depend on disk cache — uses Veritas receipts_since(0).
+        Depends on durable WAL: receipts_since(0) must return historical
+        commits when veritasd was started with VERITAS_WAL.
         """
         try:
             from forge.projections.object_path import ObjectPathMap
@@ -163,6 +168,12 @@ class WorldRuntime:
             return None
         return self._path_map.get(object_id)
 
+    def find_object_id(self, path: str) -> Optional[int]:
+        """Reverse lookup path → object_id via rebuilt ObjectPathMap."""
+        if not hasattr(self, "_path_map"):
+            return None
+        return self._path_map.find_object_id(path)
+
     def abort_session(self) -> None:
         if self._current_session is None or self._current_session.closed:
             return
@@ -180,6 +191,11 @@ class WorldRuntime:
         return None
 
     def close(self) -> None:
+        """Close session and terminate child veritasd.
+
+        State remains durable under adapter.wal_path; next WorldRuntime
+        recovers via the same WAL.
+        """
         if self._current_session and not self._current_session.closed:
             try:
                 self._current_session.abort()

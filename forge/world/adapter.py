@@ -2,11 +2,20 @@
 World Adapter — sole transport to veritasd.
 
 No other Forge module should talk JSON Lines to veritasd directly.
+
+Persistence contract (from aote6/veritas src/bin/veritasd.rs):
+  - If env VERITAS_WAL is set → Kernel::with_wal_path + WorldService::with_wal
+  - Else → Kernel::new() / WorldService::new()  (in-memory only)
+  - On restart with the same WAL path, recovery rebuilds world from WAL.
+
+Forge MUST set VERITAS_WAL to a stable path under project_root so that
+each new veritasd subprocess recovers the same World state.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
@@ -18,6 +27,11 @@ class WorldAdapterError(RuntimeError):
     pass
 
 
+# Default relative WAL path under project_root. Shared by all WorldAdapter
+# instances that use the same project_root so state is process-independent.
+DEFAULT_WAL_REL = Path(".forge") / "veritas.wal"
+
+
 class WorldAdapter:
     """JSON Lines client for the Veritas World Interface (veritasd)."""
 
@@ -25,10 +39,22 @@ class WorldAdapter:
         self,
         project_root: str | Path = ".",
         binary: str = "veritasd",
+        wal_path: str | Path | None = None,
     ):
         self.root = str(Path(project_root).expanduser().resolve())
         self.binary = self._resolve_binary(binary)
         self._process: subprocess.Popen | None = None
+        # Authoritative persistence path. Always set so veritasd recovers.
+        if wal_path is not None:
+            self.wal_path = str(Path(wal_path).expanduser().resolve())
+        else:
+            env_wal = os.environ.get("VERITAS_WAL")
+            if env_wal:
+                self.wal_path = str(Path(env_wal).expanduser().resolve())
+            else:
+                self.wal_path = str(Path(self.root) / DEFAULT_WAL_REL)
+        # Ensure parent dir exists so veritasd can create the file.
+        Path(self.wal_path).parent.mkdir(parents=True, exist_ok=True)
 
     def _resolve_binary(self, binary: str) -> str:
         if Path(binary).exists():
@@ -46,6 +72,10 @@ class WorldAdapter:
 
     def _ensure_process(self) -> None:
         if self._process is None or self._process.poll() is not None:
+            env = os.environ.copy()
+            # Critical: without VERITAS_WAL, veritasd uses in-memory Kernel
+            # and all state is lost when the subprocess exits.
+            env["VERITAS_WAL"] = self.wal_path
             self._process = subprocess.Popen(
                 [self.binary],
                 stdin=subprocess.PIPE,
@@ -53,6 +83,7 @@ class WorldAdapter:
                 stderr=subprocess.PIPE,
                 text=True,
                 cwd=self.root,
+                env=env,
             )
 
     def _send(self, request: dict) -> dict:
@@ -80,9 +111,19 @@ class WorldAdapter:
             raise WorldAdapterError(f"bad response: {response_line!r}: {e}") from e
 
     def close(self) -> None:
+        """Terminate the child veritasd process.
+
+        Safe because state is durable on VERITAS_WAL. A subsequent
+        WorldAdapter / WorldRuntime will start a new veritasd that
+        recovers from the same WAL path.
+        """
         if self._process:
             try:
                 self._process.terminate()
+                try:
+                    self._process.wait(timeout=3)
+                except Exception:
+                    self._process.kill()
             except Exception:
                 pass
             self._process = None
