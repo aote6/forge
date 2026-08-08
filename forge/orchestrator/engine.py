@@ -424,6 +424,25 @@ class EngineeringOrchestrator:
             last_delta = self.checkpoint.extra.get("last_delta")
             exec_results = self.checkpoint.execution_results
             pre_snap = self.checkpoint.extra.get("pre_execution_snapshot")
+            # Priority 8: machine test target selection from index + obligations
+            from forge.context.testing import (
+                extract_failed_tests_from_history,
+                select_verification_targets,
+            )
+            idx = getattr(self, "_repository_index", None)
+            obligations = list(self.checkpoint.extra.get("obligations") or [])
+            impact_files = list(getattr(plan, "impact_files", None) or []) if plan else []
+            prior_failed = extract_failed_tests_from_history(
+                self.checkpoint.extra.get("failure_history") or []
+            )
+            test_targets = select_verification_targets(
+                idx,
+                obligations=obligations,
+                impact_files=impact_files,
+                failed_tests=prior_failed,
+                project_root=self.project_root,
+            )
+            self.checkpoint.extra["test_targets"] = test_targets
             vres = verification_verify(
                 req, self.project_root, hub=self.hub,
                 receipt=last_receipt,
@@ -431,6 +450,7 @@ class EngineeringOrchestrator:
                 execution_results=exec_results,
                 plan=plan,
                 pre_snapshot=pre_snap,
+                test_targets=test_targets,
             )
             self.checkpoint.verification_results.append(vres)
             if vres.status == CheckStatus.FAIL:
