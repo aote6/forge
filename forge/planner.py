@@ -21,9 +21,11 @@ from forge.context.planning import (
     apply_machine_impact_to_plan,
     compute_impact_set,
     compute_obligations,
+    extract_task_paths,
+    format_file_with_line_numbers,
     format_impact_section,
     format_obligations_section,
-    prioritize_content_files,
+    select_planning_content_files,
 )
 
 PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文件列表、机器推导的 impact 信息、文件内容（带行号）、以及用户任务。
@@ -104,50 +106,87 @@ class Planner:
             fd = failure.to_dict() if hasattr(failure, "to_dict") else dict(failure)
             seed_files.extend(list(fd.get("files") or []))
 
+        # Paths named in the task are seed impact (so boundary includes explicit targets).
+        task_paths = extract_task_paths(task)
+        seed_files = list(seed_files or []) + task_paths
+        # When the user names explicit files, scope symbol focus to definitions
+        # inside those files — avoid treating quoted instruction text (e.g.
+        # "EngineeringOrchestrator") as a global refactor obligation.
+        focus_symbols = None
+        if task_paths and index is not None:
+            from forge.context.index import extract_focus_symbols
+            scoped = []
+            for name in extract_focus_symbols(task):
+                defs = index.find_definition(name)
+                if any(getattr(d, "file_path", None) in task_paths for d in defs):
+                    scoped.append(name)
+            focus_symbols = scoped  # may be empty — still OK with path seeds
         machine = compute_impact_set(
-            index, task=task, seed_files=seed_files or None
+            index,
+            task=task if focus_symbols is None else "",
+            focus_symbols=focus_symbols,
+            seed_files=seed_files or None,
         )
+        # Ensure explicit task paths remain in impact even if no symbols matched
+        if task_paths:
+            files = set(machine.get("impact_files") or [])
+            files.update(task_paths)
+            machine["impact_files"] = sorted(files)
         obligations = compute_obligations(
             index,
-            task=task,
+            task=task if focus_symbols is None else "",
+            focus_symbols=focus_symbols,
             machine=machine,
             repair_constraints=repair_constraints,
         )
         impact_section = format_impact_section(machine)
         obligations_section = format_obligations_section(obligations)
 
-        # Full file tree is always provided (names never silently truncated).
+        # File *names* only in the tree listing (never dump whole-repo source).
         files_summary = "\n".join(repo.file_tree) if repo and repo.file_tree else "(empty repo)"
 
-        # Prefer impact files for content, then changed, then rest.
-        content_candidates = prioritize_content_files(
-            list((repo.file_tree if repo else None) or []),
-            list(machine.get("impact_files") or []),
-            list((repo.changed_files if repo else None) or []),
+        # Source injection: ONLY planning-relevant files (task paths / obligations / impact).
+        # Do NOT iterate the entire repository — that exhausts budget before real targets.
+        content_candidates = select_planning_content_files(
+            task=task,
+            impact_files=list(machine.get("impact_files") or []),
+            obligations=obligations,
+            file_tree=None,
+            max_secondary=0,
         )
+        for pth in extract_task_paths(task):
+            if pth not in content_candidates:
+                content_candidates.insert(0, pth)
+
         file_contents = ""
+        injected_files: list[str] = []
         total_chars = 0
-        MAX_CONTENT_CHARS = 48000
+        MAX_CONTENT_CHARS = 80000
+        PER_FILE_MAX_CHARS = 60000
         for f in content_candidates:
-            if total_chars > MAX_CONTENT_CHARS:
+            if total_chars >= MAX_CONTENT_CHARS:
                 file_contents += (
-                    f"\n... content budget reached; remaining files listed in tree only "
-                    f"({len(content_candidates)} candidates)\n"
+                    f"\n... content budget reached after {len(injected_files)} target files; "
+                    f"remaining candidates listed by name only: "
+                    f"{content_candidates[len(injected_files):]}\n"
                 )
                 break
-            filepath = os.path.join(project_root, f)
-            if not os.path.exists(filepath):
+            remaining = MAX_CONTENT_CHARS - total_chars
+            block = format_file_with_line_numbers(
+                project_root,
+                f,
+                max_lines=2500,
+                max_chars=min(PER_FILE_MAX_CHARS, remaining),
+            )
+            if not block:
+                file_contents += (
+                    f"\n=== TARGET FILE: {f} ===\n"
+                    f"(file not present on disk — create_file or missing)\n"
+                )
                 continue
-            try:
-                with open(filepath, "r", encoding="utf-8") as fh:
-                    lines = fh.readlines()
-                limit = 400 if len(lines) > 400 else len(lines)
-                numbered = "".join(f"{i+1:04d}  {line}" for i, line in enumerate(lines[:limit]))
-                suffix = "" if limit == len(lines) else f" (showing 1-{limit} of {len(lines)})"
-                file_contents += f"\n--- {f}{suffix} ---\n{numbered}\n"
-                total_chars += len(numbered)
-            except Exception:
-                pass
+            file_contents += block
+            injected_files.append(f)
+            total_chars += len(block)
 
         # Priority 2: structured repository model from index (not str(index)).
         model_section = "(no repository index)"
@@ -193,7 +232,7 @@ Structured failure (machine classified — repair must address this):
 Repair constraints (machine enforced by validator):
 {constraints_section}
 
-文件内容（带行号，impact 文件优先加载）:
+=== PLANNING TARGET CONTEXT (real source, line-numbered; authoritative) ===
 {file_contents}
 
 用户任务: {task}
@@ -252,6 +291,8 @@ create_file 不受 impact_files 限制。"""
             "callers_by_symbol": machine.get("callers_by_symbol"),
         }
         enriched["obligations"] = list(obligations)
+        enriched["injected_source_files"] = list(injected_files)
+        enriched["planning_content_candidates"] = list(content_candidates)
 
         # Re-check modify/delete boundary after merge.
         if plan.impact_files:
