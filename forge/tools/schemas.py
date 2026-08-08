@@ -1,10 +1,13 @@
-"""工具声明 — LLM 可见的唯一工具集。
+"""工具声明 — LLM 可见的工具集。
 
-仅暴露：本地只读 + 语义 Intent 工具。
-不暴露 world_* 原语。
+READ_ONLY_TOOL_DECLARATIONS: conversation / legacy 唯一允许集合。
+MUTATION_TOOL_DECLARATIONS: 仅供文档/测试对照；生产 mutation 必须走
+EngineeringOrchestrator → ExecutionAdapter → IntentExecutor，不得经 tool-loop。
+
+TOOL_DECLARATIONS 保持为只读集合（兼容旧 import），避免误把 mutation 暴露给 LLM。
 """
 
-TOOL_DECLARATIONS = [
+READ_ONLY_TOOL_DECLARATIONS = [
     {
         "name": "list_files",
         "description": "列出项目目录结构，用于了解项目布局。",
@@ -59,9 +62,14 @@ TOOL_DECLARATIONS = [
             "required": ["cmd"],
         },
     },
+]
+
+# Historical mutation tool schemas — NOT registered on conversation/legacy paths.
+# Mutations must go through EngineeringOrchestrator only.
+MUTATION_TOOL_DECLARATIONS = [
     {
         "name": "create_file",
-        "description": "创建一个新文件。指定路径和内容。需要用户确认后才会真正写入。",
+        "description": "创建一个新文件。仅可通过 EngineeringOrchestrator 执行，不可在 tool-loop 中调用。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -73,7 +81,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "modify_file",
-        "description": "修改已有文件。需要提供 object_id 与 operations。需要用户确认后才会真正写入。",
+        "description": "修改已有文件。仅可通过 EngineeringOrchestrator 执行。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -86,7 +94,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "delete_file",
-        "description": "删除文件对应的 Veritas Object。需要用户确认后才会真正删除。",
+        "description": "删除文件对应的 Veritas Object。仅可通过 EngineeringOrchestrator 执行。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -98,7 +106,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "link_objects",
-        "description": "在两个 Object 之间建立 Link 关系。",
+        "description": "在两个 Object 之间建立 Link。仅可通过 EngineeringOrchestrator 执行。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -114,7 +122,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "unlink_objects",
-        "description": "删除两个 Object 之间的 Link。",
+        "description": "删除两个 Object 之间的 Link。仅可通过 EngineeringOrchestrator 执行。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -125,3 +133,10 @@ TOOL_DECLARATIONS = [
         },
     },
 ]
+
+# Default LLM-visible set: read/discovery only (P1-A closure).
+TOOL_DECLARATIONS = list(READ_ONLY_TOOL_DECLARATIONS)
+
+MUTATION_TOOL_NAMES = frozenset(
+    d["name"] for d in MUTATION_TOOL_DECLARATIONS
+)
