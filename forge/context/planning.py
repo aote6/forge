@@ -523,3 +523,104 @@ def format_obligations_section(obligations: list[dict[str, Any]]) -> str:
             f" — {o.get('reason')}"
         )
     return "\n".join(lines)
+
+
+def extract_task_paths(task: str) -> list[str]:
+    """Extract likely repo-relative file paths mentioned in the task text."""
+    import re
+    if not task:
+        return []
+    found = re.findall(
+        r"(?<![\w./-])([A-Za-z0-9_./-]+\.(?:py|md|txt|json|toml|yml|yaml|cfg|ini))(?![\w./-])",
+        task,
+    )
+    out = []
+    seen = set()
+    for pth in found:
+        pth = pth.lstrip("./")
+        if pth.startswith("/") or ".." in pth.split("/"):
+            continue
+        if pth not in seen:
+            seen.add(pth)
+            out.append(pth)
+    return out[:40]
+
+
+def select_planning_content_files(
+    *,
+    task: str = "",
+    impact_files: Optional[list[str]] = None,
+    obligations: Optional[list[dict]] = None,
+    file_tree: Optional[list[str]] = None,
+    max_secondary: int = 0,
+) -> list[str]:
+    """Files whose source must be injected into Planner (not the whole tree).
+
+    Priority:
+      1. paths explicitly named in the task
+      2. required obligation files
+      3. impact files
+      4. optional secondary (default 0 — do not dump the repository)
+    """
+    primary: list[str] = []
+    seen = set()
+
+    def _add(paths):
+        for f in paths or []:
+            if not f or f in seen:
+                continue
+            seen.add(f)
+            primary.append(f)
+
+    _add(extract_task_paths(task))
+    for o in obligations or []:
+        if o.get("required") and o.get("file"):
+            _add([o["file"]])
+    _add(impact_files)
+    for o in obligations or []:
+        if not o.get("required") and o.get("file"):
+            _add([o["file"]])
+
+    if max_secondary and file_tree:
+        secondary = [f for f in file_tree if f not in seen]
+        _add(secondary[: max(0, int(max_secondary))])
+    return primary
+
+
+def format_file_with_line_numbers(
+    project_root: str,
+    rel_path: str,
+    *,
+    max_lines: int = 2000,
+    max_chars: int = 60000,
+) -> str:
+    """Load real file content with stable line numbers for Planner.
+
+    Missing file → empty string (create_file targets).
+    Large files are truncated with an explicit note.
+    """
+    import os
+
+    full = os.path.join(project_root, rel_path)
+    if not os.path.isfile(full):
+        return ""
+    try:
+        with open(full, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return ""
+    total = len(lines)
+    limit = min(total, max_lines)
+    numbered = []
+    chars = 0
+    for i, line in enumerate(lines[:limit]):
+        row = f"{i+1:04d}  {line}"
+        if chars + len(row) > max_chars:
+            numbered.append(f"... truncated at line {i + 1} by char budget\n")
+            break
+        numbered.append(row)
+        chars += len(row)
+    body = "".join(numbered)
+    shown = len(numbered)
+    suffix = "" if shown >= total else f" (showing up to {shown} of {total} lines)"
+    return f"\n=== TARGET FILE: {rel_path}{suffix} ===\n{body}"
