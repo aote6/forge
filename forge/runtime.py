@@ -3,8 +3,9 @@
 Production engineering path is uniquely:
   Runtime.run(task) → EngineeringOrchestrator.run()
 
-The legacy tool-loop (run_legacy) is retained only for interactive
-read-only discovery and is NOT used for any engineering mutation task.
+The legacy tool-loop (run_legacy) and conversation tool-loop are
+read/discovery only. All engineering mutations must go through
+Runtime.run → EngineeringOrchestrator (P1-A).
 """
 from __future__ import annotations
 
@@ -27,7 +28,11 @@ from forge.projections.git_projection import GitProjection
 from forge.projections.index_projection import IndexProjection
 from forge.system_prompt import SYSTEM_INSTRUCTION
 from forge.tools import make_tools
-from forge.tools.schemas import TOOL_DECLARATIONS
+from forge.tools.schemas import (
+    TOOL_DECLARATIONS,
+    READ_ONLY_TOOL_DECLARATIONS,
+    MUTATION_TOOL_NAMES,
+)
 from forge.workspace import Workspace
 from forge.world import WorldRuntime
 
@@ -49,6 +54,15 @@ class ToolExecutor:
         self.call_history.clear()
 
     def execute(self, tool_call) -> ToolResult:
+        # P1-A defense: mutation tools must not run outside EngineeringOrchestrator.
+        if tool_call.name in MUTATION_TOOL_NAMES:
+            return ToolResult.fail(
+                display=(
+                    f"⛔ 工具 {tool_call.name} 是工程变更操作，"
+                    f"只能通过 EngineeringOrchestrator 执行。"
+                    f"请使用 Runtime.run 的工程任务入口，不要在 conversation/legacy 中变更世界。"
+                )
+            )
         fn = self.tools.get(tool_call.name)
         if not fn:
             return ToolResult.fail(display=f"未知工具: {tool_call.name}")
@@ -111,10 +125,12 @@ class Runtime:
         except Exception as e:
             print(f"[recovery] error: {e}", file=sys.stderr)
 
+        # P1-A: tool-loop is read/discovery only. Mutations go via Orchestrator.
         tools, confirm_fn, abort_fn = make_tools(
             workspace=workspace,
             world_runtime=self.world,
             projections=self.projections,
+            allow_mutation=False,
         )
         self.executor = ToolExecutor(tools)
         self._confirm_fn = confirm_fn
@@ -183,7 +199,6 @@ class Runtime:
         as the engineering path, but without the six-phase machine.
         Conversation history provides context across turns.
         """
-        from forge.tools.schemas import TOOL_DECLARATIONS
         from forge.adapters.base import Message as ForgeMessage
         
         # Build messages with system prompt + conversation history + new task
@@ -200,7 +215,7 @@ class Runtime:
         
         # Tool-calling loop (max 12 iterations to prevent infinite loops)
         for _ in range(12):
-            resp = self.adapter.send(messages, TOOL_DECLARATIONS)
+            resp = self.adapter.send(messages, READ_ONLY_TOOL_DECLARATIONS)
             
             if not resp.tool_calls:
                 # No tool calls — LLM gave a text response
@@ -285,7 +300,7 @@ class Runtime:
             return "⏸️ 已拦截。"
 
         self.conversation.append(Message(role="user", content=user_input))
-        response = self.adapter.send(self.conversation.get_messages(), TOOL_DECLARATIONS)
+        response = self.adapter.send(self.conversation.get_messages(), READ_ONLY_TOOL_DECLARATIONS)
 
         step_count = 0
         while response.tool_calls:
@@ -353,7 +368,7 @@ class Runtime:
                     return result.display
 
             response = self.adapter.send(
-                self.conversation.get_messages(), TOOL_DECLARATIONS
+                self.conversation.get_messages(), READ_ONLY_TOOL_DECLARATIONS
             )
 
         if self.phase != AgentPhase.DONE:
