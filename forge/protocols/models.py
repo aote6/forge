@@ -90,6 +90,8 @@ class PlanStep:
     new_text: str = ""
     start_line: Optional[int] = None
     end_line: Optional[int] = None
+    # Priority 6: machine-derived expected symbols (from P2 Index, not LLM).
+    expected_symbols: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return to_jsonable(self)
@@ -108,6 +110,7 @@ class PlanStep:
             new_text=data.get("new_text", "") or "",
             start_line=data.get("start_line"),
             end_line=data.get("end_line"),
+            expected_symbols=list(data.get("expected_symbols") or []),
         )
 
 

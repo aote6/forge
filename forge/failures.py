@@ -262,6 +262,8 @@ def classify_verification_result(
         codes = {(i.get("code") or "").upper() for i in outcome_issues}
         if codes & {"CREATE_MISSING", "MODIFY_MISSING", "DELETE_STILL_PRESENT"}:
             code = FailureClass.PROJECTION_FAILURE.value
+        elif "MODIFY_NOOP" in codes:
+            code = FailureClass.EXECUTION_FAILURE.value
         elif "UNEXPECTED_FILE" in codes:
             code = FailureClass.VALIDATION_FAILURE.value
         else:
