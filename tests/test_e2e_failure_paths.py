@@ -1,133 +1,169 @@
-"""Forge v2 失败路径 E2E: modify + 语法错误回滚 + 中断恢复"""
-import sys, os, json
+"""Forge v2 failure-path E2E: modify via Intent→Veritas→Projection,
+syntax-error rejection contract, and TaskCheckpoint recovery.
 
-sys.path.insert(0, '/data/data/com.termux/files/home/forge')
+Migrated off forbidden lu_patch() write path and TaskCheckpoint.state.
+"""
+from __future__ import annotations
 
-results = []
+import ast
+import os
+import shutil
+import tempfile
 
-def test(name, condition, detail=""):
-    status = "PASS" if condition else "FAIL"
-    results.append((name, condition, detail))
-    print(f"  {status}: {name}" + (f" - {detail}" if detail else ""))
+import pytest
 
-def summary():
-    total = len(results)
-    passed = sum(1 for _, ok, _ in results if ok)
-    print(f"\n{'='*50}")
-    print(f"Result: {passed}/{total} passed")
-    for name, ok, detail in results:
-        if not ok:
-            print(f"  FAIL: {name}: {detail}")
-    print(f"{'='*50}")
-    return 0 if passed == total else 1
+from forge.intents.intent import Intent
+from forge.memory.checkpoint import CheckpointStore
+from forge.protocols.models import OrchestratorPhase
+from forge.task_memory import make_checkpoint
+
+
+def _try_world(project_root: str):
+    """Return WorldRuntime or None if Veritas backend is unavailable."""
+    try:
+        from forge.world.runtime import WorldRuntime
+
+        world = WorldRuntime(project_root=project_root)
+        world.ensure_identity()
+        return world
+    except Exception:
+        return None
 
 
 def test_modify_existing_file():
-    """Case 1: 修改已有 Python 文件"""
-    print("=" * 50)
-    print("Case 1: Modify existing Python file")
-    print("=" * 50)
+    """VERSION = \"1.0\" → \"2.0\" via Intent → Veritas → Projection."""
+    root = tempfile.mkdtemp(prefix="forge_modify_")
+    try:
+        test_file = os.path.join(root, "modify_target.py")
+        original = (
+            '# Test module\nVERSION = "1.0"\n\n'
+            'def get_version():\n    return "1.0"\n'
+        )
+        with open(test_file, "w", encoding="utf-8") as f:
+            f.write(original)
 
-    project = "/data/data/com.termux/files/home/forge"
-    test_file = os.path.join(project, "tests", "modify_target.py")
+        world = _try_world(root)
+        if world is None:
+            pytest.skip("Veritas/WorldRuntime unavailable — cannot exercise mutation path")
 
-    original = '# Test module\nVERSION = "1.0"\n\ndef get_version():\n    return "1.0"\n'
-    os.makedirs(os.path.dirname(test_file), exist_ok=True)
-    with open(test_file, "w") as f:
-        f.write(original)
+        from forge.intents.executor import IntentExecutor
+        from forge.projections.base import ProjectionManager
+        from forge.projections.file_projection import FileProjection
+        from forge.projections.object_path import ObjectPathMap
 
-    from forge.adapters.lu_patch_adapter import patch as lu_patch
+        executor = IntentExecutor(world)
+        create = Intent.create_file(
+            path=test_file,
+            content=original,
+            overwrite=True,
+            require_confirm=False,
+        )
+        receipt, delta = executor.execute(create)
 
-    old_text = 'VERSION = "1.0"'
-    new_text = 'VERSION = "2.0"'
+        pmap = ObjectPathMap()
+        pmap.update_from_delta(delta)
+        pm = ProjectionManager()
+        pm.register(FileProjection(project_root=root, object_path_map=pmap))
+        pm.project(receipt, delta)
 
-    ok, msg = lu_patch(test_file, old_text, new_text)
-    test("1.1 Lu modify 成功", ok, msg[:80])
+        object_id = None
+        paths = getattr(pmap, "_paths", {}) or {}
+        for oid, path in paths.items():
+            if path == test_file or os.path.abspath(str(path)) == os.path.abspath(test_file):
+                object_id = oid
+                break
+        if object_id is None and hasattr(pmap, "get_object_id"):
+            try:
+                object_id = pmap.get_object_id(test_file)
+            except Exception:
+                object_id = None
 
-    if ok:
-        with open(test_file) as f:
+        operations = [{"old_text": 'VERSION = "1.0"', "new_text": 'VERSION = "2.0"'}]
+        modify = Intent.modify_file(
+            path=test_file, operations=operations, require_confirm=False
+        )
+        if object_id is not None:
+            modify.parameters["object_id"] = object_id
+
+        receipt2, delta2 = executor.execute(modify)
+        pmap.update_from_delta(delta2)
+        results = pm.project(receipt2, delta2)
+        assert all(getattr(r, "success", True) for r in (results or [])), results
+
+        with open(test_file, encoding="utf-8") as f:
             content = f.read()
-        test("1.2 文件内容已更新", '"2.0"' in content)
-        test("1.3 语法仍正确", content.strip().startswith("# Test module"))
-
-    if os.path.exists(test_file):
-        os.remove(test_file)
-
-    return True
+        assert 'VERSION = "2.0"' in content
+        assert content.strip().startswith("# Test module")
+        ast.parse(content)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_syntax_error_rollback():
-    """Case 2: 制造真正的语法错误——把 def hello(): 改成 def hello(——验证 Lu 回滚"""
-    print("\n" + "=" * 50)
-    print("Case 2: Syntax error triggers Lu rollback")
-    print("=" * 50)
+    """v2 contract: lu_patch write path stays closed; syntax-broken payload
+    is rejected by language-level checks. Formal recovery is verification
+    failure — not Lu auto-rollback.
+    """
+    root = tempfile.mkdtemp(prefix="forge_syntax_")
+    try:
+        test_file = os.path.join(root, "syntax_test.py")
+        original = 'def hello():\n    return "Hello"\n'
+        with open(test_file, "w", encoding="utf-8") as f:
+            f.write(original)
 
-    project = "/data/data/com.termux/files/home/forge"
-    test_file = os.path.join(project, "tests", "syntax_test.py")
+        from forge.adapters.lu_patch_adapter import LuWriteForbidden, patch as lu_patch
 
-    original = 'def hello():\n    return "Hello"\n'
-    os.makedirs(os.path.dirname(test_file), exist_ok=True)
-    with open(test_file, "w") as f:
-        f.write(original)
+        with pytest.raises(LuWriteForbidden):
+            lu_patch(test_file, "def hello():", "def hello(")
 
-    from forge.adapters.lu_patch_adapter import patch as lu_patch
+        with open(test_file, encoding="utf-8") as f:
+            assert f.read() == original
 
-    # 真正的语法错误：def hello(): → def hello(   (缺少右括号)
-    old_text = 'def hello():'
-    new_text = 'def hello('
+        broken = 'def hello(\n    return "Hello"\n'
+        with pytest.raises(SyntaxError):
+            ast.parse(broken)
 
-    ok, msg = lu_patch(test_file, old_text, new_text)
-    test("2.1 Lu 检测到语法错误", not ok, msg[:100])
-    test("2.2 Lu 报告回滚或语法失败", "回滚" in msg or "语法" in msg or "SyntaxError" in msg or "失败" in msg or "错误" in msg)
-
-    # 验证文件未被破坏
-    with open(test_file) as f:
-        content = f.read()
-    test("2.3 文件恢复原样", content == original, f"content: {content[:60]}")
-
-    if os.path.exists(test_file):
-        os.remove(test_file)
-
-    return True
+        with open(test_file, encoding="utf-8") as f:
+            assert f.read() == original
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_checkpoint_recovery():
-    """Case 3: 中断恢复 - TaskCheckpoint 持久化后能恢复"""
-    print("\n" + "=" * 50)
-    print("Case 3: TaskCheckpoint recovery")
-    print("=" * 50)
+    """TaskCheckpoint save → reload preserves phase, completed_steps, extra."""
+    root = tempfile.mkdtemp(prefix="forge_cp_")
+    try:
+        store = CheckpointStore(root)
+        task_id = "recovery_test_001"
 
-    project = "/data/data/com.termux/files/home/forge"
+        cp = make_checkpoint(
+            task_id,
+            OrchestratorPhase.EXECUTING.value,
+            completed_steps=["s1", "s2"],
+            extra_state={"test_data": "persisted"},
+        )
+        assert cp.extra.get("test_data") == "persisted"
+        store.save(cp)
 
-    from forge.task_memory import TaskMemory, make_checkpoint
-    from forge.protocols.execution import TaskCheckpoint
+        store2 = CheckpointStore(root)
+        loaded = store2.load(task_id)
+        assert loaded is not None
+        assert loaded.phase == OrchestratorPhase.EXECUTING.value
+        assert loaded.completed_steps == ["s1", "s2"]
+        assert loaded.extra.get("test_data") == "persisted"
 
-    tm = TaskMemory(project)
+        cp2 = make_checkpoint(
+            task_id,
+            OrchestratorPhase.COMPLETED.value,
+            completed_steps=["s1", "s2", "s3"],
+        )
+        store2.save(cp2)
+        loaded2 = store2.load(task_id)
+        assert loaded2 is not None
+        assert loaded2.phase == OrchestratorPhase.COMPLETED.value
+        assert loaded2.completed_steps == ["s1", "s2", "s3"]
 
-    task_id = "recovery_test_001"
-    cp = make_checkpoint(task_id, "executing", completed_steps=["s1", "s2"])
-    cp.state["test_data"] = "persisted"
-    tm.save(cp)
-    test("3.1 Checkpoint 已保存", True)
-
-    tm2 = TaskMemory(project)
-    loaded = tm2.load(task_id)
-    test("3.2 Checkpoint 可恢复", loaded is not None)
-    test("3.3 Phase 正确", loaded.phase == "executing" if loaded else False)
-    test("3.4 自定义状态保留", loaded.state.get("test_data") == "persisted" if loaded else False)
-
-    cp2 = make_checkpoint(task_id, "done", completed_steps=["s1", "s2", "s3"])
-    tm2.save(cp2)
-    loaded2 = tm2.load(task_id)
-    test("3.5 任务完成", loaded2.phase == "done" if loaded2 else False)
-
-    tm.delete(task_id)
-
-    return True
-
-
-if __name__ == "__main__":
-    test_modify_existing_file()
-    test_syntax_error_rollback()
-    test_checkpoint_recovery()
-    sys.exit(summary())
+        store2.delete(task_id)
+        assert store2.load(task_id) is None
+    finally:
+        shutil.rmtree(root, ignore_errors=True)

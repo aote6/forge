@@ -14,7 +14,7 @@ from forge.projections.base import ProjectionManager, Projection, ProjectionResu
 from forge.recovery.replay import ProjectionRecovery
 
 
-class TestProjection(Projection):
+class _RecordingProjection(Projection):
     """记录每次 apply 的 receipt version。"""
 
     def __init__(self, name="test"):
@@ -69,7 +69,7 @@ def test_normal_recovery():
 
     # 第一次启动
     pm1 = ProjectionManager()
-    proj1 = TestProjection("file")
+    proj1 = _RecordingProjection("file")
     pm1.register(proj1)
 
     recovery1 = ProjectionRecovery(world, pm1)
@@ -81,7 +81,7 @@ def test_normal_recovery():
 
     # 第二次启动：不应再消费
     pm2 = ProjectionManager()
-    proj2 = TestProjection("file")
+    proj2 = _RecordingProjection("file")
     pm2.register(proj2)
 
     recovery2 = ProjectionRecovery(world, pm2)
@@ -110,7 +110,7 @@ def test_crash_recovery():
 
     # 模拟: v1 和 v2 成功，但 v3 的 checkpoint 写入失败（手动删除 checkpoint 模拟）
     pm1 = ProjectionManager()
-    proj1 = TestProjection("file")
+    proj1 = _RecordingProjection("file")
     pm1.register(proj1)
 
     recovery1 = ProjectionRecovery(world, pm1)
@@ -126,7 +126,7 @@ def test_crash_recovery():
 
     # "重启"：checkpoint 从文件加载
     pm2 = ProjectionManager()
-    proj2 = TestProjection("file")
+    proj2 = _RecordingProjection("file")
     pm2.register(proj2)
 
     recovery2 = ProjectionRecovery(world, pm2)
