@@ -26,6 +26,11 @@ from forge.protocols.models import (
 )
 from forge.projections.base import ProjectionManager
 from forge.world.runtime import WorldRuntime
+from forge.context.snapshot import (
+    StaleSnapshotError,
+    assert_snapshot_match,
+    take_snapshot,
+)
 
 
 def plan_to_proposals(plan: Plan) -> list[ChangeProposal]:
@@ -138,6 +143,13 @@ class EngineeringOrchestrator:
         assert self.checkpoint is not None
 
         if self.phase == OrchestratorPhase.UNDERSTANDING:
+            # Priority 1: local machine-verifiable repository snapshot (required).
+            snap = take_snapshot(self.project_root)
+            self.checkpoint.snapshot_id = snap.snapshot_id
+            self.checkpoint.tree_hash = snap.tree_hash
+            self.checkpoint.commit_hash = snap.commit_hash
+            self.checkpoint.extra["snapshot"] = snap.to_dict()
+            # Hub RepoContext remains supplementary understanding (may raise).
             self.checkpoint.repo_context = get_repo_context(
                 self.project_root, hub=self.hub
             )
@@ -148,6 +160,12 @@ class EngineeringOrchestrator:
         if self.phase == OrchestratorPhase.PLANNING:
             if self.planner is None:
                 raise RuntimeError("Planner not configured")
+            # Refresh snapshot at plan time (covers VERIFY→PLAN re-entry without UNDERSTAND).
+            snap = take_snapshot(self.project_root)
+            self.checkpoint.snapshot_id = snap.snapshot_id
+            self.checkpoint.tree_hash = snap.tree_hash
+            self.checkpoint.commit_hash = snap.commit_hash
+            self.checkpoint.extra["snapshot"] = snap.to_dict()
             plan, _raw = self.planner.plan(
                 self.checkpoint.goal,
                 self.checkpoint.repo_context,
@@ -156,6 +174,10 @@ class EngineeringOrchestrator:
             # Normalize to protocol Plan if planner returns legacy type
             if not isinstance(plan, Plan):
                 plan = self._coerce_plan(plan)
+            # Bind plan to repository snapshot — required engineering invariant.
+            plan.snapshot_id = snap.snapshot_id
+            plan.tree_hash = snap.tree_hash
+            plan.commit_hash = snap.commit_hash
             self.checkpoint.plan = plan
             self.phase = OrchestratorPhase.CHECKING
             self._persist()
@@ -184,6 +206,25 @@ class EngineeringOrchestrator:
             plan = self.checkpoint.plan
             if plan is None:
                 raise RuntimeError("EXECUTE without plan")
+            # Priority 1: fail-closed if repository changed since plan binding.
+            planned_sid = (
+                getattr(plan, "snapshot_id", None)
+                or self.checkpoint.snapshot_id
+                or ""
+            )
+            try:
+                assert_snapshot_match(planned_sid, self.project_root)
+            except StaleSnapshotError as e:
+                self.checkpoint.errors.append(str(e))
+                self.checkpoint.extra["stale_snapshot"] = {
+                    "planned_id": e.planned_id,
+                    "current_id": e.current_id,
+                    "code": e.code,
+                }
+                # Do not call ExecutionAdapter — zero Veritas mutation.
+                self.phase = OrchestratorPhase.FAILED
+                self._persist()
+                return
             proposals = self.checkpoint.change_proposals or plan_to_proposals(plan)
             results = []
             for p in proposals:
@@ -317,4 +358,7 @@ class EngineeringOrchestrator:
             goal=getattr(plan, "goal", ""),
             steps=steps,
             assumptions=list(getattr(plan, "assumptions", []) or []),
+            snapshot_id=getattr(plan, "snapshot_id", "") or "",
+            tree_hash=getattr(plan, "tree_hash", "") or "",
+            commit_hash=getattr(plan, "commit_hash", "") or "",
         )
