@@ -371,6 +371,261 @@ class TestOrchestratorVerifyStoresFailure(unittest.TestCase):
             self.assertTrue(hist)
             self.assertEqual(hist[-1]["code"], FailureClass.MISSING_FILE.value)
             self.assertEqual(orch.phase, OrchestratorPhase.PLANNING)
+            # correction budget must be persisted for resume
+            self.assertEqual(orch.checkpoint.extra.get("correction_count"), 1)
+
+
+class TestDuplicateRepairOrchestratorWiring(unittest.TestCase):
+    """Engine must use repair_attempts (not failure_history) for duplicate check."""
+
+    def test_engine_rejects_same_failure_same_plan(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _w(root, "a.py", "x\n")
+            plan = Plan(
+                plan_id="p1",
+                goal="g",
+                steps=[
+                    PlanStep(
+                        step_id="s1",
+                        description="d",
+                        target_files=["a.py"],
+                        operation_type="modify",
+                        start_line=1,
+                        end_line=1,
+                        new_text="y\n",
+                    )
+                ],
+            )
+            fail = FailureRecord(
+                code=FailureClass.TEST_FAILURE.value,
+                message="t",
+                files=["a.py"],
+                phase="verifying",
+            )
+            prior = repair_attempt_record(fail, plan)
+            planner = MagicMock()
+            planner.plan = MagicMock(return_value=(plan, {}))
+            orch = EngineeringOrchestrator(
+                project_root=str(root),
+                world=MagicMock(),
+                projections=ProjectionManager(),
+                planner=planner,
+                hub=MagicMock(),
+                checkpoint_store=CheckpointStore(str(root)),
+            )
+            orch.checkpoint = TaskCheckpoint(
+                task_id="t_dup",
+                phase=OrchestratorPhase.PLANNING.value,
+                goal="g",
+                repo_context=RepoContext(file_tree=["a.py"]),
+                extra={
+                    "failure_history": [fail.to_dict()],
+                    "last_failure": fail.to_dict(),
+                    "repair_attempts": [prior],
+                },
+            )
+            orch.phase = OrchestratorPhase.PLANNING
+            orch._step()
+            self.assertEqual(orch.phase, OrchestratorPhase.FAILED)
+            self.assertTrue(
+                any("duplicate repair" in e for e in orch.checkpoint.errors)
+            )
+
+
+class TestExecuteFailureSelfCorrection(unittest.TestCase):
+    def test_repairable_execute_failure_goes_to_planning(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _w(root, "a.py", "x\n")
+            snap = take_snapshot(str(root))
+            from forge.protocols.models import ExecutionResult
+
+            orch = EngineeringOrchestrator(
+                project_root=str(root),
+                world=MagicMock(),
+                projections=ProjectionManager(),
+                planner=MagicMock(),
+                hub=MagicMock(),
+                checkpoint_store=CheckpointStore(str(root)),
+            )
+            orch.execution = MagicMock()
+            orch.execution.execute_proposal = MagicMock(
+                return_value=ExecutionResult(
+                    proposal_id="p1",
+                    success=False,
+                    error="SyntaxError: invalid syntax",
+                    files=["a.py"],
+                )
+            )
+            orch.checkpoint = TaskCheckpoint(
+                task_id="t_ex_repair",
+                phase=OrchestratorPhase.EXECUTING.value,
+                plan=Plan(
+                    plan_id="pl",
+                    goal="g",
+                    snapshot_id=snap.snapshot_id,
+                    tree_hash=snap.tree_hash,
+                    steps=[
+                        PlanStep(
+                            step_id="s1",
+                            description="d",
+                            target_files=["a.py"],
+                            operation_type="modify",
+                        )
+                    ],
+                ),
+                goal="g",
+                snapshot_id=snap.snapshot_id,
+                change_proposals=[
+                    ChangeProposal(
+                        proposal_id="p1",
+                        plan_id="pl",
+                        target_files=["a.py"],
+                        operations=[{"type": "modify"}],
+                    )
+                ],
+            )
+            orch.phase = OrchestratorPhase.EXECUTING
+            orch._step()
+            self.assertEqual(orch.phase, OrchestratorPhase.PLANNING)
+            hist = orch.checkpoint.extra.get("failure_history") or []
+            self.assertEqual(hist[-1]["code"], FailureClass.SYNTAX_FAILURE.value)
+            self.assertEqual(orch.checkpoint.extra.get("correction_count"), 1)
+
+    def test_stale_execute_still_failed_zero_mutation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _w(root, "a.py", "v1\n")
+            snap = take_snapshot(str(root))
+            plan = Plan(
+                plan_id="pl",
+                goal="g",
+                snapshot_id=snap.snapshot_id,
+                tree_hash=snap.tree_hash,
+                steps=[],
+            )
+            _w(root, "a.py", "v2\n")
+            orch = EngineeringOrchestrator(
+                project_root=str(root),
+                world=MagicMock(),
+                projections=ProjectionManager(),
+                planner=MagicMock(),
+                hub=MagicMock(),
+                checkpoint_store=CheckpointStore(str(root)),
+            )
+            orch.execution = MagicMock()
+            orch.execution.execute_proposal = MagicMock()
+            orch.checkpoint = TaskCheckpoint(
+                task_id="t_stale2",
+                phase=OrchestratorPhase.EXECUTING.value,
+                plan=plan,
+                goal="g",
+                snapshot_id=plan.snapshot_id,
+                change_proposals=[
+                    ChangeProposal(
+                        proposal_id="p1",
+                        plan_id="pl",
+                        target_files=["a.py"],
+                        operations=[{"type": "modify"}],
+                    )
+                ],
+            )
+            orch.phase = OrchestratorPhase.EXECUTING
+            orch._step()
+            orch.execution.execute_proposal.assert_not_called()
+            self.assertEqual(orch.phase, OrchestratorPhase.FAILED)
+
+
+class TestStaleNotInfinitePlanLoop(unittest.TestCase):
+    def test_stale_in_history_does_not_block_fresh_plan(self):
+        """After STALE is recorded, PLANNING must still be able to produce a
+        fresh plan (STALE is non-repairable and must not lock the loop)."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _w(root, "a.py", "x\n")
+            frec = FailureRecord(
+                code=FailureClass.STALE_SNAPSHOT.value,
+                message="stale",
+                phase="executing",
+                repairable=False,
+            )
+            fresh = Plan(
+                plan_id="fresh",
+                goal="g",
+                steps=[
+                    PlanStep(
+                        step_id="s1",
+                        description="d",
+                        target_files=["a.py"],
+                        operation_type="modify",
+                        start_line=1,
+                        end_line=1,
+                        new_text="y\n",
+                    )
+                ],
+            )
+            planner = MagicMock()
+            planner.plan = MagicMock(return_value=(fresh, {}))
+            orch = EngineeringOrchestrator(
+                project_root=str(root),
+                world=MagicMock(),
+                projections=ProjectionManager(),
+                planner=planner,
+                hub=MagicMock(),
+                checkpoint_store=CheckpointStore(str(root)),
+            )
+            orch.checkpoint = TaskCheckpoint(
+                task_id="t_stale_plan",
+                phase=OrchestratorPhase.PLANNING.value,
+                goal="g",
+                repo_context=RepoContext(file_tree=["a.py"]),
+                extra={
+                    "failure_history": [frec.to_dict()],
+                    "last_failure": frec.to_dict(),
+                },
+            )
+            orch.phase = OrchestratorPhase.PLANNING
+            orch._step()
+            # Must reach CHECKING with a bound plan, not bounce to UNDERSTANDING
+            self.assertEqual(orch.phase, OrchestratorPhase.CHECKING)
+            self.assertIsNotNone(orch.checkpoint.plan)
+            self.assertTrue(orch.checkpoint.plan.snapshot_id)
+            # Planner must be called without failure repair context
+            kwargs = planner.plan.call_args.kwargs
+            self.assertIsNone(kwargs.get("failure"))
+
+
+class TestCorrectionCountResume(unittest.TestCase):
+    def test_correction_count_restored_on_resume(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _w(root, "a.py", "x\n")
+            store = CheckpointStore(str(root))
+            cp = TaskCheckpoint(
+                task_id="t_resume_cc",
+                phase=OrchestratorPhase.PLANNING.value,
+                goal="g",
+                repo_context=RepoContext(file_tree=["a.py"]),
+                extra={"correction_count": 2, "failure_history": []},
+            )
+            store.save(cp)
+            orch = EngineeringOrchestrator(
+                project_root=str(root),
+                world=MagicMock(),
+                projections=ProjectionManager(),
+                planner=MagicMock(),
+                hub=MagicMock(),
+                checkpoint_store=store,
+            )
+            saved = store.load("t_resume_cc")
+            self.assertIsNotNone(saved)
+            orch.checkpoint = saved
+            orch.phase = OrchestratorPhase(saved.phase)
+            orch._correction_count = int(
+                (orch.checkpoint.extra or {}).get("correction_count") or 0
+            )
+            self.assertEqual(orch._correction_count, 2)
 
 
 if __name__ == "__main__":
