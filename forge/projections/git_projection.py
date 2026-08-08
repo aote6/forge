@@ -57,9 +57,16 @@ class GitProjection(Projection):
 
     def _paths_from_delta(self, delta: TransactionDelta) -> list[str]:
         paths: list[str] = []
-        for object_id, writes in delta.memory_written.items():
-            for state_id, value in writes:
-                if state_id == 0 and value:
+        # memory_written is a list of dicts: [{'object_id': N, 'state_id': N, 'value_hex': '...'}, ...]
+        for w in (delta.memory_written or []):
+            if isinstance(w, dict):
+                state_id = w.get("state_id")
+                value_hex = w.get("value_hex")
+                if state_id == 0 and value_hex:
+                    try:
+                        value = bytes.fromhex(value_hex).decode("utf-8")
+                    except (ValueError, UnicodeDecodeError):
+                        continue
                     p = Path(value)
                     if not p.is_absolute():
                         p = Path(self.project_root) / p
