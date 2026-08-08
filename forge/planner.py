@@ -53,15 +53,23 @@ PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文�
 
 规则：
 1. modify 时必须提供 start_line 和 end_line，指向上面文件内容中的行号
-2. modify 时必须提供 new_text，即替换后的新内容
+2. modify 时必须提供 new_text 字段（字符串；删除整行范围时可为空字符串 ""）
 3. create_file 时必须提供 content，即完整的新文件内容
 4. start_line/end_line 必须在文件行数范围内
-5. 只输出 JSON，不要输出任何解释文字
+5. 只输出 JSON，不要输出任何解释文字、markdown 代码围栏外的文字、或逐步推理
 6. modify/delete 的 target_files 必须落在 impact_files 内（若提供了 impact_files）
 7. create_file 不受 impact_files 限制
 8. 多文件 API 修改时：先改 definition，再改 callers，再改 tests；用 dependencies 表达顺序
 9. 对 AMBIGUOUS symbols，不得擅自选择错误定义文件；只改任务明确指向的文件
 10. 不要修改 Machine impact set 之外的无关文件，除非任务明确要求 create_file
+
+忠实执行约束（最高优先级，机器会校验）：
+11. 用户若要求「精确删除/替换固定字符串」，必须按字面做字符串编辑，禁止改写成语义清理、禁止删减其他文字、禁止「优化描述」
+12. 用户若要求「只修改 description / 某字段」，不得改动 name、parameters、格式、其它字段
+13. 用户若给出必须保留的文字，new_text 中必须原样保留；禁止自行概括或省略
+14. 每个 modify 步骤的 new_text 必须是替换后的完整行内容（含换行语义），不得省略为摘要
+15. 禁止输出空 steps；禁止重复 step_id；禁止指向不存在文件（create 除外）
+16. 若任务只需改一个文件的少量行，只产出必要的最少步骤，不要扩展范围
 """
 
 
@@ -309,22 +317,44 @@ create_file 不受 impact_files 限制。"""
         return plan, enriched
 
     def _extract_json(self, raw: str) -> Optional[dict]:
+        if not raw or not raw.strip():
+            return None
+        text = raw.strip()
+        # Direct parse
         try:
-            return json.loads(raw)
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                return obj
         except json.JSONDecodeError:
             pass
-        match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', raw, re.DOTALL)
+        # Fenced markdown
+        match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
         if match:
             try:
-                return json.loads(match.group(1).strip())
+                obj = json.loads(match.group(1).strip())
+                if isinstance(obj, dict):
+                    return obj
             except json.JSONDecodeError:
                 pass
-        start = raw.find('{')
-        end = raw.rfind('}')
+        # First {...} span
+        start = text.find('{')
+        end = text.rfind('}')
         if start != -1 and end != -1 and end > start:
+            candidate = text[start:end + 1]
             try:
-                return json.loads(raw[start:end+1])
-            except json.JSONDecodeError:
+                obj = json.loads(candidate)
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError as e:
+                # Truncation signal: unclosed structures → clearer failure upstream
+                open_braces = candidate.count('{') - candidate.count('}')
+                open_brackets = candidate.count('[') - candidate.count(']')
+                if open_braces > 0 or open_brackets > 0:
+                    print(
+                        f"[Planner] JSON appears truncated "
+                        f"(unbalanced braces={open_braces} brackets={open_brackets}): {e}",
+                        file=sys.stderr,
+                    )
                 pass
         return None
 
