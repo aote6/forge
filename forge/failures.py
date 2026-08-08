@@ -19,6 +19,7 @@ class FailureClass(str, Enum):
     RECEIPT_FAILURE = "RECEIPT_FAILURE"
     BUILD_FAILURE = "BUILD_FAILURE"
     TEST_FAILURE = "TEST_FAILURE"
+    TEST_SELECTION_FAILURE = "TEST_SELECTION_FAILURE"
     SYNTAX_FAILURE = "SYNTAX_FAILURE"
     VALIDATION_FAILURE = "VALIDATION_FAILURE"
     EXECUTION_FAILURE = "EXECUTION_FAILURE"
@@ -202,7 +203,10 @@ def classify_verification_result(
         # Also accept explicit evidence flag
         if evidence.get("test_failure"):
             is_test = True
-        code = FailureClass.TEST_FAILURE.value if is_test else FailureClass.BUILD_FAILURE.value
+        if evidence.get("selected_test_failure") and is_test:
+            code = FailureClass.TEST_SELECTION_FAILURE.value
+        else:
+            code = FailureClass.TEST_FAILURE.value if is_test else FailureClass.BUILD_FAILURE.value
         records.append(
             FailureRecord(
                 code=code,
@@ -396,7 +400,11 @@ def build_repair_constraints(
             notes="Repair must touch syntax-failed files",
         )
 
-    if code in (FailureClass.TEST_FAILURE.value, FailureClass.BUILD_FAILURE.value):
+    if code in (
+        FailureClass.TEST_FAILURE.value,
+        FailureClass.TEST_SELECTION_FAILURE.value,
+        FailureClass.BUILD_FAILURE.value,
+    ):
         impact = list(files)
         if index is not None and files:
             for f in files:

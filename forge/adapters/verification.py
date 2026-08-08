@@ -31,6 +31,7 @@ def verify(
     plan: Any = None,
     expected_symbols: dict | None = None,
     pre_snapshot: dict | None = None,
+    test_targets: dict | None = None,
     skip_build: bool = False,
 ) -> VerificationResult:
     """Run structured verification: receipt → projection → outcome → build.
@@ -46,6 +47,7 @@ def verify(
         expected_symbols: optional {file: [symbol, ...]} structural expectations
         skip_build: if True, do not invoke SMS (useful for unit tests)
         pre_snapshot: optional {path: sha256} from EXECUTE entry (P6)
+        test_targets: optional P8 selection dict (test_files / required / ...)
     """
     if not isinstance(request, VerificationRequest):
         raise TypeError("verification.verify requires VerificationRequest")
@@ -154,7 +156,25 @@ def verify(
     evidence["outcome_ok"] = outcome_ok
     evidence["syntax_ok"] = syntax_ok
 
-    # ── 4. Build check (SMS/Kuai, optional) ──────────────────
+    # ── 4. Build / selected-test check (SMS/Kuai, optional) ──
+    # P8: attach machine test_targets to SMS payload via request.hints
+    if test_targets:
+        evidence["test_selection"] = {
+            "test_files": list(test_targets.get("test_files") or []),
+            "required": list(test_targets.get("required") or []),
+            "advisory": list(test_targets.get("advisory") or []),
+            "forced_failed": list(test_targets.get("forced_failed") or []),
+            "empty": bool(test_targets.get("empty")),
+            "reasons": dict(test_targets.get("reasons") or {}),
+        }
+        hints = dict(getattr(request, "hints", None) or {})
+        hints["test_targets"] = evidence["test_selection"]
+        # File-level targets for SMS that support subset runs
+        hints["test_files"] = list(test_targets.get("test_files") or [])
+        if test_targets.get("forced_failed"):
+            hints["failed_tests"] = list(test_targets.get("forced_failed") or [])
+        request.hints = hints
+
     if not skip_build:
         client = hub or HubClient(project_root=project_root)
         try:
@@ -186,6 +206,27 @@ def verify(
                     evidence["failure_kind"] = "test"
                 if data.get("failed_files"):
                     evidence["failed_files"] = list(data.get("failed_files") or [])
+                # Structured per-test results if SMS provides them
+                raw_results = data.get("test_results") or data.get("results") or []
+                if isinstance(raw_results, list) and raw_results:
+                    normalized = []
+                    for item in raw_results:
+                        if not isinstance(item, dict):
+                            continue
+                        normalized.append({
+                            "test_name": item.get("test_name") or item.get("name") or item.get("nodeid") or "",
+                            "status": item.get("status") or item.get("outcome") or "",
+                            "duration": item.get("duration"),
+                            "error_message": (item.get("error_message") or item.get("error") or item.get("longrepr") or "")[:500],
+                            "file": item.get("file") or item.get("path") or "",
+                        })
+                    evidence["test_results"] = normalized
+                # Selected targets failed → mark for classifier
+                if not build_ok and test_targets and not test_targets.get("empty"):
+                    evidence["selected_test_failure"] = True
+                    if evidence.get("test_failure") or data.get("failed_tests"):
+                        evidence["test_failure"] = True
+                        evidence["failure_kind"] = "test"
                 if not build_ok:
                     failures.append(f"build: {data.get('failures', ['build failed'])}")
             else:
