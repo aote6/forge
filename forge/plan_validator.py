@@ -13,7 +13,7 @@ class PlanValidator:
     def __init__(self, project_root: str = "."):
         self.project_root = project_root
 
-    def validate(self, plan_dict: dict, repo: RepoContext) -> tuple[Plan, dict]:
+    def validate(self, plan_dict: dict, repo: RepoContext, repair_constraints=None) -> tuple[Plan, dict]:
         """校验并补充 old_text。返回 (Plan, enriched_dict)"""
         if not isinstance(plan_dict, dict):
             raise PlanValidationError("Plan 必须是 dict")
@@ -133,6 +133,49 @@ class PlanValidator:
                                 f"{step.step_id}: target '{tf}' outside impact_files "
                                 f"boundary {sorted(allowed)}"
                             )
+
+        # Priority 3: machine repair constraints from classified failure
+        if repair_constraints is not None:
+            from forge.failures import RepairConstraints, FailureClass
+            rc = repair_constraints
+            if isinstance(rc, dict):
+                rc = RepairConstraints.from_dict(rc)
+            if not getattr(rc, "allow_mutation", True):
+                raise PlanValidationError(
+                    f"repair blocked: failure {rc.failure_code} does not allow mutation"
+                )
+            force_create = set(getattr(rc, "force_create_files", None) or [])
+            must_touch = set(getattr(rc, "must_touch_files", None) or [])
+            required_impact = set(getattr(rc, "required_impact_files", None) or [])
+            forbidden = set(getattr(rc, "forbidden_ops", None) or [])
+
+            for step in steps:
+                op = step.operation_type
+                if op in forbidden:
+                    raise PlanValidationError(
+                        f"{step.step_id}: operation '{op}' forbidden by repair constraints"
+                    )
+                for tf in step.target_files:
+                    if tf in force_create and op in ("modify", "delete_file", "delete"):
+                        raise PlanValidationError(
+                            f"{step.step_id}: missing file '{tf}' requires create_file, not {op}"
+                        )
+                    if required_impact and op in ("modify", "delete_file", "delete"):
+                        if tf not in required_impact:
+                            raise PlanValidationError(
+                                f"{step.step_id}: target '{tf}' outside repair "
+                                f"required_impact_files {sorted(required_impact)}"
+                            )
+
+            if must_touch:
+                touched = set()
+                for step in steps:
+                    touched.update(step.target_files)
+                if not (touched & must_touch):
+                    raise PlanValidationError(
+                        f"repair plan must touch at least one of {sorted(must_touch)}; "
+                        f"got {sorted(touched)}"
+                    )
 
         import time
         plan = Plan(
