@@ -220,6 +220,65 @@ def classify_verification_result(
             )
         )
 
+    # Priority 5: syntax / outcome issues from evidence
+    outcome = evidence.get("outcome") or {}
+    outcome_issues = list(outcome.get("issues") or [])
+    if evidence.get("syntax_ok") is False or any(
+        (i.get("code") or "").upper() == "SYNTAX" for i in outcome_issues
+    ):
+        syn_files = []
+        for i in outcome_issues:
+            if (i.get("code") or "").upper() == "SYNTAX":
+                syn_files.extend(i.get("files") or [])
+        # also scrape failures list
+        for f in failures:
+            if isinstance(f, str) and f.startswith("syntax:"):
+                # "syntax: path: msg"
+                parts = f.split(":", 2)
+                if len(parts) >= 2 and parts[1].strip().endswith(".py"):
+                    syn_files.append(parts[1].strip())
+        syn_files = sorted(set(syn_files))
+        records.append(
+            FailureRecord(
+                code=FailureClass.SYNTAX_FAILURE.value,
+                message="; ".join(f for f in failures if "syntax" in f.lower())
+                or "syntax check failed",
+                phase=phase,
+                files=syn_files,
+                evidence={"outcome_issues": [i for i in outcome_issues if (i.get("code") or "").upper() == "SYNTAX"]},
+                retryable=True,
+                repairable=True,
+            )
+        )
+    elif evidence.get("outcome_ok") is False or any(
+        (i.get("code") or "").upper() not in ("", "SYNTAX") for i in outcome_issues
+    ):
+        out_files = []
+        for i in outcome_issues:
+            if (i.get("code") or "").upper() != "SYNTAX":
+                out_files.extend(i.get("files") or [])
+        out_files = sorted(set(out_files))
+        # Map outcome codes toward existing failure classes
+        codes = {(i.get("code") or "").upper() for i in outcome_issues}
+        if codes & {"CREATE_MISSING", "MODIFY_MISSING", "DELETE_STILL_PRESENT"}:
+            code = FailureClass.PROJECTION_FAILURE.value
+        elif "UNEXPECTED_FILE" in codes:
+            code = FailureClass.VALIDATION_FAILURE.value
+        else:
+            code = FailureClass.PROJECTION_FAILURE.value
+        records.append(
+            FailureRecord(
+                code=code,
+                message="; ".join(f for f in failures if "outcome" in f.lower())
+                or "outcome verification failed",
+                phase=phase,
+                files=out_files,
+                evidence={"outcome_issues": outcome_issues},
+                retryable=True,
+                repairable=True,
+            )
+        )
+
     if not records and failures:
         records.append(
             FailureRecord(

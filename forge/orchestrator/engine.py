@@ -405,6 +405,7 @@ class EngineeringOrchestrator:
                 receipt=last_receipt,
                 delta=last_delta,
                 execution_results=exec_results,
+                plan=plan,
             )
             self.checkpoint.verification_results.append(vres)
             if vres.status == CheckStatus.FAIL:
