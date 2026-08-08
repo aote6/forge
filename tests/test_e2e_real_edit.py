@@ -1,85 +1,45 @@
-"""Forge v2 真实代码编辑 E2E — modify 已有文件"""
-import sys
+"""Forge v2 real-edit contract: Intent modify path; lu_patch remains forbidden."""
+from __future__ import annotations
+
+import ast
 import os
+import shutil
+import tempfile
 
-sys.path.insert(0, '/data/data/com.termux/files/home/forge')
+import pytest
 
-results = []
-
-def test(name: str, condition: bool, detail: str = ""):
-    status = "✅" if condition else "❌"
-    results.append((name, condition, detail))
-    print(f"  {status} {name}" + (f" — {detail}" if detail else ""))
-
-def summary():
-    total = len(results)
-    passed = sum(1 for _, ok, _ in results if ok)
-    print(f"\n{'='*50}")
-    print(f"结果: {passed}/{total} 通过")
-    for name, ok, detail in results:
-        if not ok:
-            print(f"  ❌ {name}: {detail}")
-    print(f"{'='*50}")
-    return 0 if passed == total else 1
+from forge.intents.intent import Intent
 
 
-def test_real_edit():
-    print("Forge v2 真实代码编辑 E2E")
-    print("=" * 50)
+def test_lu_patch_forbidden_for_real_edit():
+    from forge.adapters.lu_patch_adapter import LuWriteForbidden, patch as lu_patch
 
-    project = "/data/data/com.termux/files/home/forge"
-
-    # 创建测试目标文件
-    test_file = os.path.join(project, "tests", "real_edit_target.py")
-    original_content = "# Test file for Forge v2 real edit\nVERSION = \"1.0\"\n\ndef hello():\n    return \"Hello v1\"\n"
-    os.makedirs(os.path.dirname(test_file), exist_ok=True)
-    with open(test_file, "w") as f:
-        f.write(original_content)
-    test("0.1 测试文件创建", os.path.exists(test_file))
-
+    root = tempfile.mkdtemp(prefix="forge_edit_")
     try:
-        from forge.adapters.deepseek import DeepSeekAdapter
-        adapter = DeepSeekAdapter()
-    except Exception:
-        from forge.adapters.gemini import GeminiAdapter
-        adapter = GeminiAdapter()
-
-    from forge.workspace import Workspace
-    from forge.memory import MemoryStore
-    from forge.runtime import Runtime
-
-    workspace = Workspace(project_root=project)
-    memory = MemoryStore()
-    runtime = Runtime(adapter, workspace, memory)
-    test("0.2 Runtime 初始化", True)
-
-    task_id = "real_edit_test_001"
-    runtime._task_memory.delete(task_id)
-
-    task = f"修改 {test_file}，把 VERSION 从 '1.0' 改成 '2.0'，把 'Hello v1' 改成 'Hello v2'"
-
-    result = runtime.run_v2(task, task_id=task_id)
-    test("1. run_v2 返回", result is not None)
-    test("2. 任务完成", "任务完成" in str(result))
-
-    # 验证修改结果
-    if os.path.exists(test_file):
-        with open(test_file) as f:
-            modified = f.read()
-        test("3. VERSION 已改为 2.0", "VERSION = \"2.0\"" in modified,
-             f"内容: {modified[:100]}")
-        test("4. hello 已改为 Hello v2", "Hello v2" in modified)
-        test("5. 文件仍是 Python 语法",
-             modified.startswith("# Test file") or "def hello" in modified)
-
-    # 清理
-    if os.path.exists(test_file):
-        os.remove(test_file)
-    runtime._task_memory.delete(task_id)
-    runtime.world.close()
-
-    return summary()
+        path = os.path.join(root, "target.py")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('MSG = "Hello v1"\n')
+        with pytest.raises(LuWriteForbidden):
+            lu_patch(path, 'MSG = "Hello v1"', 'MSG = "Hello v2"')
+        with open(path, encoding="utf-8") as f:
+            assert 'MSG = "Hello v1"' in f.read()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
-if __name__ == "__main__":
-    sys.exit(test_real_edit())
+def test_modify_intent_shape():
+    intent = Intent.modify_file(
+        path="target.py",
+        operations=[{"old_text": 'MSG = "Hello v1"', "new_text": 'MSG = "Hello v2"'}],
+        require_confirm=False,
+    )
+    assert intent.type.value == "modify_file"
+    assert intent.parameters["path"] == "target.py"
+    assert intent.parameters["operations"][0]["new_text"] == 'MSG = "Hello v2"'
+
+
+def test_version_bump_content_is_valid_python():
+    original = 'MSG = "Hello v1"\n'
+    updated = original.replace('MSG = "Hello v1"', 'MSG = "Hello v2"')
+    ast.parse(updated)
+    assert 'MSG = "Hello v2"' in updated

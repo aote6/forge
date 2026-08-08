@@ -1,55 +1,82 @@
-"""Engineering Loop E2E — 用 EngineeringLoop 驱动完整闭环"""
-import sys, os
+"""EngineeringOrchestrator E2E (EngineeringLoop.run is disabled).
 
-sys.path.insert(0, '/data/data/com.termux/files/home/forge')
+Covers construction, deprecation of EngineeringLoop, and checkpoint
+round-trip under the formal orchestrator phase model.
+"""
+from __future__ import annotations
 
-results = []
+import shutil
+import tempfile
+import warnings
+from unittest.mock import MagicMock
 
-def test(name, condition, detail=""):
-    status = "PASS" if condition else "FAIL"
-    results.append((name, condition, detail))
-    print(f"  {status}: {name}" + (f" - {detail}" if detail else ""))
+import pytest
 
-def summary():
-    total = len(results)
-    passed = sum(1 for _, ok, _ in results if ok)
-    print(f"\n{'='*50}")
-    print(f"Result: {passed}/{total} passed")
-    for name, ok, detail in results:
-        if not ok:
-            print(f"  FAIL: {name}: {detail}")
-    print(f"{'='*50}")
-    return 0 if passed == total else 1
+from forge.memory.checkpoint import CheckpointStore
+from forge.orchestrator.engine import EngineeringOrchestrator, plan_to_proposals
+from forge.orchestrator.phases import OrchestratorPhase
+from forge.protocols.models import Plan, PlanStep, TaskCheckpoint
 
 
-def test_engineering_loop():
-    print("=" * 50)
-    print("Engineering Loop E2E")
-    print("=" * 50)
+def test_engineering_loop_run_disabled():
+    from forge.engineering import EngineeringLoop
 
-    from forge.engineering import EngineeringLoop, Phase
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        loop = EngineeringLoop(".")
+        assert any("deprecated" in str(x.message).lower() for x in w)
 
-    project = "/data/data/com.termux/files/home/forge"
-    loop = EngineeringLoop(project)
-
-    task = "在 tests/ 下创建一个 eng_loop_test.txt 文件，内容是 'Engineering Loop E2E test'"
-    result = loop.run(task, task_id="eng_loop_001")
-
-    test("1. 完成", loop.phase == Phase.COMPLETE, f"phase={loop.phase.value}")
-    test("2. 有 RepoContext", loop.repo_context is not None,
-         f"{len(loop.repo_context.file_tree)} files" if loop.repo_context else "N/A")
-    test("3. 有 Plan", loop.plan is not None,
-         f"{len(loop.plan.steps)} steps" if loop.plan else "N/A")
-    test("4. 有执行结果", len(loop.execution_results) > 0)
-    test("5. 结果报告", "完成" in result or "失败" in result, result[:80])
-
-    # 清理
-    test_file = os.path.join(project, "tests", "eng_loop_test.txt")
-    if os.path.exists(test_file):
-        os.remove(test_file)
-
-    return summary()
+    with pytest.raises(RuntimeError, match="EngineeringLoop.run is disabled"):
+        loop.run("any task", task_id="eng_loop_001")
 
 
-if __name__ == "__main__":
-    sys.exit(test_engineering_loop())
+def test_engineering_orchestrator_constructs_and_checkpoints():
+    root = tempfile.mkdtemp(prefix="forge_orch_")
+    try:
+        store = CheckpointStore(root)
+        plan = Plan(
+            plan_id="eng_001",
+            goal="create eng_loop_test.txt",
+            steps=[
+                PlanStep(
+                    step_id="s1",
+                    description="create file",
+                    target_files=["eng_loop_test.txt"],
+                    operation_type="create_file",
+                    content="Engineering Loop E2E test\n",
+                )
+            ],
+        )
+        proposals = plan_to_proposals(plan)
+        store.save(
+            TaskCheckpoint(
+                task_id="eng_loop_001",
+                phase=OrchestratorPhase.COMPLETED.value,
+                plan=plan,
+                change_proposals=proposals,
+                completed_steps=["s1"],
+                goal=plan.goal,
+            )
+        )
+
+        world = MagicMock()
+        projections = MagicMock()
+        planner = MagicMock()
+        orch = EngineeringOrchestrator(
+            project_root=root,
+            world=world,
+            projections=projections,
+            planner=planner,
+            checkpoint_store=store,
+        )
+        assert orch is not None
+
+        loaded = store.load("eng_loop_001")
+        assert loaded is not None
+        assert loaded.phase == OrchestratorPhase.COMPLETED.value
+        assert loaded.plan is not None
+        assert len(loaded.plan.steps) == 1
+        assert len(loaded.change_proposals) == 1
+        store.delete("eng_loop_001")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
