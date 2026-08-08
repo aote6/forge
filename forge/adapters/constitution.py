@@ -48,7 +48,7 @@ def check(proposal: ChangeProposal, project_root: str = ".", hub: HubClient | No
             checked_rules=["hub.lu"],
         )
 
-    data = resp.data if isinstance(resp.data, dict) else {}
+    data = resp.data.get("data", {}) if isinstance(resp.data, dict) else {}
 
     # Case 1: old protocol format (has "passed")
     if "passed" in data:

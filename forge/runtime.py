@@ -147,19 +147,85 @@ class Runtime:
         return event
 
     def run(self, task: str, task_id: str | None = None) -> str:
-        """Production engineering entry — sole path into EngineeringOrchestrator.
+        """Production entry — two paths only.
 
-        All engineering tasks MUST pass through the six-phase machine.
-        There is no alternate production mutation path.
+        Write tools (create_file/modify_file/delete_file) → EngineeringOrchestrator.
+        Everything else → lightweight tool-calling conversation loop.
         """
-        orch = EngineeringOrchestrator(
-            project_root=self.workspace.project_root,
-            world=self.world,
-            projections=self.projections,
-            planner=self._planner,
-            checkpoint_store=self._task_memory,
-        )
-        return orch.run(task, task_id=task_id)
+        # Quick check: does this look like an engineering write task?
+        write_keywords = ["创建", "修改", "删除", "新增", "重构", "修复",
+                          "create", "modify", "delete", "fix", "refactor",
+                          "实现", "添加", "移除", "替换", "更新"]
+        is_engineering = any(kw in task for kw in write_keywords)
+        # Exclude read-only analysis requests
+        read_only_patterns = ["检查", "审查", "分析", "review", "analyze", "check", "inspect"]
+        if any(p in task for p in read_only_patterns):
+            is_engineering = False
+
+        if is_engineering:
+            orch = EngineeringOrchestrator(
+                project_root=self.workspace.project_root,
+                world=self.world,
+                projections=self.projections,
+                planner=self._planner,
+                checkpoint_store=self._task_memory,
+            )
+            return orch.run(task, task_id=task_id)
+
+        # Lightweight tool-calling conversation loop
+        return self._run_conversation(task)
+
+
+    def _run_conversation(self, task: str) -> str:
+        """Lightweight tool-calling loop for non-engineering tasks.
+        
+        Uses the same tools (list_files, read_file, search_code, etc.)
+        as the engineering path, but without the six-phase machine.
+        Conversation history provides context across turns.
+        """
+        from forge.tools.schemas import TOOL_DECLARATIONS
+        from forge.adapters.base import Message as ForgeMessage
+        
+        # Build messages with system prompt + conversation history + new task
+        messages = [ForgeMessage(role="system", content=SYSTEM_INSTRUCTION)]
+        
+        # Add recent conversation history (last 10 turns) for context
+        history = self.conversation.get_messages()
+        if history:
+            # Skip system messages from history, keep the rest
+            recent = [m for m in history if m.role != "system"][-20:]
+            messages.extend(recent)
+        
+        messages.append(ForgeMessage(role="user", content=task))
+        
+        # Tool-calling loop (max 12 iterations to prevent infinite loops)
+        for _ in range(12):
+            resp = self.adapter.send(messages, TOOL_DECLARATIONS)
+            
+            if not resp.tool_calls:
+                # No tool calls — LLM gave a text response
+                if resp.content:
+                    self.conversation.append(ForgeMessage(role="user", content=task))
+                    self.conversation.append(ForgeMessage(role="assistant", content=resp.content))
+                return resp.content or "(no response)"
+            
+            # Execute tool calls
+            messages.append(ForgeMessage(
+                role="assistant",
+                content=resp.content,
+                tool_calls=resp.tool_calls
+            ))
+            
+            for tc in resp.tool_calls:
+                result = self.executor.execute(tc)
+                messages.append(ForgeMessage(
+                    role="tool",
+                    content=result.display,
+                    tool_call_id=tc.id,
+                    name=tc.name
+                ))
+        
+        return "(达到最大工具调用次数)"
 
     # Backward-compat alias
     run_v2 = run

@@ -21,7 +21,7 @@ def get_repo_context(project_root: str, hub: HubClient | None = None) -> RepoCon
             f"Hub zhiwang unavailable — cannot build RepoContext: {resp.error}"
         )
 
-    data = resp.data
+    data = resp.data.get("data", {}) if isinstance(resp.data, dict) else {}
     return RepoContext(
         repo_id=data.get("repo_id") or project_root,
         commit_hash=data.get("commit_hash", ""),
