@@ -111,6 +111,7 @@ class PlanValidator:
                 new_text=s.get("new_text", ""),
                 start_line=s.get("start_line"),
                 end_line=s.get("end_line"),
+                expected_symbols=list(s.get("expected_symbols") or []),
             ))
             enriched_steps.append(enriched)
 

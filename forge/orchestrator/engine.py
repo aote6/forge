@@ -41,6 +41,11 @@ from forge.context.snapshot import (
     assert_snapshot_match,
     take_snapshot,
 )
+from forge.context.planning import (
+    collect_plan_target_files,
+    content_hashes,
+    derive_expected_symbols_for_plan,
+)
 
 
 def plan_to_proposals(plan: Plan) -> list[ChangeProposal]:
@@ -245,6 +250,8 @@ class EngineeringOrchestrator:
             plan.snapshot_id = snap.snapshot_id
             plan.tree_hash = snap.tree_hash
             plan.commit_hash = snap.commit_hash
+            # Priority 6: machine expected_symbols from same plan-bound index
+            derive_expected_symbols_for_plan(plan, idx)
             self.checkpoint.plan = plan
             self.phase = OrchestratorPhase.CHECKING
             self._persist()
@@ -308,6 +315,13 @@ class EngineeringOrchestrator:
                 self.phase = OrchestratorPhase.FAILED
                 self._persist()
                 return
+            # Priority 6: pre-execution content snapshot (once per attempt; resume preserves).
+            if not self.checkpoint.extra.get("pre_execution_snapshot"):
+                targets = collect_plan_target_files(plan)
+                self.checkpoint.extra["pre_execution_snapshot"] = content_hashes(
+                    self.project_root, targets
+                )
+                self._persist()
             proposals = self.checkpoint.change_proposals or plan_to_proposals(plan)
             results = []
             for p in proposals:
@@ -400,12 +414,14 @@ class EngineeringOrchestrator:
             last_receipt = self.checkpoint.extra.get("last_receipt")
             last_delta = self.checkpoint.extra.get("last_delta")
             exec_results = self.checkpoint.execution_results
+            pre_snap = self.checkpoint.extra.get("pre_execution_snapshot")
             vres = verification_verify(
                 req, self.project_root, hub=self.hub,
                 receipt=last_receipt,
                 delta=last_delta,
                 execution_results=exec_results,
                 plan=plan,
+                pre_snapshot=pre_snap,
             )
             self.checkpoint.verification_results.append(vres)
             if vres.status == CheckStatus.FAIL:
@@ -485,6 +501,7 @@ class EngineeringOrchestrator:
                     new_text=getattr(s, "new_text", "") or "",
                     start_line=getattr(s, "start_line", None),
                     end_line=getattr(s, "end_line", None),
+                    expected_symbols=list(getattr(s, "expected_symbols", None) or []),
                 )
             )
         return Plan(

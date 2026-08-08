@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 @dataclass
 class OutcomeIssue:
-    code: str  # SYNTAX | MISSING_TARGET | UNEXPECTED_FILE | CREATE_MISSING | DELETE_STILL_PRESENT | MODIFY_MISSING | SYMBOL_MISSING | CONTENT_MISMATCH
+    code: str  # SYNTAX | MISSING_TARGET | UNEXPECTED_FILE | CREATE_MISSING | DELETE_STILL_PRESENT | MODIFY_MISSING | MODIFY_NOOP | SYMBOL_MISSING | CONTENT_MISMATCH
     message: str
     files: list[str] = field(default_factory=list)
     evidence: dict[str, Any] = field(default_factory=dict)
@@ -107,11 +107,13 @@ def verify_plan_outcomes(
     execution_results: Optional[list] = None,
     *,
     expected_symbols: Optional[dict[str, list[str]]] = None,
+    pre_snapshot: Optional[dict[str, str]] = None,
 ) -> list[OutcomeIssue]:
     """Check planned mutations against the projected filesystem.
 
     expected_symbols: optional {file_path: [symbol_name, ...]} that must
     still exist after modify (machine structural check).
+    pre_snapshot: optional {file_path: sha256} taken before EXECUTE (P6).
     """
     issues: list[OutcomeIssue] = []
     ops = _plan_step_ops(plan)
@@ -205,6 +207,41 @@ def verify_plan_outcomes(
                                 )
                             )
 
+    # Priority 6: modify no-op detection via pre/post content hash
+    if pre_snapshot:
+        import hashlib
+        modify_targets: set[str] = set()
+        for op in ops:
+            if op["operation_type"] not in ("create_file", "delete_file", "delete"):
+                modify_targets.update(op["target_files"])
+        for rel in sorted(modify_targets):
+            pre_h = pre_snapshot.get(rel)
+            if pre_h is None:
+                continue
+            full = os.path.join(project_root, rel)
+            if not os.path.isfile(full):
+                continue  # MODIFY_MISSING already reported
+            try:
+                with open(full, "rb") as fh:
+                    post_h = hashlib.sha256(fh.read()).hexdigest()
+            except OSError:
+                continue
+            if pre_h and pre_h == post_h:
+                issues.append(
+                    OutcomeIssue(
+                        code="MODIFY_NOOP",
+                        message=f"outcome: modify produced no content change: {rel}",
+                        files=[rel],
+                        evidence={
+                            "operation": "modify",
+                            "file": rel,
+                            "pre_hash": pre_h,
+                            "post_hash": post_h,
+                            "reason": "modify_noop",
+                        },
+                    )
+                )
+
     # Unexpected files touched by execution outside plan targets
     if planned_targets and actual_files:
         unexpected = sorted(actual_files - planned_targets)
@@ -241,7 +278,8 @@ def verify_plan_outcomes(
             src = ""
         defined = _symbols_defined_in_source(src)
         for name in names:
-            if name not in defined:
+            short = name.split(".")[-1] if name else name
+            if name not in defined and short not in defined:
                 issues.append(
                     OutcomeIssue(
                         code="SYMBOL_MISSING",
@@ -261,6 +299,7 @@ def verify_outcomes(
     changed_files: Optional[list[str]] = None,
     execution_results: Optional[list] = None,
     expected_symbols: Optional[dict[str, list[str]]] = None,
+    pre_snapshot: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Run full outcome suite. Returns structured evidence dict.
 
@@ -283,6 +322,7 @@ def verify_outcomes(
         plan=plan,
         execution_results=execution_results,
         expected_symbols=expected_symbols,
+        pre_snapshot=pre_snapshot,
     )
     all_issues = syntax_issues + outcome_issues
     return {

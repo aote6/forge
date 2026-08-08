@@ -30,6 +30,7 @@ def verify(
     execution_results: list | None = None,
     plan: Any = None,
     expected_symbols: dict | None = None,
+    pre_snapshot: dict | None = None,
     skip_build: bool = False,
 ) -> VerificationResult:
     """Run structured verification: receipt → projection → outcome → build.
@@ -44,6 +45,7 @@ def verify(
         plan: optional Plan for outcome alignment checks (P5)
         expected_symbols: optional {file: [symbol, ...]} structural expectations
         skip_build: if True, do not invoke SMS (useful for unit tests)
+        pre_snapshot: optional {path: sha256} from EXECUTE entry (P6)
     """
     if not isinstance(request, VerificationRequest):
         raise TypeError("verification.verify requires VerificationRequest")
@@ -111,13 +113,20 @@ def verify(
     # ── 3. Outcome reliability (Priority 5) ───────────────────
     try:
         from forge.verification.outcome import verify_outcomes
+        from forge.context.planning import plan_expected_symbols_map
+
+        # P6: auto-consume PlanStep.expected_symbols when caller omits map
+        sym_map = expected_symbols
+        if sym_map is None and plan is not None:
+            sym_map = plan_expected_symbols_map(plan)
 
         outcome = verify_outcomes(
             project_root,
             plan=plan,
             changed_files=list(request.changed_files or []),
             execution_results=execution_results,
-            expected_symbols=expected_symbols,
+            expected_symbols=sym_map,
+            pre_snapshot=pre_snapshot,
         )
         checks.append("outcome")
         evidence["outcome"] = {

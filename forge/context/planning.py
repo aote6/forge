@@ -209,3 +209,80 @@ def explain_why_file_in_impact(machine: dict[str, Any], path: str) -> list[str]:
     if not reasons and path in (machine.get("impact_files") or []):
         reasons.append("seeded or merged into impact set")
     return reasons
+
+
+def derive_expected_symbols_for_plan(plan, index) -> None:
+    """Fill PlanStep.expected_symbols from P2 Index (machine, not LLM).
+
+    modify: union of Symbol.qualified_name defined in target_files (deterministic).
+    create_file / delete: empty list.
+    Mutates plan steps in place. Index must match plan's snapshot binding.
+    """
+    if plan is None or index is None:
+        return
+    # Index symbols already ordered; group by file once
+    by_file: dict[str, list[str]] = {}
+    for sym in getattr(index, "symbols", None) or []:
+        by_file.setdefault(sym.file_path, []).append(sym.qualified_name)
+
+    for step in getattr(plan, "steps", None) or []:
+        op = getattr(step, "operation_type", "modify") or "modify"
+        if op in ("create_file", "delete_file", "delete"):
+            step.expected_symbols = []
+            continue
+        names: set[str] = set()
+        for f in getattr(step, "target_files", None) or []:
+            for q in by_file.get(f, []):
+                names.add(q)
+        step.expected_symbols = sorted(names)
+
+
+def plan_expected_symbols_map(plan) -> dict:
+    """Aggregate step.expected_symbols into {file_path: [qualified_names]} for VERIFY."""
+    out: dict[str, list[str]] = {}
+    if plan is None:
+        return out
+    for step in getattr(plan, "steps", None) or []:
+        op = getattr(step, "operation_type", "") or ""
+        if op in ("create_file", "delete_file", "delete"):
+            continue
+        syms = list(getattr(step, "expected_symbols", None) or [])
+        if not syms:
+            continue
+        for f in getattr(step, "target_files", None) or []:
+            bucket = out.setdefault(f, [])
+            for s in syms:
+                if s not in bucket:
+                    bucket.append(s)
+    for f in out:
+        out[f] = sorted(set(out[f]))
+    return out
+
+
+def content_hashes(project_root: str, files: list[str]) -> dict[str, str]:
+    """SHA-256 of file contents; missing files map to empty string."""
+    import hashlib
+    import os
+
+    result: dict[str, str] = {}
+    for rel in files or []:
+        full = os.path.join(project_root, rel)
+        if not os.path.isfile(full):
+            result[rel] = ""
+            continue
+        try:
+            with open(full, "rb") as fh:
+                data = fh.read()
+            result[rel] = hashlib.sha256(data).hexdigest()
+        except OSError:
+            result[rel] = ""
+    return result
+
+
+def collect_plan_target_files(plan) -> list[str]:
+    files: list[str] = []
+    if plan is None:
+        return files
+    for s in getattr(plan, "steps", None) or []:
+        files.extend(getattr(s, "target_files", None) or [])
+    return list(dict.fromkeys(files))
