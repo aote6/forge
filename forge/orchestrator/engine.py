@@ -105,6 +105,10 @@ class EngineeringOrchestrator:
         ):
             self.checkpoint = saved
             self.phase = OrchestratorPhase(saved.phase)
+            # Restore self-correction budget from checkpoint (survive process restart).
+            self._correction_count = int(
+                (self.checkpoint.extra or {}).get("correction_count") or 0
+            )
             # Preserve original goal on resume; do not overwrite with new task string.
             # completed_steps remain authoritative so we continue, not re-execute.
             print(
@@ -189,20 +193,29 @@ class EngineeringOrchestrator:
             repair_constraints = None
             hist = self.checkpoint.extra.get("failure_history") or []
             if hist:
-                failure = FailureRecord.from_dict(hist[-1])
-                repair_constraints = build_repair_constraints(
-                    failure, index=idx
-                )
-                self.checkpoint.extra["repair_constraints"] = repair_constraints.to_dict()
-                if not repair_constraints.allow_mutation:
-                    # e.g. STALE_SNAPSHOT must not produce a mutation plan
-                    self.checkpoint.errors.append(
-                        f"repair blocked: {failure.code} does not allow mutation; "
-                        f"re-understand required"
+                candidate = FailureRecord.from_dict(hist[-1])
+                # Non-repairable failures (e.g. STALE_SNAPSHOT) must not drive
+                # mutation repair and must not re-enter PLAN with the same
+                # constraint forever. Fresh understand already ran if we are here
+                # after allow_mutation=False → UNDERSTANDING; skip as repair context.
+                if not candidate.repairable or candidate.code == FailureClass.STALE_SNAPSHOT.value:
+                    failure = None
+                    repair_constraints = None
+                else:
+                    failure = candidate
+                    repair_constraints = build_repair_constraints(
+                        failure, index=idx
                     )
-                    self.phase = OrchestratorPhase.UNDERSTANDING
-                    self._persist()
-                    return
+                    self.checkpoint.extra["repair_constraints"] = repair_constraints.to_dict()
+                    if not repair_constraints.allow_mutation:
+                        # Defensive: must not produce a mutation plan
+                        self.checkpoint.errors.append(
+                            f"repair blocked: {failure.code} does not allow mutation; "
+                            f"re-understand required"
+                        )
+                        self.phase = OrchestratorPhase.UNDERSTANDING
+                        self._persist()
+                        return
             plan, _raw = self.planner.plan(
                 self.checkpoint.goal,
                 self.checkpoint.repo_context,
@@ -211,8 +224,10 @@ class EngineeringOrchestrator:
                 failure=failure,
                 repair_constraints=repair_constraints,
             )
-            # Duplicate identical repair detection
-            if failure is not None and is_duplicate_repair(failure, plan, hist):
+            # Duplicate identical repair detection — use repair_attempts, not
+            # failure_history (history entries lack plan_signature).
+            attempts = list(self.checkpoint.extra.get("repair_attempts") or [])
+            if failure is not None and is_duplicate_repair(failure, plan, attempts):
                 self.checkpoint.errors.append(
                     f"duplicate repair rejected: failure_signature="
                     f"{failure.signature} plan already attempted"
@@ -221,7 +236,6 @@ class EngineeringOrchestrator:
                 self._persist()
                 return
             if failure is not None:
-                attempts = list(self.checkpoint.extra.get("repair_attempts") or [])
                 attempts.append(repair_attempt_record(failure, plan))
                 self.checkpoint.extra["repair_attempts"] = attempts
             # Normalize to protocol Plan if planner returns legacy type
@@ -327,6 +341,20 @@ class EngineeringOrchestrator:
                     hist.append(frec.to_dict())
                     self.checkpoint.extra["failure_history"] = hist
                     self.checkpoint.extra["last_failure"] = frec.to_dict()
+                    # Priority 3: repairable execution failures enter self-correction
+                    # (same budget as VERIFY). STALE / non-repairable stay FAILED.
+                    if frec.repairable and frec.code != FailureClass.STALE_SNAPSHOT.value:
+                        self._correction_count = int(
+                            self.checkpoint.extra.get("correction_count") or 0
+                        ) + 1
+                        self.checkpoint.extra["correction_count"] = self._correction_count
+                        if self._correction_count < MAX_SELF_CORRECTION:
+                            self.checkpoint.plan = None
+                            self.checkpoint.change_proposals = []
+                            self.checkpoint.current_step = None
+                            self.phase = OrchestratorPhase.PLANNING
+                            self._persist()
+                            return
                     self.phase = OrchestratorPhase.FAILED
                     self._persist()
                     return
@@ -380,7 +408,11 @@ class EngineeringOrchestrator:
             )
             self.checkpoint.verification_results.append(vres)
             if vres.status == CheckStatus.FAIL:
-                self._correction_count += 1
+                # Persist correction budget across resume (in-memory alone is not enough).
+                self._correction_count = int(
+                    self.checkpoint.extra.get("correction_count") or 0
+                ) + 1
+                self.checkpoint.extra["correction_count"] = self._correction_count
                 # Preserve world evidence — never re-execute committed intents.
                 committed = [
                     er.to_dict() if hasattr(er, "to_dict") else er
