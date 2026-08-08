@@ -58,15 +58,21 @@ class Planner:
     def __init__(self, adapter: BaseAdapter):
         self.adapter = adapter
 
-    def plan(self, task: str, repo: RepoContext, project_root: str = ".") -> tuple[Plan, dict]:
+    def plan(
+        self,
+        task: str,
+        repo: RepoContext,
+        project_root: str = ".",
+        index=None,
+    ) -> tuple[Plan, dict]:
         self.validator = PlanValidator(project_root)
 
         # Full file tree is always provided (names never silently truncated).
-        files_summary = "\n".join(repo.file_tree) if repo.file_tree else "(empty repo)"
+        files_summary = "\n".join(repo.file_tree) if repo and repo.file_tree else "(empty repo)"
 
         # Prefer changed_files then rest of tree for content; tree listing is complete.
         content_candidates = list(dict.fromkeys(
-            list(repo.changed_files or []) + list(repo.file_tree or [])
+            list((repo.changed_files if repo else None) or []) + list((repo.file_tree if repo else None) or [])
         ))
         file_contents = ""
         total_chars = 0
@@ -92,15 +98,29 @@ class Planner:
             except Exception:
                 pass
 
+        # Priority 2: structured repository model from index (not str(index)).
+        model_section = "(no repository index)"
+        focus = []
+        if index is not None:
+            from forge.context.index import extract_focus_symbols
+            focus = extract_focus_symbols(task)
+            model_section = index.summary_for_planner(focus_symbols=focus or None)
+
         user_prompt = f"""仓库文件列表:
 {files_summary}
+
+Repository model (machine facts — prefer over guessing):
+{model_section}
 
 文件内容（带行号，用于精确定位修改位置）:
 {file_contents}
 
 用户任务: {task}
 
-请输出执行计划的 JSON（modify 时用 start_line/end_line 指定行号，new_text 指定新内容）:"""
+请输出执行计划的 JSON（modify 时用 start_line/end_line 指定行号，new_text 指定新内容）。
+若任务涉及已知 symbol，JSON 可含 impact_files（受影响文件列表）与 impact_symbols。
+modify/delete 的 target_files 必须落在 impact_files 内（若提供了 impact_files）。
+create_file 不受 impact_files 限制。:"""
 
         messages = [
             Message(role="system", content=PLANNER_SYSTEM_PROMPT),
@@ -124,6 +144,32 @@ class Planner:
             raise PlanValidationError(f"无法从 LLM 响应中提取 JSON:\n{raw_text[:500]}")
 
         plan, enriched = self.validator.validate(plan_dict, repo)
+        # Priority 2: if index present and plan lacks impact_files, derive from focus symbols.
+        if index is not None and not plan.impact_files:
+            from forge.context.index import extract_focus_symbols
+            symbols = list(plan.impact_symbols) or extract_focus_symbols(task)
+            files: set[str] = set()
+            used_syms = []
+            for name in symbols:
+                aff = index.affected_files(name)
+                if aff:
+                    files.update(aff)
+                    used_syms.append(name)
+            if files:
+                plan.impact_files = sorted(files)
+                plan.impact_symbols = used_syms
+                enriched["impact_files"] = plan.impact_files
+                enriched["impact_symbols"] = plan.impact_symbols
+                # Re-check boundary after enrichment
+                allowed = set(plan.impact_files)
+                for step in plan.steps:
+                    if step.operation_type in ("modify", "delete_file", "delete"):
+                        for tf in step.target_files:
+                            if tf not in allowed:
+                                raise PlanValidationError(
+                                    f"{step.step_id}: target '{tf}' outside "
+                                    f"index-derived impact_files {sorted(allowed)}"
+                                )
         return plan, enriched
 
     def _extract_json(self, raw: str) -> Optional[dict]:

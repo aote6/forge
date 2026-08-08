@@ -26,6 +26,7 @@ from forge.protocols.models import (
 )
 from forge.projections.base import ProjectionManager
 from forge.world.runtime import WorldRuntime
+from forge.context.index import RepositoryIndex
 from forge.context.snapshot import (
     StaleSnapshotError,
     assert_snapshot_match,
@@ -83,6 +84,7 @@ class EngineeringOrchestrator:
         self.phase = OrchestratorPhase.UNDERSTANDING
         self.checkpoint: Optional[TaskCheckpoint] = None
         self._correction_count = 0
+        self._repository_index = None
 
     def run(self, task: str, task_id: Optional[str] = None) -> str:
         task_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
@@ -149,6 +151,10 @@ class EngineeringOrchestrator:
             self.checkpoint.tree_hash = snap.tree_hash
             self.checkpoint.commit_hash = snap.commit_hash
             self.checkpoint.extra["snapshot"] = snap.to_dict()
+            # Priority 2: snapshot-bound symbol/reference index (local, no LLM).
+            idx = RepositoryIndex.build(self.project_root, snapshot=snap)
+            self.checkpoint.extra["repository_index"] = idx.to_summary_dict()
+            self._repository_index = idx
             # Hub RepoContext remains supplementary understanding (may raise).
             self.checkpoint.repo_context = get_repo_context(
                 self.project_root, hub=self.hub
@@ -166,10 +172,15 @@ class EngineeringOrchestrator:
             self.checkpoint.tree_hash = snap.tree_hash
             self.checkpoint.commit_hash = snap.commit_hash
             self.checkpoint.extra["snapshot"] = snap.to_dict()
+            # Rebuild index on plan snapshot (VERIFY→PLAN or first plan).
+            idx = RepositoryIndex.build(self.project_root, snapshot=snap)
+            self.checkpoint.extra["repository_index"] = idx.to_summary_dict()
+            self._repository_index = idx
             plan, _raw = self.planner.plan(
                 self.checkpoint.goal,
                 self.checkpoint.repo_context,
                 self.project_root,
+                index=idx,
             )
             # Normalize to protocol Plan if planner returns legacy type
             if not isinstance(plan, Plan):
@@ -361,4 +372,6 @@ class EngineeringOrchestrator:
             snapshot_id=getattr(plan, "snapshot_id", "") or "",
             tree_hash=getattr(plan, "tree_hash", "") or "",
             commit_hash=getattr(plan, "commit_hash", "") or "",
+            impact_files=list(getattr(plan, "impact_files", []) or []),
+            impact_symbols=list(getattr(plan, "impact_symbols", []) or []),
         )

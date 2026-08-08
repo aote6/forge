@@ -40,3 +40,12 @@ __all__ = list(__all__) + [
     "assert_snapshot_match",
     "take_snapshot",
 ]
+
+from forge.context.index import RepositoryIndex, Symbol, Reference, ImportRecord
+
+__all__ = list(__all__) + [
+    "RepositoryIndex",
+    "Symbol",
+    "Reference",
+    "ImportRecord",
+]
