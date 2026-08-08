@@ -64,6 +64,8 @@ class Planner:
         repo: RepoContext,
         project_root: str = ".",
         index=None,
+        failure=None,
+        repair_constraints=None,
     ) -> tuple[Plan, dict]:
         self.validator = PlanValidator(project_root)
 
@@ -106,11 +108,32 @@ class Planner:
             focus = extract_focus_symbols(task)
             model_section = index.summary_for_planner(focus_symbols=focus or None)
 
+        failure_section = "(no structured failure)"
+        if failure is not None:
+            fd = failure.to_dict() if hasattr(failure, "to_dict") else dict(failure)
+            failure_section = (
+                f"code={fd.get('code')}\n"
+                f"message={fd.get('message')}\n"
+                f"files={fd.get('files')}\n"
+                f"signature={fd.get('signature')}\n"
+                f"evidence_keys={list((fd.get('evidence') or {}).keys())}"
+            )
+        constraints_section = "(none)"
+        if repair_constraints is not None:
+            cd = repair_constraints.to_dict() if hasattr(repair_constraints, "to_dict") else dict(repair_constraints)
+            constraints_section = str(cd)
+
         user_prompt = f"""仓库文件列表:
 {files_summary}
 
 Repository model (machine facts — prefer over guessing):
 {model_section}
+
+Structured failure (machine classified — repair must address this):
+{failure_section}
+
+Repair constraints (machine enforced by validator):
+{constraints_section}
 
 文件内容（带行号，用于精确定位修改位置）:
 {file_contents}
@@ -143,7 +166,7 @@ create_file 不受 impact_files 限制。:"""
             print(f"[Planner] 无法提取 JSON, 原始响应:\n{raw_text}", file=sys.stderr)
             raise PlanValidationError(f"无法从 LLM 响应中提取 JSON:\n{raw_text[:500]}")
 
-        plan, enriched = self.validator.validate(plan_dict, repo)
+        plan, enriched = self.validator.validate(plan_dict, repo, repair_constraints=repair_constraints)
         # Priority 2: if index present and plan lacks impact_files, derive from focus symbols.
         if index is not None and not plan.impact_files:
             from forge.context.index import extract_focus_symbols

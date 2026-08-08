@@ -121,7 +121,7 @@ def verify(
     if build_ok is not None:
         all_ok = all_ok and build_ok
 
-    return VerificationResult(
+    result = VerificationResult(
         status=CheckStatus.PASS if all_ok else CheckStatus.FAIL,
         receipt_ok=receipt_ok,
         projection_ok=projection_ok,
@@ -130,3 +130,9 @@ def verify(
         failures=failures,
         evidence=evidence,
     )
+    if result.status != CheckStatus.PASS:
+        from forge.failures import classify_verification_result
+        structured = classify_verification_result(result, phase="verifying")
+        result.evidence = dict(result.evidence or {})
+        result.evidence["structured_failures"] = [f.to_dict() for f in structured]
+    return result

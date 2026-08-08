@@ -27,6 +27,15 @@ from forge.protocols.models import (
 from forge.projections.base import ProjectionManager
 from forge.world.runtime import WorldRuntime
 from forge.context.index import RepositoryIndex
+from forge.failures import (
+    FailureClass,
+    FailureRecord,
+    build_repair_constraints,
+    classify_execution_error,
+    classify_verification_result,
+    is_duplicate_repair,
+    repair_attempt_record,
+)
 from forge.context.snapshot import (
     StaleSnapshotError,
     assert_snapshot_match,
@@ -176,12 +185,45 @@ class EngineeringOrchestrator:
             idx = RepositoryIndex.build(self.project_root, snapshot=snap)
             self.checkpoint.extra["repository_index"] = idx.to_summary_dict()
             self._repository_index = idx
+            failure = None
+            repair_constraints = None
+            hist = self.checkpoint.extra.get("failure_history") or []
+            if hist:
+                failure = FailureRecord.from_dict(hist[-1])
+                repair_constraints = build_repair_constraints(
+                    failure, index=idx
+                )
+                self.checkpoint.extra["repair_constraints"] = repair_constraints.to_dict()
+                if not repair_constraints.allow_mutation:
+                    # e.g. STALE_SNAPSHOT must not produce a mutation plan
+                    self.checkpoint.errors.append(
+                        f"repair blocked: {failure.code} does not allow mutation; "
+                        f"re-understand required"
+                    )
+                    self.phase = OrchestratorPhase.UNDERSTANDING
+                    self._persist()
+                    return
             plan, _raw = self.planner.plan(
                 self.checkpoint.goal,
                 self.checkpoint.repo_context,
                 self.project_root,
                 index=idx,
+                failure=failure,
+                repair_constraints=repair_constraints,
             )
+            # Duplicate identical repair detection
+            if failure is not None and is_duplicate_repair(failure, plan, hist):
+                self.checkpoint.errors.append(
+                    f"duplicate repair rejected: failure_signature="
+                    f"{failure.signature} plan already attempted"
+                )
+                self.phase = OrchestratorPhase.FAILED
+                self._persist()
+                return
+            if failure is not None:
+                attempts = list(self.checkpoint.extra.get("repair_attempts") or [])
+                attempts.append(repair_attempt_record(failure, plan))
+                self.checkpoint.extra["repair_attempts"] = attempts
             # Normalize to protocol Plan if planner returns legacy type
             if not isinstance(plan, Plan):
                 plan = self._coerce_plan(plan)
@@ -232,6 +274,22 @@ class EngineeringOrchestrator:
                     "current_id": e.current_id,
                     "code": e.code,
                 }
+                frec = FailureRecord(
+                    code=FailureClass.STALE_SNAPSHOT.value,
+                    message=str(e),
+                    phase="executing",
+                    files=[],
+                    evidence={
+                        "planned_id": e.planned_id,
+                        "current_id": e.current_id,
+                    },
+                    retryable=True,
+                    repairable=False,
+                )
+                hist = list(self.checkpoint.extra.get("failure_history") or [])
+                hist.append(frec.to_dict())
+                self.checkpoint.extra["failure_history"] = hist
+                self.checkpoint.extra["last_failure"] = frec.to_dict()
                 # Do not call ExecutionAdapter — zero Veritas mutation.
                 self.phase = OrchestratorPhase.FAILED
                 self._persist()
@@ -259,6 +317,16 @@ class EngineeringOrchestrator:
                         self.checkpoint.extra["last_receipt"] = er.receipt_summary
                         self.checkpoint.extra["last_tx_id"] = er.tx_id
                         self.checkpoint.extra["last_world_version"] = er.world_version
+                    frec = classify_execution_error(
+                        err,
+                        files=list(getattr(er, "files", None) or []),
+                        receipt_summary=getattr(er, "receipt_summary", None) or {},
+                        phase="executing",
+                    )
+                    hist = list(self.checkpoint.extra.get("failure_history") or [])
+                    hist.append(frec.to_dict())
+                    self.checkpoint.extra["failure_history"] = hist
+                    self.checkpoint.extra["last_failure"] = frec.to_dict()
                     self.phase = OrchestratorPhase.FAILED
                     self._persist()
                     return
@@ -323,6 +391,28 @@ class EngineeringOrchestrator:
                     vres.failures or []
                 )
                 self.checkpoint.extra["committed_receipts"] = committed
+                # Priority 3: structured failure classification
+                structured = []
+                if isinstance(getattr(vres, "evidence", None), dict):
+                    structured = list(
+                        (vres.evidence or {}).get("structured_failures") or []
+                    )
+                if not structured:
+                    structured = [
+                        f.to_dict()
+                        for f in classify_verification_result(vres, phase="verifying")
+                    ]
+                hist = list(self.checkpoint.extra.get("failure_history") or [])
+                for s in structured:
+                    hist.append(s if isinstance(s, dict) else s)
+                self.checkpoint.extra["failure_history"] = hist
+                if structured:
+                    self.checkpoint.extra["last_failure"] = structured[-1]
+                    rc = build_repair_constraints(
+                        FailureRecord.from_dict(structured[-1]),
+                        index=getattr(self, "_repository_index", None),
+                    )
+                    self.checkpoint.extra["repair_constraints"] = rc.to_dict()
                 self.checkpoint.errors.append(
                     f"verify fail retry {self._correction_count}: {vres.failures}"
                 )
