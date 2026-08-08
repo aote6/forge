@@ -122,6 +122,9 @@ class Plan:
     snapshot_id: str = ""
     tree_hash: str = ""
     commit_hash: str = ""
+    # Priority 2: machine impact set for modify/delete boundary checks.
+    impact_files: List[str] = field(default_factory=list)
+    impact_symbols: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return to_jsonable(self)
@@ -138,6 +141,8 @@ class Plan:
             snapshot_id=data.get("snapshot_id", "") or "",
             tree_hash=data.get("tree_hash", "") or "",
             commit_hash=data.get("commit_hash", "") or "",
+            impact_files=list(data.get("impact_files") or []),
+            impact_symbols=list(data.get("impact_symbols") or []),
         )
 
 

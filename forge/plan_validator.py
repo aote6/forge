@@ -119,11 +119,30 @@ class PlanValidator:
                 if dep not in step_ids:
                     raise PlanValidationError(f"{step.step_id}: 依赖的 {dep} 不存在")
 
+        impact_files = list(plan_dict.get("impact_files") or [])
+        impact_symbols = list(plan_dict.get("impact_symbols") or [])
+        # Priority 2: when impact_files is declared non-empty, modify/delete
+        # targets must be a subset. create_file is exempt (new paths OK).
+        if impact_files:
+            allowed = set(impact_files)
+            for step in steps:
+                if step.operation_type in ("modify", "delete_file", "delete"):
+                    for tf in step.target_files:
+                        if tf not in allowed:
+                            raise PlanValidationError(
+                                f"{step.step_id}: target '{tf}' outside impact_files "
+                                f"boundary {sorted(allowed)}"
+                            )
+
         import time
         plan = Plan(
             plan_id=f"plan_{int(time.time())}",
-            goal=goal, steps=steps, assumptions=assumptions
+            goal=goal, steps=steps, assumptions=assumptions,
+            impact_files=impact_files,
+            impact_symbols=impact_symbols,
         )
         enriched_plan = dict(plan_dict)
         enriched_plan["steps"] = enriched_steps
+        enriched_plan["impact_files"] = impact_files
+        enriched_plan["impact_symbols"] = impact_symbols
         return plan, enriched_plan
