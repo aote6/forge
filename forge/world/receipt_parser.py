@@ -3,7 +3,7 @@
 WorldAdapter 和测试都使用此函数，避免解析逻辑漂移。
 """
 
-from forge.world.types import Receipt, TransactionDelta
+from forge.world.types import Receipt, TransactionDelta, CapabilityGrantView
 
 
 def parse_receipt(resp: dict) -> Receipt:
@@ -23,6 +23,16 @@ def parse_receipt(resp: dict) -> Receipt:
         links_removed=[(int(f), int(t)) for f, t in d.get("links_removed", [])],
         memory_written=d.get("memory_written", []),
         capability_events=d.get("capability_events", []),
+        capability_grants=[
+            CapabilityGrantView(
+                capability_id=int(g["capability_id"]),
+                cap_type=g["cap_type"],
+                grantor=int(g["grantor"]),
+                grantee=int(g["grantee"]),
+                resource=int(g["resource"]),
+            )
+            for g in d.get("capability_grants", [])
+        ],
         effects=[(k, v) for k, v in d.get("effects", [])],
     )
 

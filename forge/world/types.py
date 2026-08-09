@@ -25,6 +25,15 @@ class MemoryWriteView:
     state_id: int
     value_hex: str
 
+
+@dataclass
+class CapabilityGrantView:
+    capability_id: int
+    cap_type: str
+    grantor: int
+    grantee: int
+    resource: int
+
 @dataclass
 class Receipt:
     tx_id: int
@@ -54,6 +63,7 @@ class TransactionDelta:
     links_removed: list[tuple] = field(default_factory=list)
     memory_written: list = field(default_factory=list)  # list of MemoryWriteView-like dicts
     capability_events: list[str] = field(default_factory=list)
+    capability_grants: list = field(default_factory=list)  # list[CapabilityGrantView]
     effects: list[tuple] = field(default_factory=list)
     # Forge-side annotation (e.g. deleted_paths: {object_id: path}).
     # Not part of Veritas canonical delta; attached after commit for Projection.

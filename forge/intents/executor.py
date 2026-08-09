@@ -55,6 +55,18 @@ class IntentExecutor:
                 oid = intent.parameters["_deleted_object_id"]
                 delta.metadata = dict(delta.metadata or {})
                 delta.metadata.setdefault("deleted_paths", {})[oid] = dp
+        # Capture object_id -> AdminCap capability_id for newly created objects.
+        # Self-admin-cap pattern: grantee == resource == the created object's own id.
+        cap_grants = getattr(delta, "capability_grants", None) or []
+        if cap_grants:
+            cap_map = {
+                g.resource: g.capability_id
+                for g in cap_grants
+                if g.grantee == g.resource
+            }
+            if cap_map:
+                delta.metadata = dict(delta.metadata or {})
+                delta.metadata.setdefault("capability_map", {}).update(cap_map)
         return receipt, delta
 
     def stage(self, intent: Intent) -> TransactionDelta:
