@@ -110,3 +110,56 @@ EngineeringOrchestrator，生成了完整的修改计划而非直接回答。追
 
 **验证**：全量 `pytest` 208 passed。相关 commit：forge `ac43fb5`，
 veritas_kernel `4e7403a`，zhiwang（06_file_tree.sh，独立仓库，未记录 hash）。
+
+## 2026-08-09 forge 接住 tx_commit 的 AdminCap capability_grants(已根治+持久化)
+
+**背景**：内核侧(veritas_kernel)已修复 `create_object_short` 不再丢弃 AdminCap，
+`TransactionDeltaView` 新增结构化 `capability_grants` 字段。forge 端需要接住这把钥匙。
+
+**发现1：forge 真实调用链路走的是 `tx_create_object`（事务内建对象），不是
+独立测试用的 `create_object_short` 路由**
+- 排查中发现 `forge/adapters/veritas_adapter.py` 的 `VeritasAdapter` 类是死代码：
+  顶部 `from forge.protocols.models import TransactionRequest, TransactionReceipt`
+  导入的两个类在整个项目里都不存在，import 时就会崩溃，且全项目无任何调用点。
+  真实执行路径是 `ExecutionAdapter.execute_proposal()` → `IntentExecutor.execute_batch()`。
+  `veritas_adapter.py` 未删除，留作后续清理项。
+
+**发现2：Python 侧 `TransactionDelta` 缺少 `capability_grants` 字段，
+`receipt_parser.py` 只解析旧的 `capability_events`（字符串日志），
+结构化 cap 数据在 JSON→dataclass 这一跳被直接丢弃**
+- 修复：`forge/world/types.py` 新增 `CapabilityGrantView` dataclass + 
+  `TransactionDelta.capability_grants` 字段；`receipt_parser.py` 补上对应解析。
+
+**发现3：当次事务内可用 vs 跨进程重启可查，是两个不同时间尺度的需求**
+- `IntentExecutor.execute_batch()` 提交后从 `delta.capability_grants` 按
+  self-admin-cap 模式（`grantee == resource`）提取 cap，写入
+  `delta.metadata["capability_map"]`，供同一 batch 内后续操作立即使用。
+- 持久化问题：宪法要求 capability_id 是稳定身份，不得在 restore 时重新生成，
+  且内核测试（`kernel_world_persists_across_sequential_machines` 等）已表明
+  对象本就设计为跨进程重启存活。若 cap 只在单次事务内可用，进程重启后对
+  同一对象做操作（如 freeze）将因新加的越权校验（见下方"CRITICAL 安全修复"
+  记录，位于交接摘要）而被拒绝。
+- 修复：`ObjectPathMap`（`forge/projections/object_path.py`）新增 `_caps` 
+  字典与 `get_capability_id(object_id)` 方法，`update_from_delta()` 顺手从
+  `delta.capability_grants` 提取 self-admin-cap。因 `WorldRuntime._rebuild_path_map()`
+  已经通过重放 `receipts_since(0)` 在启动时重建整个 path map，cap map 免费
+  获得同样的跨进程重启存活能力，未新开持久化文件。
+
+**验证**：全量 `pytest` 207 passed，1 deselected（见下方独立 bug）。
+相关 commit：forge `ccecc79`（capability_grants 接入）、`665950e`（cap 持久化）。
+
+## 2026-08-09 test_e2e_veritas_forge.py 绝对路径处理 bug（新发现，未修复）
+
+**症状**：`test_e2e` 中 `test_path` 为绝对路径
+（`/data/data/com.termux/files/home/forge_e2e_test.py`），
+`FileProjection.apply()` 执行后该路径下文件未被创建，`os.path.exists(test_path)`
+断言失败。副作用：会在当前工作目录（`~/forge`）下生成一个把整条绝对路径
+十六进制编码后当作文件名的垃圾文件（两次意外被 `git add -A` 一并提交，
+已在 commit `060e3d7` 清理，但只要重跑该测试就会再生成）。
+- **确认**：与今天 capability_grants 相关改动无关，在改动前的 `060e3d7` 版本
+  同样复现，是预先存在的独立 bug。
+- **疑似根因方向**：`FileProjection.apply()` 或路径解析逻辑在处理绝对路径
+  （而非相对 project_root 的路径）时拼接方向有误，把整条路径误当 basename
+  或做了不该做的编码。尚未定位具体代码行，需要下个窗口单独排查。
+- **当前状态**：`pytest` 需 `--deselect tests/test_e2e_veritas_forge.py::test_e2e`
+  才能全绿；未 deselect 直接跑会污染 cwd，产生垃圾文件。
