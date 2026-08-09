@@ -188,7 +188,7 @@ class TestPreExecutionSnapshot(unittest.TestCase):
             orch = EngineeringOrchestrator(
                 project_root=str(root),
                 world=MagicMock(),
-                projections=ProjectionManager(),
+                projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
                 hub=MagicMock(),
                 checkpoint_store=store,

@@ -11,6 +11,14 @@ project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 adapter = DeepSeekAdapter(model_name="deepseek-v4-flash")
 tag = "DeepSeek"
 
+MUTATION_KEYWORDS = (
+    "改", "修复", "添加", "删除", "实现", "重构", "创建", "新增", "修改",
+    "fix", "add", "implement", "refactor", "create", "delete",
+)
+
+def is_engineering_task(user_input: str) -> bool:
+    return any(kw in user_input for kw in MUTATION_KEYWORDS)
+
 def main():
     print(f"🔌 使用 {tag}")
     print(f"📁 项目: {os.path.abspath(os.path.expanduser(project_root))}")
@@ -37,8 +45,12 @@ def main():
             if user_input.strip().lower() in ("exit", "quit", "q"):
                 print("👋")
                 break
-            # Production path: unique Engineering Orchestrator
-            response = runtime.run(user_input)
+            # 意图分流：只读查询走 run_legacy（LLM 自主工具调用），
+            # 修改类任务走 run → EngineeringOrchestrator（六 Phase 闭环）
+            if is_engineering_task(user_input):
+                response = runtime.run(user_input)
+            else:
+                response = runtime.run_legacy(user_input)
             if response:
                 print(f"\n🤖 {response}")
         except KeyboardInterrupt:

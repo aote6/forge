@@ -53,11 +53,11 @@ class Projection(ABC):
 class ProjectionManager:
     """管理所有 Projection 的生命周期和分发。"""
 
-    def __init__(self):
+    def __init__(self, checkpoint_dir: str = ".forge"):
         self._projections: list[Projection] = []
 
         from forge.projections.checkpoint import ProjectionCheckpoint
-        self._checkpoint = ProjectionCheckpoint()
+        self._checkpoint = ProjectionCheckpoint(store_dir=checkpoint_dir)
         self._applied_tx: dict[str, set] = {}  # projection_name -> {tx_id} (进程内缓存，不跨重启)
 
     def register(self, projection: Projection) -> None:

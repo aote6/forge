@@ -163,7 +163,7 @@ class TestExecutionGuard(unittest.TestCase):
 
     def _make_orch(self, root: str, plan: Plan):
         world = MagicMock()
-        projections = ProjectionManager()
+        projections = ProjectionManager(checkpoint_dir=os.path.join(root, ".forge"))
         orch = EngineeringOrchestrator(
             project_root=root,
             world=world,
@@ -299,7 +299,7 @@ class TestOrchestratorBindsSnapshotOnPlan(unittest.TestCase):
             orch = EngineeringOrchestrator(
                 project_root=str(root),
                 world=world,
-                projections=ProjectionManager(),
+                projections=ProjectionManager(checkpoint_dir=os.path.join(str(root), ".forge")),
                 planner=planner,
                 hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),

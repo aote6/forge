@@ -32,3 +32,11 @@ User Task
 - 单活跃 Session（Runtime 级）
 - Hub（zhiwang / lu / sms）为生产强制依赖
 - 大仓库内容加载受字符预算限制；文件树列表始终完整
+
+## 2026-08-09 Planner 全量扫描问题（已止血，未根治）
+
+- **症状**：`[Planner DEBUG] user prompt len=32644`，Planner 在构造 prompt 阶段无条件调用 `repo.file_tree` 全量快照，无论任务是否需要。
+- **根因**：调用链上缺少"任务相关性筛选"层——zhiwang 无脑给全量，repo_adapter 无脑解析全量，Planner 无脑塞全量进 prompt。
+- **止血**：zhiwang 06_file_tree.sh 新增 `.forge` 排除规则（886→124），降低 prompt 膨胀。
+- **技术债务**：真正需要的是 Planner 层根据任务类型筛选相关文件子集，而非依赖快照层的排除规则。目前筛选逻辑从未落地过。
+- **相关 commit**：`11a44ee` 的 message 暗示修过但实际代码证明未触及核心全量扫描逻辑。

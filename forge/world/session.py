@@ -55,7 +55,8 @@ class WorldSession:
     def write(self, object_id: int, state_id: int, value: str = "", hex_value: str | None = None) -> None:
         self._ensure_open()
         self._adapter.tx_write(
-            self.session_id, state_id, value=value or None, hex_value=hex_value
+            self.session_id, state_id, value=value or None, hex_value=hex_value,
+            object_id=object_id,
         )
 
     def commit(self) -> tuple[Receipt, TransactionDelta]:

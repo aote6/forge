@@ -78,10 +78,17 @@ class FileProjection(Projection):
             if isinstance(op, EditOp):
                 edits.append(op)
             else:
+                if not isinstance(op, dict) or "start_line" not in op or "end_line" not in op:
+                    raise ValueError(
+                        f"Malformed edit operation — expected dict with "
+                        f"'start_line'/'end_line'/'new_lines', got: {op!r}. "
+                        f"(old_text/new_text format is NOT supported here; "
+                        f"that belongs to lu_patch, not FileProjection.)"
+                    )
                 edits.append(EditOp(
                     type=op.get("type", "replace"),
-                    start_line=op.get("start_line", 0),
-                    end_line=op.get("end_line", 0),
+                    start_line=op["start_line"],
+                    end_line=op["end_line"],
                     new_lines=op.get("new_lines", []),
                 ))
         return edits

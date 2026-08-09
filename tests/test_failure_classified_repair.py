@@ -300,7 +300,7 @@ class TestStaleStillZeroMutation(unittest.TestCase):
             orch = EngineeringOrchestrator(
                 project_root=str(root),
                 world=MagicMock(),
-                projections=ProjectionManager(),
+                projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
                 hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
@@ -334,7 +334,7 @@ class TestOrchestratorVerifyStoresFailure(unittest.TestCase):
             orch = EngineeringOrchestrator(
                 project_root=str(root),
                 world=MagicMock(get_version=MagicMock(return_value=1)),
-                projections=ProjectionManager(),
+                projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
                 hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
@@ -409,7 +409,7 @@ class TestDuplicateRepairOrchestratorWiring(unittest.TestCase):
             orch = EngineeringOrchestrator(
                 project_root=str(root),
                 world=MagicMock(),
-                projections=ProjectionManager(),
+                projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=planner,
                 hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
@@ -444,7 +444,7 @@ class TestExecuteFailureSelfCorrection(unittest.TestCase):
             orch = EngineeringOrchestrator(
                 project_root=str(root),
                 world=MagicMock(),
-                projections=ProjectionManager(),
+                projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
                 hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
@@ -509,7 +509,7 @@ class TestExecuteFailureSelfCorrection(unittest.TestCase):
             orch = EngineeringOrchestrator(
                 project_root=str(root),
                 world=MagicMock(),
-                projections=ProjectionManager(),
+                projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
                 hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
@@ -570,7 +570,7 @@ class TestStaleNotInfinitePlanLoop(unittest.TestCase):
             orch = EngineeringOrchestrator(
                 project_root=str(root),
                 world=MagicMock(),
-                projections=ProjectionManager(),
+                projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=planner,
                 hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
@@ -613,7 +613,7 @@ class TestCorrectionCountResume(unittest.TestCase):
             orch = EngineeringOrchestrator(
                 project_root=str(root),
                 world=MagicMock(),
-                projections=ProjectionManager(),
+                projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
                 hub=MagicMock(),
                 checkpoint_store=store,

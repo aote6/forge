@@ -62,7 +62,7 @@ def test_modify_existing_file():
 
         pmap = ObjectPathMap()
         pmap.update_from_delta(delta)
-        pm = ProjectionManager()
+        pm = ProjectionManager(checkpoint_dir=os.path.join(root, ".forge"))
         pm.register(FileProjection(project_root=root, object_path_map=pmap))
         pm.project(receipt, delta)
 
@@ -78,7 +78,7 @@ def test_modify_existing_file():
             except Exception:
                 object_id = None
 
-        operations = [{"old_text": 'VERSION = "1.0"', "new_text": 'VERSION = "2.0"'}]
+        operations = [{"start_line": 1, "end_line": 2, "new_lines": ['VERSION = "2.0"\n']}]
         modify = Intent.modify_file(
             path=test_file, operations=operations, require_confirm=False
         )

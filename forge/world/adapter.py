@@ -252,6 +252,7 @@ class WorldAdapter:
         state_id: int,
         value: str | None = None,
         hex_value: str | None = None,
+        object_id: int | None = None,
     ) -> None:
         req: dict[str, Any] = {
             "cmd": "tx_write",
@@ -264,6 +265,8 @@ class WorldAdapter:
             req["value"] = value
         else:
             raise WorldAdapterError("tx_write requires value or hex_value")
+        if object_id is not None:
+            req["object_id"] = int(object_id)
         resp = self._send(req)
         self._require_ok(resp)
 

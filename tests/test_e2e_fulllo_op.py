@@ -116,7 +116,7 @@ def test_full_loop_with_hub():
 
         pmap = ObjectPathMap()
         pmap.update_from_delta(delta)
-        pm = ProjectionManager()
+        pm = ProjectionManager(checkpoint_dir=os.path.join(root, ".forge"))
         pm.register(FileProjection(project_root=root, object_path_map=pmap))
         proj = pm.project(receipt, delta)
         assert all(getattr(r, "success", True) for r in (proj or []))
