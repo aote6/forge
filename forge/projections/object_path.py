@@ -15,6 +15,7 @@ class ObjectPathMap:
 
     def __init__(self):
         self._paths: dict[int, str] = {}
+        self._caps: dict[int, int] = {}  # object_id -> its own AdminCap capability_id
 
     def update_from_delta(self, delta) -> None:
         """从 TransactionDelta.memory_written 提取路径（state_id=0）。"""
@@ -31,6 +32,14 @@ class ObjectPathMap:
             except Exception:
                 path = val
             self._paths[oid] = path
+
+        # Self-admin-cap pattern: grantee == resource means the object holds
+        # the AdminCap over itself (the case for freshly created objects).
+        # Rebuilt on every replay from Veritas' authoritative capability_grants,
+        # so this stays valid across process restarts — no separate file needed.
+        for g in getattr(delta, "capability_grants", None) or []:
+            if g.grantee == g.resource:
+                self._caps[g.resource] = g.capability_id
 
     def get(self, object_id: int) -> str | None:
         return self._paths.get(object_id)
@@ -54,3 +63,8 @@ class ObjectPathMap:
 
     def remove(self, object_id: int) -> None:
         self._paths.pop(object_id, None)
+        self._caps.pop(object_id, None)
+
+    def get_capability_id(self, object_id: int) -> int | None:
+        """Return the AdminCap capability_id this object holds over itself, if any."""
+        return self._caps.get(object_id)
