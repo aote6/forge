@@ -41,6 +41,15 @@ class ObjectPathMap:
             if g.grantee == g.resource:
                 self._caps[g.resource] = g.capability_id
 
+        # Veritas Object death is authoritative. If this delta reports an
+        # object as deleted, the path map must forget it too — otherwise a
+        # dead object_id stays resolvable via get()/find_object_id(), and
+        # replay-based recovery (receipts_since(0)) would silently resurrect
+        # that stale mapping on every restart, even though the kernel
+        # correctly keeps the object Dead.
+        for oid in getattr(delta, "objects_deleted", None) or []:
+            self.remove(oid)
+
     def get(self, object_id: int) -> str | None:
         return self._paths.get(object_id)
 
