@@ -155,10 +155,13 @@ class IntentExecutor:
         path = intent.parameters["path"]
         content = intent.parameters.get("content", "")
         session = self._world.begin_session()
-        obj_id = session.create_object()
-        session.write(obj_id, 0, value=path)
-        session.write(obj_id, 1, value=content)
-        return session.preview_delta()
+        try:
+            obj_id = session.create_object()
+            session.write(obj_id, 0, value=path)
+            session.write(obj_id, 1, value=content)
+            return session.preview_delta()
+        finally:
+            session.abort()
 
     def _stage_modify_file(self, intent: Intent) -> TransactionDelta:
         path = intent.parameters["path"]
@@ -167,9 +170,12 @@ class IntentExecutor:
         if object_id is None:
             raise IntentExecutionError("modify_file requires object_id")
         session = self._world.begin_session()
-        session.write(object_id, 0, value=path)
-        session.write(object_id, 2, value=json.dumps(operations))
-        return session.preview_delta()
+        try:
+            session.write(object_id, 0, value=path)
+            session.write(object_id, 2, value=json.dumps(operations))
+            return session.preview_delta()
+        finally:
+            session.abort()
 
     def _stage_delete_file(self, intent: Intent) -> TransactionDelta:
         object_id = intent.parameters.get("object_id")
@@ -177,14 +183,17 @@ class IntentExecutor:
         if object_id is None:
             raise IntentExecutionError("delete_file requires object_id")
         session = self._world.begin_session()
-        if path:
-            session.write(object_id, 0, value=path)
-        session.death(object_id)
-        delta = session.preview_delta()
-        if path:
-            delta.metadata = dict(delta.metadata or {})
-            delta.metadata.setdefault("deleted_paths", {})[object_id] = path
-        return delta
+        try:
+            if path:
+                session.write(object_id, 0, value=path)
+            session.death(object_id)
+            delta = session.preview_delta()
+            if path:
+                delta.metadata = dict(delta.metadata or {})
+                delta.metadata.setdefault("deleted_paths", {})[object_id] = path
+            return delta
+        finally:
+            session.abort()
 
     # ── dry run ──────────────────────────────────────────────
 
