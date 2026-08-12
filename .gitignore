@@ -5,3 +5,4 @@ __pycache__/
 .forge/
 wal_*.log
 *.bak
+*.bak-*

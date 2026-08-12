@@ -37,6 +37,11 @@ class IntentExecutor:
         """
         if not intents:
             raise IntentExecutionError("execute_batch requires at least one intent")
+        # Validate every intent before opening a session at all. This makes
+        # "no residue after abort" moot for invalid input: no transaction is
+        # ever begun, so there is nothing to abort or roll back.
+        for intent in intents:
+            self._validate_intent(intent)
         session = self._world.begin_session()
         try:
             for intent in intents:
@@ -71,6 +76,7 @@ class IntentExecutor:
 
     def stage(self, intent: Intent) -> TransactionDelta:
         """在当前或新 session 中暂存 Intent，不提交。用于 require_confirm。"""
+        self._validate_intent(intent)
         handler = self._stage_handlers.get(intent.type)
         if handler is None:
             raise IntentExecutionError(f"cannot stage intent type: {intent.type}")
@@ -82,6 +88,72 @@ class IntentExecutor:
         if handler is None:
             return {}
         return handler(intent)
+
+    # ── input validation (runs before any Veritas mutation) ────
+    #
+    # Scope is intentionally narrow: only the cases from the P5 audit
+    # (create_file empty path/content, modify/delete invalid object_id,
+    # malformed modify operations). link/unlink/freeze validation is out
+    # of scope for this pass and still relies on kernel-side rejection.
+
+    def _validate_intent(self, intent: Intent) -> None:
+        if intent.type is IntentType.CREATE_FILE:
+            path = intent.parameters.get("path")
+            if not isinstance(path, str) or not path.strip():
+                raise IntentExecutionError("create_file requires a non-empty path")
+            content = intent.parameters.get("content", "")
+            if not isinstance(content, str) or content == "":
+                # Existing contract: empty content already fails downstream
+                # (WorldSession.write() turns "" into None, and tx_write
+                # then raises "requires value or hex_value"). We are not
+                # changing that outcome — only failing earlier, with a
+                # clear message, before any Veritas mutation is attempted.
+                raise IntentExecutionError("create_file requires non-empty content")
+
+        elif intent.type is IntentType.MODIFY_FILE:
+            path = intent.parameters.get("path")
+            if not isinstance(path, str) or not path.strip():
+                raise IntentExecutionError("modify_file requires a non-empty path")
+            object_id = intent.parameters.get("object_id")
+            self._require_valid_object(object_id, "modify_file")
+            operations = intent.parameters.get("operations")
+            if not isinstance(operations, list) or not operations:
+                raise IntentExecutionError("modify_file requires a non-empty operations list")
+            for op in operations:
+                if not isinstance(op, dict) or "start_line" not in op or "end_line" not in op:
+                    raise IntentExecutionError(
+                        f"malformed modify_file operation: expected dict with "
+                        f"'start_line'/'end_line', got {op!r}"
+                    )
+                start_line = op["start_line"]
+                end_line = op["end_line"]
+                if not isinstance(start_line, int) or start_line < 1:
+                    raise IntentExecutionError(
+                        f"operation start_line must be a 1-indexed positive integer, "
+                        f"got {start_line!r}"
+                    )
+                if not isinstance(end_line, int) or end_line < start_line - 1:
+                    raise IntentExecutionError(
+                        f"operation end_line must be >= start_line - 1, got "
+                        f"start_line={start_line!r}, end_line={end_line!r}"
+                    )
+
+        elif intent.type is IntentType.DELETE_FILE:
+            object_id = intent.parameters.get("object_id")
+            self._require_valid_object(object_id, "delete_file")
+
+    def _require_valid_object(self, object_id, op_name: str) -> None:
+        if object_id is None:
+            raise IntentExecutionError(f"{op_name} requires object_id")
+        if not isinstance(object_id, int):
+            raise IntentExecutionError(f"{op_name} object_id must be an int, got {object_id!r}")
+        info = self._world.get_object(object_id)
+        if info is None:
+            raise IntentExecutionError(f"{op_name}: object_id {object_id} does not exist")
+        if info.state != "Alive":
+            raise IntentExecutionError(
+                f"{op_name}: object_id {object_id} is not Alive (state={info.state})"
+            )
 
     # ── session-aware dispatcher ─────────────────────────────
 
