@@ -127,14 +127,16 @@ class IntentExecutor:
                     )
                 start_line = op["start_line"]
                 end_line = op["end_line"]
-                if not isinstance(start_line, int) or start_line < 1:
+                # 0-indexed half-open range [start_line, end_line), matching
+                # FileProjection._dicts_to_edits / EditOp / apply_edits.
+                if not isinstance(start_line, int) or start_line < 0:
                     raise IntentExecutionError(
-                        f"operation start_line must be a 1-indexed positive integer, "
+                        f"operation start_line must be a 0-indexed non-negative integer, "
                         f"got {start_line!r}"
                     )
-                if not isinstance(end_line, int) or end_line < start_line - 1:
+                if not isinstance(end_line, int) or end_line < start_line:
                     raise IntentExecutionError(
-                        f"operation end_line must be >= start_line - 1, got "
+                        f"operation end_line must be >= start_line, got "
                         f"start_line={start_line!r}, end_line={end_line!r}"
                     )
 

@@ -31,7 +31,31 @@ class FileProjection(Projection):
         return "file"
 
     def _resolve(self, path: str) -> str:
-        from forge.core.security import resolve_workspace_path
+        """Resolve a path recorded in Veritas state (state_id=0) to a host path.
+
+        Relative paths are Forge/Intent-level navigation and stay confined to
+        project_root via resolve_workspace_path (unchanged behavior).
+
+        Absolute paths are authoritative content coming from Veritas'
+        committed state — Veritas is the source of truth, and Projection's
+        job is to materialize whatever it committed, not to re-litigate
+        where that path lives. We still enforce the blocklist (ssh keys,
+        credentials, etc.) but do not require containment under
+        project_root for paths that are already absolute.
+        """
+        import os as _os
+        from pathlib import Path as _Path
+        from forge.core.security import resolve_workspace_path, is_blocked_path, PathSecurityError
+
+        expanded = _Path(_os.path.expanduser(path))
+        if expanded.is_absolute():
+            resolved = str(expanded.resolve())
+            blocked = is_blocked_path(resolved)
+            if blocked:
+                raise PathSecurityError(
+                    f"路径被安全策略拦截（命中规则: {blocked}）: {resolved}"
+                )
+            return resolved
         return resolve_workspace_path(self.project_root, path)
 
     def _get_path(self, writes: list) -> Optional[str]:
@@ -72,15 +96,15 @@ class FileProjection(Projection):
         return None
 
     def _dicts_to_edits(self, operations: list) -> list:
-        """Convert Intent-facing operation dicts into internal EditOp objects.
+        """Convert operation dicts into internal EditOp objects.
 
-        Intent-level line numbers are 1-indexed and inclusive (e.g.
-        start_line=1, end_line=1 means "line 1 only" — the natural way a
-        human or LLM specifies "replace the first line"). EditOp/apply_edits
-        internally use 0-indexed half-open ranges [start_line, end_line),
-        matching difflib.get_opcodes() semantics used by compute_edits().
-        This boundary is where that conversion must happen; patch_engine.py
-        itself stays untouched and self-consistent.
+        start_line/end_line are passed through unchanged as a 0-indexed
+        half-open range [start_line, end_line), matching EditOp/apply_edits
+        and difflib.get_opcodes() semantics used by compute_edits(). This is
+        the contract verified by tests/test_e2e_failure_paths.py::
+        test_modify_existing_file (op {start_line:1, end_line:2} must
+        replace only line index 1, leaving line index 0 untouched) — the
+        only test that exercises this exact code path end to end.
         """
         from forge.core.patch_engine import EditOp
         edits = []
@@ -95,22 +119,10 @@ class FileProjection(Projection):
                         f"(old_text/new_text format is NOT supported here; "
                         f"that belongs to lu_patch, not FileProjection.)"
                     )
-                start_line = op["start_line"]
-                end_line = op["end_line"]
-                if not isinstance(start_line, int) or start_line < 1:
-                    raise ValueError(
-                        f"start_line must be a 1-indexed positive integer, got: {start_line!r}"
-                    )
-                if not isinstance(end_line, int) or end_line < start_line - 1:
-                    raise ValueError(
-                        f"end_line must be >= start_line - 1 (1-indexed, inclusive), got: "
-                        f"start_line={start_line!r}, end_line={end_line!r}"
-                    )
                 edits.append(EditOp(
                     type=op.get("type", "replace"),
-                    # 1-indexed inclusive -> 0-indexed half-open
-                    start_line=start_line - 1,
-                    end_line=end_line,
+                    start_line=op["start_line"],
+                    end_line=op["end_line"],
                     new_lines=op.get("new_lines", []),
                 ))
         return edits
