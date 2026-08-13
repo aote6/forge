@@ -148,6 +148,48 @@ veritas_kernel `4e7403a`，zhiwang（06_file_tree.sh，独立仓库，未记录 
 **验证**：全量 `pytest` 207 passed，1 deselected（见下方独立 bug）。
 相关 commit：forge `ccecc79`（capability_grants 接入）、`665950e`（cap 持久化）。
 
+## 2026-08-13 CapabilityGrant P2 薄适配完成
+
+### 背景
+
+Veritas 侧已完成：
+- P0：CapabilityGrant grantor 语义闭环
+- P1：veritasd 暴露 tx_capability_grant JSONL 命令
+
+Forge 侧需要做的是薄适配，不复制授权语义，只做 JSONL 转发。
+
+### 完成内容
+
+- `forge/world/adapter.py`：新增 `tx_capability_grant(session_id, grantor, grantee, capability_type, resource)` 方法
+  - 发送 cmd=tx_capability_grant，复用 _require_ok 错误处理
+  - 无本地授权逻辑，纯转发
+- `forge/world/session.py`：新增 `grant(grantor, grantee, capability_type, resource)` 薄包装
+  - 只做 _ensure_open() + adapter 转发
+  - 与现有 write/link/freeze 风格一致
+- `tests/test_p2_capability_grant.py`：2 个 e2e 测试
+  - test_p2_capability_grant_a_grants_b_on_c：完整验证未授权失败 → grant → 授权成功
+  - test_p2_adapter_tx_capability_grant_direct：adapter 层直接调用验证
+
+### 验证
+
+- 全量 pytest 210 passed（含 P2 新增 2 个测试）
+- 调用链：Forge WorldSession.grant → WorldAdapter.tx_capability_grant → veritasd JSONL → WorldService::tx_capability_grant → KernelCall::CapabilityGrant → Engine/CapabilityGraph
+
+### 边界
+
+- 未修改 Veritas 任何代码
+- 未修改 CapabilityGraph
+- 未在 Forge 增加本地授权缓存/判断
+- 未绕过 JSONL，未构造 KernelCall
+
+### 相关 commit
+
+- forge: 3228070 feat: Forge CapabilityGrant 薄适配
+- forge: 9d6d474 fix: P5 修改语义 0-indexed 半开区间 + FileProjection 绝对路径处理
+- veritas_kernel: c01b0ed feat: expose CapabilityGrant through veritasd
+
+---
+
 ## 2026-08-09 test_e2e_veritas_forge.py 绝对路径处理 bug（新发现，未修复）
 
 **症状**：`test_e2e` 中 `test_path` 为绝对路径
