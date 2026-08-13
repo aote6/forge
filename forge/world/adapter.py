@@ -246,6 +246,27 @@ class WorldAdapter:
         )
         self._require_ok(resp)
 
+    def tx_capability_grant(
+        self,
+        session_id: int,
+        grantor: int,
+        grantee: int,
+        capability_type: str,
+        resource: int,
+    ) -> None:
+        """Forward CapabilityGrant to veritasd. No local authorization logic."""
+        resp = self._send(
+            {
+                "cmd": "tx_capability_grant",
+                "session_id": int(session_id),
+                "grantor": int(grantor),
+                "grantee": int(grantee),
+                "capability_type": capability_type,
+                "resource": int(resource),
+            }
+        )
+        self._require_ok(resp)
+
     def tx_write(
         self,
         session_id: int,

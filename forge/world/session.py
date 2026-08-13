@@ -67,6 +67,19 @@ class WorldSession:
         self._adapter.tx_unlink(self.session_id, from_id, to_id)
         self._links_removed.append((from_id, to_id))
 
+    def grant(
+        self,
+        grantor: int,
+        grantee: int,
+        capability_type: str,
+        resource: int,
+    ) -> None:
+        """Thin wrapper: request Veritas to grant capability. No local auth logic."""
+        self._ensure_open()
+        self._adapter.tx_capability_grant(
+            self.session_id, grantor, grantee, capability_type, resource
+        )
+
     def write(self, object_id: int, state_id: int, value: str = "", hex_value: str | None = None) -> None:
         self._ensure_open()
         self._adapter.tx_write(
