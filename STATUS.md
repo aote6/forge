@@ -205,3 +205,13 @@ Forge 侧需要做的是薄适配，不复制授权语义，只做 JSONL 转发�
   或做了不该做的编码。尚未定位具体代码行，需要下个窗口单独排查。
 - **当前状态**：`pytest` 需 `--deselect tests/test_e2e_veritas_forge.py::test_e2e`
   才能全绿；未 deselect 直接跑会污染 cwd，产生垃圾文件。
+
+
+## Identity Binding Boundary
+
+- Forge 将 World ObjectId 持久化到 .forge/world_identity
+- attach_identity(object_id) 当前验证 Object 存活，但不验证外部调用主体是否有权声明该 Object 为自身身份
+- 当前 veritasd 为本地 stdin/stdout 进程，部署模型为单用户本地信任边界
+- 因此当前定级为 MINOR / KNOWN DESIGN GAP，而非 Kernel security bug
+- 若未来引入多用户、远程客户端或网络 veritasd，必须在 WRI 层增加 authenticated identity binding，并重新审计 attach_identity 全链路
+- 详细审计：docs/IDENTITY_BINDING_AUDIT.md
