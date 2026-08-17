@@ -87,6 +87,10 @@ def test_planner_create_object_prompt_mentions_create_object():
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="P0: Planner/Validator fail-closed; semantic operation_type correction is forbidden",
+)
 def test_planner_must_correct_llm_modify_to_create_object():
     """RED: LLM 返回 modify 时，Planner 必须根据任务语义纠正为 create_object。
 

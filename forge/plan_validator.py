@@ -50,15 +50,25 @@ class PlanValidator:
 
             op = s.get("operation_type", "modify")
             targets = s.get("target_files", [])
+            if not isinstance(targets, list):
+                raise PlanValidationError(f"{sid}: target_files 必须是 list")
+            if op not in valid_ops:
+                raise PlanValidationError(f"{sid}: 无效 operation_type '{op}'")
+
+            # Fail-closed: no auto-correction of operation_type or target_files.
+            # create_object must have empty target_files; modify/create_file/delete_file must not.
             if op == "create_object":
                 if targets:
                     raise PlanValidationError(
-                        f"{sid}: create_object 不应指定 target_files"
+                        f"{sid}: create_object 的 target_files 必须为空数组 []，"
+                        f"收到 {targets}（Validator 不会自动清空或改写 operation_type）"
                     )
-            elif not targets:
-                raise PlanValidationError(f"{sid}: 缺少 target_files")
-            if op not in valid_ops:
-                raise PlanValidationError(f"{sid}: 无效 operation_type '{op}'")
+            else:
+                # modify / create_file / delete_file require non-empty target_files
+                if not targets:
+                    raise PlanValidationError(
+                        f"{sid}: {op} 缺少 target_files（Validator 不会自动补全或改写 operation_type）"
+                    )
 
             enriched = dict(s)
 

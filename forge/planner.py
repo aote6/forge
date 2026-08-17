@@ -5,6 +5,7 @@
 - impact / callers / ambiguous symbols 由 RepositoryIndex 机器推导，
   再与 LLM 输出合并；Validator 是最终硬门槛。
 - step dependencies 经拓扑排序后再执行。
+- 机器只提供事实；LLM 自己决策；Validator 只 ACCEPT/REJECT，绝不 semantic repair。
 """
 import json
 import re
@@ -15,12 +16,13 @@ from typing import Optional
 
 from forge.protocols.repository import RepoContext
 from forge.protocols.planning import Plan, PlanStep
-from forge.plan_validator import PlanValidator
+from forge.plan_validator import PlanValidator, PlanValidationError
 from forge.adapters.base import BaseAdapter, Message
 from forge.context.planning import (
     apply_machine_impact_to_plan,
     compute_impact_set,
     compute_obligations,
+    compute_repository_facts,
     extract_task_paths,
     format_file_with_line_numbers,
     format_impact_section,
@@ -28,7 +30,7 @@ from forge.context.planning import (
     select_planning_content_files,
 )
 
-PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文件列表、机器推导的 impact 信息、文件内容（带行号）、以及用户任务。
+PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文件列表、机器推导的 impact 信息、Repository Facts、文件内容（带行号）、以及用户任务。
 
 输出严格的 JSON，不要包含任何其他文字：
 {
@@ -71,19 +73,30 @@ PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文�
 14. 每个 modify 步骤的 new_text 必须是替换后的完整行内容（含换行语义），不得省略为摘要
 15. 禁止输出空 steps；禁止重复 step_id；禁止指向不存在文件（create 除外）
 16. 若任务只需改一个文件的少量行，只产出必要的最少步骤，不要扩展范围
+17. Repository Facts 是机器事实：symbol DEFINED 表示仓库中已有定义；NOT_DEFINED 表示仓库中无该符号定义。请自行据此选择 operation_type，机器不会替你改写 operation_type。
 """
 
 
-class PlanValidationError(Exception):
-    pass
+# PlanValidationError is the shared fail-closed gate exception (from plan_validator).
+# Re-exported here so callers can `from forge.planner import PlanValidationError`.
 
 
 def _make_plan_id() -> str:
     return f"plan_{int(time.time())}"
 
 
+
+
+
 class Planner:
-    """LLM 输出行号+新内容 → Forge 提取 old_text → Validator + machine impact."""
+    """LLM 输出行号+新内容 → Forge 提取 old_text → Validator + machine impact.
+
+    Validator is fail-closed: ACCEPT or REJECT only. No semantic repair of
+    operation_type / target_files. On REJECT, Planner retries (max 2) with
+    full context: task + Repository Facts + previous Plan JSON + reason.
+    """
+
+    MAX_VALIDATION_RETRIES = 2  # total attempts = 1 + MAX_VALIDATION_RETRIES
 
     def __init__(self, adapter: BaseAdapter):
         self.adapter = adapter
@@ -115,6 +128,8 @@ class Planner:
             fd = failure.to_dict() if hasattr(failure, "to_dict") else dict(failure)
             seed_files.extend(list(fd.get("files") or []))
 
+        from forge.context.index import extract_focus_symbols
+
         # Paths named in the task are seed impact (so boundary includes explicit targets).
         task_paths = extract_task_paths(task)
         seed_files = list(seed_files or []) + task_paths
@@ -123,7 +138,6 @@ class Planner:
         # "EngineeringOrchestrator") as a global refactor obligation.
         focus_symbols = None
         if task_paths and index is not None:
-            from forge.context.index import extract_focus_symbols
             scoped = []
             for name in extract_focus_symbols(task):
                 defs = index.find_definition(name)
@@ -202,9 +216,14 @@ class Planner:
         if index is not None:
             focus = list(machine.get("impact_symbols") or [])
             if not focus:
-                from forge.context.index import extract_focus_symbols
                 focus = extract_focus_symbols(task)
             model_section = index.summary_for_planner(focus_symbols=focus or None)
+
+        # P0: minimal Repository Facts (DEFINED / NOT_DEFINED + location only).
+        repository_facts = compute_repository_facts(
+            index,
+            [s for s in extract_focus_symbols(task)],
+        )
 
         failure_section = "(no structured failure)"
         if failure is not None:
@@ -225,11 +244,13 @@ class Planner:
         seeded_impact = machine.get("impact_files") or []
         seeded_symbols = machine.get("impact_symbols") or []
 
-        user_prompt = f"""仓库文件列表:
+        base_user_prompt = f"""仓库文件列表:
 {files_summary}
 
 Repository model (machine facts — prefer over guessing):
 {model_section}
+
+{repository_facts}
 
 {impact_section}
 
@@ -253,69 +274,130 @@ Repair constraints (machine enforced by validator):
 modify/delete 的 target_files 必须落在 impact_files 内。
 REQUIRED obligations 的 file 必须出现在某个 step 的 target_files 中（机器强制）。
 多步骤时用 dependencies 表达「先 definition 后 callers 后 tests」。
-create_file 不受 impact_files 限制。"""
+create_file 不受 impact_files 限制。
+create_object 的 target_files 必须为 []。
+机器只提供事实；请自行选择 operation_type。Validator 只 ACCEPT/REJECT，不会替你改写 plan。"""
 
-        messages = [
-            Message(role="system", content=PLANNER_SYSTEM_PROMPT),
-            Message(role="user", content=user_prompt)
-        ]
+        last_plan_dict = None
+        last_rejection = None
+        max_attempts = 1 + self.MAX_VALIDATION_RETRIES
 
-        print("[Planner] 正在调用 LLM 生成计划...", file=sys.stderr)
-        print(f"[Planner DEBUG] system prompt len={len(PLANNER_SYSTEM_PROMPT)}", file=sys.stderr)
-        print(f"[Planner DEBUG] user prompt len={len(user_prompt)}", file=sys.stderr)
-        print(f"[Planner DEBUG] user prompt:\n{user_prompt[:2000]}", file=sys.stderr)
-        print(f"[Planner DEBUG] total messages: {len(messages)}", file=sys.stderr)
-        response = self.adapter.send(messages, tools=[])
-        print(f"[Planner DEBUG] raw response len={len(response.content or '')}", file=sys.stderr)
-        print(f"[Planner DEBUG] raw response:\n{repr((response.content or '')[:500])}", file=sys.stderr)
-        raw_text = (response.content or "").strip()
-        print(f"[Planner] LLM 响应长度: {len(raw_text)} 字符", file=sys.stderr)
+        for attempt in range(max_attempts):
+            if attempt == 0:
+                user_prompt = base_user_prompt
+            else:
+                # Retry must include: original task, Repository Facts, full prior Plan JSON, reason.
+                # Forbidden: re-send only the raw task; forbidden: PlanRepair / semantic repair.
+                prior_json = json.dumps(last_plan_dict, ensure_ascii=False, indent=2)
+                user_prompt = f"""{base_user_prompt}
 
-        plan_dict = self._extract_json(raw_text)
-        if plan_dict is None:
-            print(f"[Planner] 无法提取 JSON, 原始响应:\n{raw_text}", file=sys.stderr)
-            raise PlanValidationError(f"无法从 LLM 响应中提取 JSON:\n{raw_text[:500]}")
+=== VALIDATION REJECTION (attempt {attempt}/{self.MAX_VALIDATION_RETRIES}) ===
+上一轮 Plan JSON（完整）:
+{prior_json}
 
-        # Pre-seed impact into plan_dict so Validator sees a boundary even if LLM omitted it.
-        if seeded_impact and not plan_dict.get("impact_files"):
-            plan_dict["impact_files"] = list(seeded_impact)
-        if seeded_symbols and not plan_dict.get("impact_symbols"):
-            plan_dict["impact_symbols"] = list(seeded_symbols)
+rejection reason:
+{last_rejection}
 
-        plan, enriched = self.validator.validate(
-            plan_dict,
-            repo,
-            repair_constraints=repair_constraints,
-            obligations=obligations,
+请根据 rejection reason 自行修正 Plan JSON 后重新输出完整 JSON。
+机器不会替你改写 operation_type 或 target_files。"""
+
+            messages = [
+                Message(role="system", content=PLANNER_SYSTEM_PROMPT),
+                Message(role="user", content=user_prompt),
+            ]
+
+            print("[Planner] 正在调用 LLM 生成计划...", file=sys.stderr)
+            print(f"[Planner DEBUG] attempt={attempt + 1}/{max_attempts}", file=sys.stderr)
+            print(f"[Planner DEBUG] system prompt len={len(PLANNER_SYSTEM_PROMPT)}", file=sys.stderr)
+            print(f"[Planner DEBUG] user prompt len={len(user_prompt)}", file=sys.stderr)
+            print(f"[Planner DEBUG] user prompt:\n{user_prompt[:2000]}", file=sys.stderr)
+            print(f"[Planner DEBUG] total messages: {len(messages)}", file=sys.stderr)
+            response = self.adapter.send(messages, tools=[])
+            print(f"[Planner DEBUG] raw response len={len(response.content or '')}", file=sys.stderr)
+            print(f"[Planner DEBUG] raw response:\n{repr((response.content or '')[:500])}", file=sys.stderr)
+            raw_text = (response.content or "").strip()
+            print(f"[Planner] LLM 响应长度: {len(raw_text)} 字符", file=sys.stderr)
+
+            plan_dict = self._extract_json(raw_text)
+            if plan_dict is None:
+                print(f"[Planner] 无法提取 JSON, 原始响应:\n{raw_text}", file=sys.stderr)
+                last_plan_dict = {"_raw": raw_text[:2000]}
+                last_rejection = f"无法从 LLM 响应中提取 JSON:\n{raw_text[:500]}"
+                if attempt >= self.MAX_VALIDATION_RETRIES:
+                    raise PlanValidationError(last_rejection)
+                continue
+
+            # Pre-seed impact into plan_dict so Validator sees a boundary even if LLM omitted it.
+            # This is boundary seeding only — never rewrite operation_type / target_files.
+            if seeded_impact and not plan_dict.get("impact_files"):
+                plan_dict["impact_files"] = list(seeded_impact)
+            if seeded_symbols and not plan_dict.get("impact_symbols"):
+                plan_dict["impact_symbols"] = list(seeded_symbols)
+
+            last_plan_dict = plan_dict
+
+            try:
+                plan, enriched = self.validator.validate(
+                    plan_dict,
+                    repo,
+                    repair_constraints=repair_constraints,
+                    obligations=obligations,
+                )
+            except PlanValidationError as e:
+                last_rejection = str(e)
+                print(f"[Planner] Validator REJECT (attempt {attempt + 1}): {last_rejection}", file=sys.stderr)
+                if attempt >= self.MAX_VALIDATION_RETRIES:
+                    raise PlanValidationError(
+                        f"Plan validation failed after {max_attempts} attempts: {last_rejection}"
+                    ) from e
+                continue
+
+            # Always merge machine impact (union) and topologically order steps.
+            apply_machine_impact_to_plan(plan, machine)
+
+            # Re-check modify/delete boundary after merge.
+            # This is a deterministic machine check; REJECT here also retries
+            # with the same feedback semantics as Validator rejection.
+            try:
+                if plan.impact_files:
+                    allowed = set(plan.impact_files)
+                    for step in plan.steps:
+                        if step.operation_type in ("modify", "delete_file", "delete"):
+                            for tf in step.target_files:
+                                if tf not in allowed:
+                                    raise PlanValidationError(
+                                        f"{step.step_id}: target '{tf}' outside "
+                                        f"merged impact_files {sorted(allowed)}"
+                                    )
+            except PlanValidationError as e:
+                last_rejection = str(e)
+                print(f"[Planner] Boundary REJECT after merge (attempt {attempt + 1}): {last_rejection}", file=sys.stderr)
+                if attempt >= self.MAX_VALIDATION_RETRIES:
+                    raise PlanValidationError(
+                        f"Plan validation failed after {max_attempts} attempts: {last_rejection}"
+                    ) from e
+                continue
+
+            enriched["impact_files"] = list(plan.impact_files)
+            enriched["impact_symbols"] = list(plan.impact_symbols)
+            enriched["machine_impact"] = {
+                "impact_files": machine.get("impact_files"),
+                "impact_symbols": machine.get("impact_symbols"),
+                "ambiguous_symbols": machine.get("ambiguous_symbols"),
+                "callers_by_symbol": machine.get("callers_by_symbol"),
+            }
+            enriched["obligations"] = list(obligations)
+            enriched["injected_source_files"] = list(injected_files)
+            enriched["planning_content_candidates"] = list(content_candidates)
+            enriched["repository_facts"] = repository_facts
+            enriched["planner_attempts"] = attempt + 1
+
+            return plan, enriched
+
+        # Exhausted without return (should not reach if loop logic is correct).
+        raise PlanValidationError(
+            f"Plan validation failed after {max_attempts} attempts: {last_rejection}"
         )
-
-        # Always merge machine impact (union) and topologically order steps.
-        apply_machine_impact_to_plan(plan, machine)
-        enriched["impact_files"] = list(plan.impact_files)
-        enriched["impact_symbols"] = list(plan.impact_symbols)
-        enriched["machine_impact"] = {
-            "impact_files": machine.get("impact_files"),
-            "impact_symbols": machine.get("impact_symbols"),
-            "ambiguous_symbols": machine.get("ambiguous_symbols"),
-            "callers_by_symbol": machine.get("callers_by_symbol"),
-        }
-        enriched["obligations"] = list(obligations)
-        enriched["injected_source_files"] = list(injected_files)
-        enriched["planning_content_candidates"] = list(content_candidates)
-
-        # Re-check modify/delete boundary after merge.
-        if plan.impact_files:
-            allowed = set(plan.impact_files)
-            for step in plan.steps:
-                if step.operation_type in ("modify", "delete_file", "delete"):
-                    for tf in step.target_files:
-                        if tf not in allowed:
-                            raise PlanValidationError(
-                                f"{step.step_id}: target '{tf}' outside "
-                                f"merged impact_files {sorted(allowed)}"
-                            )
-
-        return plan, enriched
 
     def _extract_json(self, raw: str) -> Optional[dict]:
         if not raw or not raw.strip():
