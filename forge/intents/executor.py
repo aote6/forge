@@ -162,12 +162,20 @@ class IntentExecutor:
             IntentType.CREATE_FILE: self._create_file_in_session,
             IntentType.MODIFY_FILE: self._modify_file_in_session,
             IntentType.DELETE_FILE: self._delete_file_in_session,
+            IntentType.CREATE_OBJECT: self._create_object_in_session,
             IntentType.LINK_OBJECTS: self._link_objects_in_session,
             IntentType.UNLINK_OBJECTS: self._unlink_objects_in_session,
             IntentType.FREEZE_OBJECT: self._freeze_object_in_session,
         }
 
     # ── full execute handlers (session-aware, no begin/commit) ─
+
+    def _create_object_in_session(self, session, intent: Intent) -> None:
+        """Pure ObjectBirth. No path/content writes; id observed via delta.objects_created."""
+        obj_id = session.create_object()
+        # Same annotation pattern as delete_file (_deleted_object_id): convenience only.
+        # Authoritative source after commit remains Receipt.delta.objects_created.
+        intent.parameters["_created_object_id"] = obj_id
 
     def _create_file_in_session(self, session, intent: Intent) -> None:
         path = intent.parameters["path"]

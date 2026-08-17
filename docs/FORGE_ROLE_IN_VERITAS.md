@@ -33,12 +33,14 @@
 现状：WRI 定义了 Object 创建、State 写入、Link、Capability 等能力。
 Forge 理论上可以创建新 Object 作为应用。
 
-**状态更新（2026-08-17）**：
-主循环已打通。Planner 的 Intent 现在真正走 WorldSession：
-- ExecutionAdapter → IntentExecutor → WorldSession → veritasd → Veritas Kernel
-- commit 后 Receipt → Projection → 文件系统
-- Edit Contract 已冻结（P0 Closure，见 STATUS.md 2026-08-17 条目）
-- 242 tests passed，含真实 veritasd e2e
+状态更新 2026-08-17：
+主循环已打通。Intent 执行真正走 WorldSession：
+- ExecutionAdapter 到 IntentExecutor 到 WorldSession 到 veritasd 到 Veritas Kernel
+- commit 后 Receipt 到 Projection 到文件系统
+- Edit Contract 已冻结（P0 Closure）
+- CREATE_OBJECT 纯世界对象创建语义已穿透
+- capability_grants 跨 veritasd JSON 边界已闭合
+- 251 tests passed，含真实 veritasd e2e
 
 ### 3. 修改 Forge 自身代码
 
@@ -48,16 +50,17 @@ Forge 理论上可以创建新 Object 作为应用。
 
 ## 当前优先事项
 
-**已完成（2026-08-17）**：
-打通最简单闭环：Forge 的 Intent 执行走 WorldSession，
-每次修改 commit 后 Receipt 投影回文件系统。
-这是把已有的 Projection 层接到主循环，不是从零设计。
+已完成 2026-08-17：
+- Forge 的 Intent 执行走 WorldSession
+- commit 后 Receipt 投影回文件系统
+- CREATE_OBJECT 语义穿透
+- capability_grants 跨边界闭合
 
-**下一步**：
-- 验证 CREATE_OBJECT 纯世界对象创建语义穿透
+下一步：
+- Planner / PlanValidator 支持 create_object operation_type
 - 处理 test_e2e_veritas_forge 绝对路径历史问题
 - 确认 _as_root 与 veritasd SHA-256 state_commitment 输出格式对齐
 
-**暂不做**：
+暂不做：
 - 修改 Veritas 内核（自举协议未定义）
 - 修改 Forge 自身（自指语义未定义）

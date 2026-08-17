@@ -270,3 +270,40 @@ Forge 侧需要做的是薄适配，不复制授权语义，只做 JSONL 转发�
 - Veritas 未来从 SHA-256 换到 SHA-512，Forge 无需改代码
 
 **状态**：未解决，等待 WRI v1.0 冻结
+
+## 2026-08-17 CREATE_OBJECT 语义穿透 + capability_grants 序列化修复
+
+背景：昨晚任务要求用 tx_create_object 创建对象并查看 object_count，但 Planner 卡在 planning 阶段，Intent 层没有纯 CREATE_OBJECT 语义。同时审计发现 veritasd receipt_json 未序列化 capability_grants，Forge 的 AdminCap 接入在真实路径上断裂。
+
+修复：
+- forge/intents/intent.py：新增 IntentType.CREATE_OBJECT + Intent.create_object() 工厂方法
+- forge/intents/executor.py：新增 _create_object_in_session handler，纯 ObjectBirth 无 path/content/write
+- veritas/src/bin/veritasd.rs：receipt_json 补上 capability_grants 结构化序列化
+
+完整链路：
+Intent.create_object()
+  到 IntentType.CREATE_OBJECT
+  到 IntentExecutor._create_object_in_session
+  到 WorldSession.create_object()
+  到 WorldAdapter.tx_create_object
+  到 veritasd tx_create_object
+  到 Kernel ObjectBirth
+  到 commit
+  到 Receipt.delta.objects_created + capability_grants
+  到 intent.parameters[_created_object_id]
+
+验证：
+- Forge 单元测试：5 passed
+- Forge e2e：4 passed，真实 veritasd commit abort capability_grants 无文件侧效应
+- Forge 全量：251 passed
+- Veritas 全量：360 passed, 0 failed
+- 审计工具：Verification Map 245/245 PASS，Instruction Dispatch 28/30，2 MISSING 历史遗留
+
+契约状态：CREATE_OBJECT 底层闭合，capability_grants 跨边界闭合
+
+遗留：
+- Planner / PlanValidator 尚不支持 create_object operation_type
+- 同 batch 自动把新 object_id 交给后续 Intent 无变量机制
+- DELETE_OBJECT 仍在 enum 无 handler
+
+相关 commit：forge 待提交，veritas 待提交

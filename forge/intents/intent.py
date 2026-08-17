@@ -16,6 +16,7 @@ class IntentType(Enum):
     CREATE_FILE = "create_file"
     MODIFY_FILE = "modify_file"
     DELETE_FILE = "delete_file"
+    CREATE_OBJECT = "create_object"
     LINK_OBJECTS = "link_objects"
     UNLINK_OBJECTS = "unlink_objects"
     FREEZE_OBJECT = "freeze_object"
@@ -33,6 +34,15 @@ class Intent:
     type: IntentType
     parameters: dict[str, Any] = field(default_factory=dict)
     policy: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def create_object(cls, require_confirm: bool = False) -> "Intent":
+        """Pure world-object birth. No path, content, or file semantics."""
+        return cls(
+            type=IntentType.CREATE_OBJECT,
+            parameters={},
+            policy={"require_confirm": require_confirm},
+        )
 
     @classmethod
     def create_file(
