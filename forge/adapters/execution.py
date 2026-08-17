@@ -17,6 +17,54 @@ from forge.protocols.models import ChangeProposal, ExecutionResult
 from forge.world.runtime import WorldRuntime
 
 
+# Canonical operation types accepted at the ExecutionAdapter boundary.
+# Aliases are explicit maps only — unknown values never fall through to modify.
+_CANONICAL_OP_TYPES = frozenset({"modify", "create_file", "delete_file", "create_object"})
+_OP_TYPE_ALIASES = {
+    "create": "create_file",
+    "delete": "delete_file",
+}
+
+
+def _resolve_op_type(op: dict) -> str:
+    """Resolve operation type fail-closed: no default, no silent precedence.
+
+    - missing / null / empty on both fields → reject
+    - both present and disagree → reject
+    - one present → use it
+    - both present and equal → use that value
+    - unknown after alias map → reject
+    """
+    raw_type = op.get("type")
+    raw_op_type = op.get("operation_type")
+    has_type = raw_type is not None and raw_type != ""
+    has_op_type = raw_op_type is not None and raw_op_type != ""
+
+    if not has_type and not has_op_type:
+        raise IntentExecutionError(
+            "missing operation type: provide 'type' or 'operation_type' "
+            "(ExecutionAdapter will not default to modify)"
+        )
+    if has_type and has_op_type and raw_type != raw_op_type:
+        raise IntentExecutionError(
+            f"conflicting type and operation_type: "
+            f"type={raw_type!r}, operation_type={raw_op_type!r}"
+        )
+    raw = raw_type if has_type else raw_op_type
+    if not isinstance(raw, str):
+        raise IntentExecutionError(
+            f"invalid operation type {raw!r}: must be a non-empty string"
+        )
+    canonical = _OP_TYPE_ALIASES.get(raw, raw)
+    if canonical not in _CANONICAL_OP_TYPES:
+        raise IntentExecutionError(
+            f"unknown operation type {raw!r}: "
+            f"expected one of {sorted(_CANONICAL_OP_TYPES)} "
+            f"(aliases: {sorted(_OP_TYPE_ALIASES)})"
+        )
+    return canonical
+
+
 class ExecutionAdapter:
     def __init__(
         self,
@@ -37,22 +85,37 @@ class ExecutionAdapter:
         intents_list: list = []
         try:
             for op in proposal.operations:
-                op_type = op.get("type") or op.get("operation_type") or "modify"
-                targets = op.get("target_files") or proposal.target_files
+                # P1b: fail-closed Intent boundary — no default, no fallthrough.
+                op_type = _resolve_op_type(op)
+                # Explicit empty list on the op must not fall back to proposal
+                # targets ([] is falsy — never use `op.get(...) or proposal...`).
+                if "target_files" in op:
+                    raw_targets = op.get("target_files")
+                    targets = list(raw_targets) if raw_targets is not None else []
+                else:
+                    targets = list(proposal.target_files or [])
+
                 if op_type == "create_object":
+                    # create_object is the sole Intent that allows empty targets.
                     intents_list.append(Intent.create_object(require_confirm=False))
                     continue
+
                 if not targets:
-                    continue
+                    raise IntentExecutionError(
+                        f"target_files required for {op_type}: "
+                        "empty targets are not allowed "
+                        "(ExecutionAdapter will not silent-skip)"
+                    )
+
                 target = targets[0]
                 full = resolve_workspace_path(self.project_root, target)
                 files.append(target)
 
-                if op_type in ("create_file", "create"):
+                if op_type == "create_file":
                     content = op.get("content", "")
                     intent = Intent.create_file(path=full, content=content, require_confirm=False)
                     intents_list.append(intent)
-                elif op_type in ("delete_file", "delete"):
+                elif op_type == "delete_file":
                     object_id = op.get("object_id")
                     if object_id is None:
                         object_id = self._resolve_object_id(full)
@@ -64,7 +127,7 @@ class ExecutionAdapter:
                     intent.parameters["object_id"] = object_id
                     intents_list.append(intent)
                 else:
-                    # modify: MUST resolve object_id before constructing Intent.
+                    # modify (canonical only — unknown already rejected above)
                     object_id = op.get("object_id")
                     if object_id is None:
                         object_id = self._resolve_object_id(full)
