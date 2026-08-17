@@ -307,3 +307,33 @@ Intent.create_object()
 - DELETE_OBJECT 仍在 enum 无 handler
 
 相关 commit：forge 待提交，veritas 待提交
+
+## 2026-08-17 Planner 支持 create_object operation_type
+
+背景：CREATE_OBJECT 底层已闭合，但 Planner 还不会产生 create_object。用户说创建对象时 Planner 卡住。
+
+修复：
+- planner.py：operation_type 枚举新增 create_object，规则明确 target_files 必须为空数组，不需要 content start_line end_line new_text
+- plan_validator.py：valid_ops 新增 create_object，接受空 target_files，拒绝非空 target_files
+- adapters/execution.py：在 target_files 检查之前处理 create_object，生成 Intent.create_object()
+
+完整链路：
+用户任务
+到 Planner operation_type=create_object target_files=[]
+到 PlanValidator 允许空 target_files
+到 ChangeProposal type=create_object
+到 ExecutionAdapter Intent.create_object()
+到 IntentExecutor IntentType.CREATE_OBJECT
+到 WorldSession.create_object()
+到 veritasd tx_create_object
+到 Kernel ObjectBirth
+到 Receipt objects_created + capability_grants
+
+验证：
+- 单元验证：create_object 空 target_files 通过，非空 target_files 拒绝
+- 全量 pytest：251 passed
+- git diff --check：通过
+
+契约状态：CREATE_OBJECT 全链路闭合，从 Planner 到 Veritas ObjectBirth
+
+相关 commit：forge c1da209

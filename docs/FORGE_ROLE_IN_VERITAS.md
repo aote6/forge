@@ -55,9 +55,9 @@ Forge 理论上可以创建新 Object 作为应用。
 - commit 后 Receipt 投影回文件系统
 - CREATE_OBJECT 语义穿透
 - capability_grants 跨边界闭合
+- Planner / PlanValidator 支持 create_object operation_type
 
 下一步：
-- Planner / PlanValidator 支持 create_object operation_type
 - 处理 test_e2e_veritas_forge 绝对路径历史问题
 - 确认 _as_root 与 veritasd SHA-256 state_commitment 输出格式对齐
 
