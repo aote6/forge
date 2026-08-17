@@ -95,7 +95,7 @@ class TestPlanToProposalsUnified(unittest.TestCase):
         plan = Plan(
             plan_id="p",
             goal="g",
-            steps=[PlanStep(step_id="s1", description="d", target_files=["a.py"])],
+            steps=[PlanStep(step_id="s1", description="d", target_files=["a.py"], operation_type="modify",)],
         )
         a = plan_to_proposals(plan)
         b = from_planner(plan)

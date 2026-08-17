@@ -83,7 +83,8 @@ class PlanStep:
     step_id: str = ""
     description: str = ""
     target_files: List[str] = field(default_factory=list)
-    operation_type: str = "modify"
+    # Empty is invalid at boundaries — never default to "modify".
+    operation_type: str = ""
     dependencies: List[str] = field(default_factory=list)
     content: str = ""
     old_text: str = ""
@@ -98,12 +99,50 @@ class PlanStep:
 
     @classmethod
     def from_dict(cls, data: dict) -> "PlanStep":
+        from forge.protocols.operation_contract import (
+            CANONICAL_PLAN_OPERATION_TYPES,
+            OperationContractError,
+            require_target_files_list,
+        )
+
+        if not isinstance(data, dict):
+            raise OperationContractError("PlanStep.from_dict requires a dict")
+
+        if "operation_type" not in data:
+            raise OperationContractError(
+                "PlanStep missing operation_type (will not default to modify)"
+            )
+        op = data.get("operation_type")
+        if op is None or op == "":
+            raise OperationContractError(
+                "PlanStep operation_type is null/empty (will not default to modify)"
+            )
+        if not isinstance(op, str):
+            raise OperationContractError(
+                f"PlanStep operation_type must be str, got {type(op).__name__}"
+            )
+        if op not in CANONICAL_PLAN_OPERATION_TYPES:
+            raise OperationContractError(
+                f"PlanStep unknown operation_type {op!r}: "
+                f"expected one of {sorted(CANONICAL_PLAN_OPERATION_TYPES)}"
+            )
+
+        if "target_files" in data:
+            tf = data.get("target_files")
+            if tf is None:
+                raise OperationContractError(
+                    "PlanStep target_files is null (must be a list)"
+                )
+            target_files = list(require_target_files_list(tf, field_name="target_files"))
+        else:
+            target_files = []
+
         return cls(
             version=data.get("version", PROTOCOL_VERSION),
             step_id=data.get("step_id", ""),
             description=data.get("description", ""),
-            target_files=list(data.get("target_files") or []),
-            operation_type=data.get("operation_type", "modify"),
+            target_files=target_files,
+            operation_type=op,
             dependencies=list(data.get("dependencies") or []),
             content=data.get("content", "") or "",
             old_text=data.get("old_text", "") or "",
@@ -177,12 +216,48 @@ class ChangeProposal:
 
     @classmethod
     def from_dict(cls, data: dict) -> "ChangeProposal":
+        from forge.protocols.operation_contract import (
+            OperationContractError,
+            require_target_files_list,
+            validate_proposal_operations_structure,
+        )
+
+        if not isinstance(data, dict):
+            raise OperationContractError("ChangeProposal.from_dict requires a dict")
+
+        if "target_files" in data:
+            tf = data.get("target_files")
+            if tf is None:
+                raise OperationContractError(
+                    "ChangeProposal target_files is null (must be a list)"
+                )
+            target_files = list(
+                require_target_files_list(tf, field_name="target_files")
+            )
+        else:
+            target_files = []
+
+        if "operations" in data:
+            ops = data.get("operations")
+            if ops is None:
+                raise OperationContractError(
+                    "ChangeProposal operations is null (must be a list)"
+                )
+            if not isinstance(ops, list):
+                raise OperationContractError(
+                    f"ChangeProposal operations must be a list, got {type(ops).__name__}"
+                )
+            validate_proposal_operations_structure(ops)
+            operations = list(ops)
+        else:
+            operations = []
+
         return cls(
             version=data.get("version", PROTOCOL_VERSION),
             proposal_id=data.get("proposal_id", ""),
             plan_id=data.get("plan_id", ""),
-            target_files=list(data.get("target_files") or []),
-            operations=list(data.get("operations") or []),
+            target_files=target_files,
+            operations=operations,
             reason=data.get("reason", ""),
             expected_effects=list(data.get("expected_effects") or []),
         )

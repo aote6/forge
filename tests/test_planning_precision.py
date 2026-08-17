@@ -150,17 +150,17 @@ class TestComputeImpactSet(unittest.TestCase):
 
 class TestTopologicalOrder(unittest.TestCase):
     def test_orders_by_dependencies(self):
-        s1 = PlanStep(step_id="s1", description="def", target_files=["core.py"])
+        s1 = PlanStep(step_id="s1", description="def", target_files=["core.py"], operation_type="modify",)
         s2 = PlanStep(
             step_id="s2",
             description="caller",
-            target_files=["svc.py"],
+            target_files=["svc.py"], operation_type="modify",
             dependencies=["s1"],
         )
         s3 = PlanStep(
             step_id="s3",
             description="test",
-            target_files=["t.py"],
+            target_files=["t.py"], operation_type="modify",
             dependencies=["s2"],
         )
         # intentionally reverse input order
@@ -170,15 +170,15 @@ class TestTopologicalOrder(unittest.TestCase):
 
     def test_stable_without_deps(self):
         steps = [
-            PlanStep(step_id="a", description="a", target_files=["a.py"]),
-            PlanStep(step_id="b", description="b", target_files=["b.py"]),
+            PlanStep(step_id="a", description="a", target_files=["a.py"], operation_type="modify",),
+            PlanStep(step_id="b", description="b", target_files=["b.py"], operation_type="modify",),
         ]
         ordered = topological_order_steps(steps)
         self.assertEqual([s.step_id for s in ordered], ["a", "b"])
 
     def test_cycle_does_not_drop_steps(self):
-        s1 = PlanStep(step_id="s1", description="a", target_files=["a.py"], dependencies=["s2"])
-        s2 = PlanStep(step_id="s2", description="b", target_files=["b.py"], dependencies=["s1"])
+        s1 = PlanStep(step_id="s1", description="a", target_files=["a.py"], operation_type="modify", dependencies=["s2"])
+        s2 = PlanStep(step_id="s2", description="b", target_files=["b.py"], operation_type="modify", dependencies=["s1"])
         ordered = topological_order_steps([s1, s2])
         self.assertEqual(len(ordered), 2)
 
@@ -464,8 +464,8 @@ class TestApplyMachineImpact(unittest.TestCase):
             goal="g",
             impact_files=["core.py"],
             steps=[
-                PlanStep(step_id="b", description="b", target_files=["svc.py"], dependencies=["a"]),
-                PlanStep(step_id="a", description="a", target_files=["core.py"]),
+                PlanStep(step_id="b", description="b", target_files=["svc.py"], operation_type="modify", dependencies=["a"]),
+                PlanStep(step_id="a", description="a", target_files=["core.py"], operation_type="modify",),
             ],
         )
         machine = {

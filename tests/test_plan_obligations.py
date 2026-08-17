@@ -270,9 +270,9 @@ class TestPlannerIntegration(unittest.TestCase):
 
     def test_topo_order_preserved_with_coverage(self):
         steps = [
-            PlanStep(step_id="s_b", description="b", target_files=["service_b.py"], dependencies=["s_def"]),
-            PlanStep(step_id="s_def", description="d", target_files=["core.py"]),
-            PlanStep(step_id="s_a", description="a", target_files=["service_a.py"], dependencies=["s_def"]),
+            PlanStep(step_id="s_b", description="b", target_files=["service_b.py"], operation_type="modify", dependencies=["s_def"]),
+            PlanStep(step_id="s_def", description="d", target_files=["core.py"], operation_type="modify",),
+            PlanStep(step_id="s_a", description="a", target_files=["service_a.py"], operation_type="modify", dependencies=["s_def"]),
         ]
         ordered = topological_order_steps(steps)
         self.assertEqual(ordered[0].step_id, "s_def")

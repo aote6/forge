@@ -33,7 +33,8 @@ class PlanValidator:
             raise PlanValidationError("steps 必须是 list")
 
         existing_files = set(repo.file_tree)
-        valid_ops = {"modify", "create_file", "delete_file", "create_object"}
+        from forge.protocols.operation_contract import CANONICAL_PLAN_OPERATION_TYPES
+        valid_ops = CANONICAL_PLAN_OPERATION_TYPES
         step_ids = set()
         steps = []
         enriched_steps = []

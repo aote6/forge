@@ -102,12 +102,47 @@ class EngineeringOrchestrator:
 
     def run(self, task: str, task_id: Optional[str] = None) -> str:
         task_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
-        saved = self.store.load(task_id)
+        try:
+            saved = self.store.load(task_id)
+        except Exception as e:
+            # P2: corrupt checkpoint JSON / contract violation on deserialize.
+            from forge.protocols.operation_contract import OperationContractError
+            msg = f"checkpoint_load: {type(e).__name__}: {e}"
+            print(f"[orchestrator] {msg}", file=sys.stderr)
+            self.checkpoint = TaskCheckpoint(
+                task_id=task_id,
+                phase=OrchestratorPhase.FAILED.value,
+                goal=task,
+                errors=[msg],
+            )
+            self.phase = OrchestratorPhase.FAILED
+            self.store.save(self.checkpoint)
+            return task_id
 
         if saved and saved.phase not in (
             OrchestratorPhase.COMPLETED.value,
             OrchestratorPhase.FAILED.value,
         ):
+            # P2: disk checkpoint is untrusted input — structure gate only
+            # (not full PlanValidator). Illegal structure → FAILED, no mutation.
+            from forge.protocols.operation_contract import (
+                OperationContractError,
+                validate_checkpoint_structure,
+            )
+            try:
+                validate_checkpoint_structure(saved)
+            except OperationContractError as e:
+                saved.errors = list(saved.errors or [])
+                saved.errors.append(f"checkpoint_structure: {e}")
+                saved.phase = OrchestratorPhase.FAILED.value
+                self.checkpoint = saved
+                self.phase = OrchestratorPhase.FAILED
+                self.store.save(saved)
+                print(
+                    f"[orchestrator] resume {task_id} REJECT structure: {e}",
+                    file=sys.stderr,
+                )
+                return task_id
             self.checkpoint = saved
             self.phase = OrchestratorPhase(saved.phase)
             # Restore self-correction budget from checkpoint (survive process restart).
@@ -296,6 +331,18 @@ class EngineeringOrchestrator:
             plan = self.checkpoint.plan
             if plan is None:
                 raise RuntimeError("EXECUTE without plan")
+            # P2 structure gate before any mutation (resume / in-process).
+            from forge.protocols.operation_contract import (
+                OperationContractError,
+                validate_checkpoint_structure,
+            )
+            try:
+                validate_checkpoint_structure(self.checkpoint)
+            except OperationContractError as e:
+                self.checkpoint.errors.append(f"checkpoint_structure: {e}")
+                self.phase = OrchestratorPhase.FAILED
+                self._persist()
+                return
             # Priority 1: fail-closed if repository changed since plan binding.
             planned_sid = (
                 getattr(plan, "snapshot_id", None)
@@ -523,14 +570,42 @@ class EngineeringOrchestrator:
         raise RuntimeError(f"unknown phase {self.phase}")
 
     def _coerce_plan(self, plan) -> Plan:
+        from forge.protocols.operation_contract import (
+            CANONICAL_PLAN_OPERATION_TYPES,
+            OperationContractError,
+            require_target_files_list,
+        )
+
         steps = []
         for s in getattr(plan, "steps", []) or []:
+            op = getattr(s, "operation_type", None)
+            if op is None or op == "":
+                raise OperationContractError(
+                    "PlanStep missing operation_type "
+                    "(_coerce_plan will not default to modify)"
+                )
+            if not isinstance(op, str):
+                raise OperationContractError(
+                    f"PlanStep operation_type must be str, got {type(op).__name__}"
+                )
+            if op not in CANONICAL_PLAN_OPERATION_TYPES:
+                raise OperationContractError(
+                    f"PlanStep unknown operation_type {op!r}: "
+                    f"expected one of {sorted(CANONICAL_PLAN_OPERATION_TYPES)}"
+                )
+            raw_tf = getattr(s, "target_files", None)
+            if raw_tf is None:
+                target_files: list = []
+            else:
+                target_files = list(
+                    require_target_files_list(raw_tf, field_name="target_files")
+                )
             steps.append(
                 PlanStep(
                     step_id=getattr(s, "step_id", ""),
                     description=getattr(s, "description", ""),
-                    target_files=list(getattr(s, "target_files", []) or []),
-                    operation_type=getattr(s, "operation_type", "modify"),
+                    target_files=target_files,
+                    operation_type=op,
                     dependencies=list(getattr(s, "dependencies", []) or []),
                     content=getattr(s, "content", "") or "",
                     old_text=getattr(s, "old_text", "") or "",

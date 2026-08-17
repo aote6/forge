@@ -118,7 +118,7 @@ class TestVerifyFailGoesToPlan(unittest.TestCase):
         plan = Plan(
             plan_id="p",
             goal="g",
-            steps=[PlanStep(step_id="s1", description="d", target_files=["a.py"])],
+            steps=[PlanStep(step_id="s1", description="d", target_files=["a.py"], operation_type="modify",)],
         )
         orch.checkpoint = TaskCheckpoint(
             task_id="t",

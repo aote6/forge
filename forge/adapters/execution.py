@@ -17,13 +17,12 @@ from forge.protocols.models import ChangeProposal, ExecutionResult
 from forge.world.runtime import WorldRuntime
 
 
-# Canonical operation types accepted at the ExecutionAdapter boundary.
-# Aliases are explicit maps only — unknown values never fall through to modify.
-_CANONICAL_OP_TYPES = frozenset({"modify", "create_file", "delete_file", "create_object"})
-_OP_TYPE_ALIASES = {
-    "create": "create_file",
-    "delete": "delete_file",
-}
+# Plan operation types come from protocols.operation_contract (SSOT).
+# Legacy aliases (create/delete) remain Adapter-only — never fall through to modify.
+from forge.protocols.operation_contract import (
+    CANONICAL_PLAN_OPERATION_TYPES as _CANONICAL_OP_TYPES,
+    LEGACY_PLAN_OPERATION_ALIASES as _OP_TYPE_ALIASES,
+)
 
 
 def _resolve_op_type(op: dict) -> str:
@@ -89,11 +88,33 @@ class ExecutionAdapter:
                 op_type = _resolve_op_type(op)
                 # Explicit empty list on the op must not fall back to proposal
                 # targets ([] is falsy — never use `op.get(...) or proposal...`).
+                # P2: target_files must be a list — never list("a.py") reinterpret.
                 if "target_files" in op:
                     raw_targets = op.get("target_files")
-                    targets = list(raw_targets) if raw_targets is not None else []
+                    if raw_targets is None:
+                        raise IntentExecutionError(
+                            "target_files is null (must be a list; "
+                            "ExecutionAdapter will not coerce)"
+                        )
+                    if not isinstance(raw_targets, list):
+                        raise IntentExecutionError(
+                            f"target_files must be a list, got "
+                            f"{type(raw_targets).__name__} "
+                            "(ExecutionAdapter will not reinterpret)"
+                        )
+                    targets = list(raw_targets)
                 else:
-                    targets = list(proposal.target_files or [])
+                    prop_targets = proposal.target_files
+                    if prop_targets is None:
+                        raise IntentExecutionError(
+                            "proposal.target_files is null (must be a list)"
+                        )
+                    if not isinstance(prop_targets, list):
+                        raise IntentExecutionError(
+                            f"proposal.target_files must be a list, got "
+                            f"{type(prop_targets).__name__}"
+                        )
+                    targets = list(prop_targets)
 
                 if op_type == "create_object":
                     # create_object is the sole Intent that allows empty targets.

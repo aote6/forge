@@ -148,7 +148,7 @@ class TestOrchestratorResume(unittest.TestCase):
         plan = Plan(
             plan_id="p1",
             goal="g",
-            steps=[PlanStep(step_id="s1", description="d", target_files=["f.py"], content="ok")],
+            steps=[PlanStep(step_id="s1", description="d", target_files=["f.py"], operation_type="modify", content="ok")],
         )
         store.save(
             TaskCheckpoint(
