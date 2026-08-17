@@ -337,3 +337,22 @@ Intent.create_object()
 契约状态：CREATE_OBJECT 全链路闭合，从 Planner 到 Veritas ObjectBirth
 
 相关 commit：forge c1da209
+
+## 2026-08-17 机器与 LLM 决策权边界正式沉淀
+
+背景：今天发现 Planner 把创建对象误判为修改代码。追查历史发现这是第三次踩同一条线：
+- 8月6日 PlanRepair 替 AI 猜 old_text，删除
+- 8月9日 dp.py 无读写分流，机器粗分类修复
+- 8月17日 Planner 无语义纠偏，Validator 需要 fail-closed
+
+正式原则：
+机器可以做入口粗分类、客观事实提取、能力存在性标注、契约裁决。
+机器不得事后纠正 LLM 的 operation_type、自动补全缺失字段、猜测 LLM 意图。
+Validator 只拒绝，不修正。
+
+新增文档：
+- docs/PLANNER_DECISION_BOUNDARY.md：完整决策权边界
+- docs/RECOVERY_CONSTITUTION.md 附录第 7 条：原则正式入宪
+
+状态：原则已冻结，实现待补
+下一步：按决策权边界实现 Planner 两阶段决策和 Validator fail-closed

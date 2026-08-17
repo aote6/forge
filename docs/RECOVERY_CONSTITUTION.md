@@ -191,3 +191,20 @@ ProjectionManager.project() 是唯一做了 checkpoint + 幂等保护的入口�
 
 如果未来有人提议重新引入 tx_ids 或 receipt_hash 等第二字段参与 skip 决策，
 请先阅读正文"禁止的做法"第 1 条。
+
+### 7. 机器与 LLM 的决策权边界在哪里？
+
+裁决：机器做事实提取和契约裁决，LLM 做语义决策。机器不得修正 LLM 的决策。
+
+允许的机器行为：
+- 入口粗分类（读写二分）
+- 客观事实提取（impact_files、已有能力标注）
+- 契约裁决（拒绝非法组合）
+
+禁止的机器行为：
+- 事后纠正 LLM 的 operation_type
+- 自动补全缺失字段
+- 模糊匹配猜测 LLM 意图
+
+详细原则见 docs/PLANNER_DECISION_BOUNDARY.md。
+这是第三次在同一边界踩坑后的正式沉淀。
