@@ -208,3 +208,21 @@ ProjectionManager.project() 是唯一做了 checkpoint + 幂等保护的入口�
 
 详细原则见 docs/PLANNER_DECISION_BOUNDARY.md。
 这是第三次在同一边界踩坑后的正式沉淀。
+
+### 8. Runtime operation 是否应该被 mutation-only 检查约束？
+
+裁决：**不应该。** Runtime operation（create_object）不修改源码，天然没有
+content / target_files / mutation obligations。所有 mutation-only 检查
+（content_required、obligations coverage、文件 LU 检查）必须按 operation
+type 区分，不得把统一 ChangeProposal 载体默认为 mutation-only。
+
+已修复的三处：
+- P7：obligations 覆盖检查豁免纯 create_object
+- P8：Constitution content_required 豁免纯 create_object
+- P1b：ExecutionAdapter 空 targets 豁免 create_object
+
+未修复但同源（下一层审查）：
+- Planner 对"创建一个对象"生成了 3 个 create_object step——数量约束问题
+
+原则：不是降低 mutation 检查的安全门槛，而是不要拿错误类型的检查去约束
+另一种类型。

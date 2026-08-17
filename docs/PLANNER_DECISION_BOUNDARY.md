@@ -85,3 +85,24 @@ LLM 选择 create_object：LLM 决策，允许
 Validator 拒绝非法组合：契约裁决，允许
 Validator 把 modify 改成 create_object：猜意图，禁止
 PlanRepair 猜 old_text：猜意图，禁止
+
+## P0-P8 实现状态（2026-08-17 更新）
+
+上述"两阶段决策"设计在 P0 实验后**未引入**。实际验证结果：
+给 LLM 提供 DEFINED 事实后，LLM 无需二阶段 gate 即能正确选择 create_object。
+
+实际实现：
+
+| 层 | 机制 | 状态 |
+|----|------|------|
+| P0 | Repository Facts 注入 + validation retry | ✅ |
+| P1a | Validator 缺 operation_type 不默认 modify | ✅ |
+| P1b | ExecutionAdapter fail-closed（无 fallthrough） | ✅ |
+| P2 | operation_contract.py SSOT | ✅ |
+| P7 | create_object 豁免 mutation-obligations | ✅ |
+| P8 | Constitution 区分 runtime/mutation | ✅ |
+
+端到端实验（真实 DeepSeek + Veritas）：
+任务"创建一个新的 World 对象" → create_object → Validator PASS → Constitution PASS → Intent → Veritas TXCOMMIT×3 → World version=5 → VERIFY PASS
+
+结论：机器提供事实 → LLM 决策 → Validator/Constitution 只拒绝不修正 → 执行。二阶段 gate 不需要。
