@@ -486,12 +486,48 @@ def required_obligation_files(obligations: list[dict[str, Any]]) -> list[str]:
     return files
 
 
+# Source-mutation ops that contribute to obligation coverage.
+# create_object is runtime-only (World) and never counts as a file mutation.
+_MUTATION_OPERATION_TYPES = frozenset({
+    "modify",
+    "create_file",
+    "delete_file",
+    "delete",  # legacy alias if present on a step
+})
+
+
+def is_runtime_only_plan(plan) -> bool:
+    """True iff plan has ≥1 step and every step is create_object.
+
+    Pure runtime plans do not mutate source files; mutation-obligation
+    coverage must not apply to them. An empty plan is not runtime-only
+    (caller should not treat it as an exemption).
+    """
+    if plan is None:
+        return False
+    steps = list(getattr(plan, "steps", None) or [])
+    if not steps:
+        return False
+    for s in steps:
+        op = getattr(s, "operation_type", None)
+        if op != "create_object":
+            return False
+    return True
+
+
 def plan_mutation_files(plan) -> set[str]:
-    """Files the plan actually mutates (modify/create/delete targets)."""
+    """Files the plan actually mutates (modify / create_file / delete_file targets).
+
+    create_object steps are ignored: they have empty target_files by contract
+    and do not modify source.
+    """
     out: set[str] = set()
     if plan is None:
         return out
     for s in getattr(plan, "steps", None) or []:
+        op = getattr(s, "operation_type", None) or ""
+        if op not in _MUTATION_OPERATION_TYPES:
+            continue
         for f in getattr(s, "target_files", None) or []:
             out.add(f)
     return out
@@ -501,7 +537,15 @@ def missing_required_obligations(
     plan,
     obligations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Required obligations whose file is not among plan mutation targets."""
+    """Required obligations whose file is not among plan mutation targets.
+
+    Pure create_object (runtime-only) plans skip mutation coverage entirely:
+    they must not be forced to list definition/caller source files.
+    Mixed plans (create_object + modify/...) still require mutation steps
+    to cover required obligations; create_object does not grant a bypass.
+    """
+    if is_runtime_only_plan(plan):
+        return []
     covered = plan_mutation_files(plan)
     missing = []
     for o in obligations or []:

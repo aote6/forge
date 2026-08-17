@@ -16,7 +16,9 @@ from forge.context.index import RepositoryIndex
 from forge.context.planning import (
     compute_impact_set,
     compute_obligations,
+    is_runtime_only_plan,
     missing_required_obligations,
+    plan_mutation_files,
     required_obligation_files,
     topological_order_steps,
 )
@@ -276,6 +278,183 @@ class TestPlannerIntegration(unittest.TestCase):
         ]
         ordered = topological_order_steps(steps)
         self.assertEqual(ordered[0].step_id, "s_def")
+
+
+
+class TestCreateObjectRuntimeObligations(unittest.TestCase):
+    """P7: pure create_object must not be forced to cover mutation obligations."""
+
+    def _req_obs(self):
+        return [
+            {
+                "file": "forge/world.py",
+                "symbol": "World",
+                "role": "definition",
+                "required": True,
+                "reason": "unique definition of World",
+            },
+            {
+                "file": "forge/world/session.py",
+                "symbol": "tx_create_object",
+                "role": "caller",
+                "required": True,
+                "reason": "caller of tx_create_object",
+            },
+        ]
+
+    def test_pure_create_object_accepts_despite_required_obligations(self):
+        obs = self._req_obs()
+        plan = Plan(
+            plan_id="p",
+            goal="create world object without source edits",
+            steps=[
+                PlanStep(
+                    step_id="s1",
+                    description="runtime create",
+                    operation_type="create_object",
+                    target_files=[],
+                )
+            ],
+        )
+        self.assertTrue(is_runtime_only_plan(plan))
+        self.assertEqual(plan_mutation_files(plan), set())
+        self.assertEqual(missing_required_obligations(plan, obs), [])
+
+        v = PlanValidator(".")
+        repo = RepoContext(file_tree=["forge/world.py", "forge/world/session.py"])
+        plan_dict = {
+            "goal": "create world object without source edits",
+            "assumptions": [],
+            "steps": [
+                {
+                    "step_id": "s1",
+                    "description": "runtime create",
+                    "operation_type": "create_object",
+                    "target_files": [],
+                }
+            ],
+        }
+        accepted, _ = v.validate(plan_dict, repo, obligations=obs)
+        self.assertEqual(accepted.steps[0].operation_type, "create_object")
+        self.assertEqual(accepted.steps[0].target_files, [])
+
+    def test_empty_modify_still_rejected_when_obligations_required(self):
+        """Mutation plan must still cover obligations — no blanket exemption."""
+        obs = self._req_obs()
+        # In-memory: empty targets on modify → missing obligations
+        plan = Plan(
+            plan_id="p",
+            goal="touch nothing",
+            steps=[
+                PlanStep(
+                    step_id="s1",
+                    description="bad",
+                    operation_type="modify",
+                    target_files=[],
+                )
+            ],
+        )
+        self.assertFalse(is_runtime_only_plan(plan))
+        missing = missing_required_obligations(plan, obs)
+        self.assertEqual(len(missing), 2)
+
+        v = PlanValidator(".")
+        repo = RepoContext(file_tree=["forge/world.py", "forge/world/session.py"])
+        # Validator also rejects modify without target_files before obligations;
+        # use a non-covering but non-empty target to isolate obligation check.
+        plan_dict = {
+            "goal": "change API",
+            "assumptions": [],
+            "steps": [
+                {
+                    "step_id": "s1",
+                    "description": "modify unrelated",
+                    "operation_type": "modify",
+                    "target_files": ["forge/world.py"],
+                    "start_line": 1,
+                    "end_line": 1,
+                    "new_text": "x = 1\n",
+                }
+            ],
+        }
+        # Only covers definition of World, not caller session.py → still missing
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "forge" / "world").mkdir(parents=True)
+            (root / "forge" / "world.py").write_text("class World:\n    pass\n", encoding="utf-8")
+            (root / "forge" / "world" / "session.py").write_text(
+                "def f():\n    pass\n", encoding="utf-8"
+            )
+            v = PlanValidator(str(root))
+            repo = RepoContext(
+                file_tree=["forge/world.py", "forge/world/session.py"]
+            )
+            with self.assertRaises(PlanValidationError) as cm:
+                v.validate(plan_dict, repo, obligations=obs)
+            self.assertIn("obligation", str(cm.exception).lower())
+
+    def test_mixed_create_object_plus_modify_still_requires_coverage(self):
+        obs = self._req_obs()
+        plan = Plan(
+            plan_id="p",
+            goal="mixed",
+            steps=[
+                PlanStep(
+                    step_id="s0",
+                    description="runtime",
+                    operation_type="create_object",
+                    target_files=[],
+                ),
+                PlanStep(
+                    step_id="s1",
+                    description="partial modify",
+                    operation_type="modify",
+                    target_files=["forge/world.py"],
+                ),
+            ],
+        )
+        self.assertFalse(is_runtime_only_plan(plan))
+        self.assertEqual(plan_mutation_files(plan), {"forge/world.py"})
+        missing = missing_required_obligations(plan, obs)
+        self.assertTrue(any(m.get("file") == "forge/world/session.py" for m in missing))
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "forge" / "world").mkdir(parents=True)
+            (root / "forge" / "world.py").write_text("class World:\n    pass\n", encoding="utf-8")
+            (root / "forge" / "world" / "session.py").write_text(
+                "def f():\n    pass\n", encoding="utf-8"
+            )
+            v = PlanValidator(str(root))
+            repo = RepoContext(
+                file_tree=["forge/world.py", "forge/world/session.py"]
+            )
+            plan_dict = {
+                "goal": "mixed",
+                "assumptions": [],
+                "steps": [
+                    {
+                        "step_id": "s0",
+                        "description": "runtime",
+                        "operation_type": "create_object",
+                        "target_files": [],
+                    },
+                    {
+                        "step_id": "s1",
+                        "description": "partial modify",
+                        "operation_type": "modify",
+                        "target_files": ["forge/world.py"],
+                        "start_line": 1,
+                        "end_line": 1,
+                        "new_text": "class World:\n    pass\n",
+                    },
+                ],
+            }
+            with self.assertRaises(PlanValidationError) as cm:
+                v.validate(plan_dict, repo, obligations=obs)
+            self.assertIn("obligation", str(cm.exception).lower())
+            self.assertIn("session", str(cm.exception))
+
 
 
 if __name__ == "__main__":

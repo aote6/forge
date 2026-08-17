@@ -272,7 +272,8 @@ Repair constraints (machine enforced by validator):
 机器已推导 impact_symbols 候选: {seeded_symbols}
 请在 JSON 中填写 impact_files / impact_symbols（可补充，不可无理由缩小到遗漏已知 callers）。
 modify/delete 的 target_files 必须落在 impact_files 内。
-REQUIRED obligations 的 file 必须出现在某个 step 的 target_files 中（机器强制）。
+REQUIRED obligations 的 file 必须出现在某个 mutation step 的 target_files 中（机器强制）。
+纯 create_object 运行时计划（全部步骤均为 create_object）不修改源码，不要求 mutation-obligation 文件覆盖。
 多步骤时用 dependencies 表达「先 definition 后 callers 后 tests」。
 create_file 不受 impact_files 限制。
 create_object 的 target_files 必须为 []。
