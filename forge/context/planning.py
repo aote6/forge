@@ -624,3 +624,28 @@ def format_file_with_line_numbers(
     shown = len(numbered)
     suffix = "" if shown >= total else f" (showing up to {shown} of {total} lines)"
     return f"\n=== TARGET FILE: {rel_path}{suffix} ===\n{body}"
+
+
+def compute_repository_facts(index, task_symbols: Optional[list[str]] = None) -> str:
+    """Minimal machine-observed repository facts for Planner prompt.
+
+    Only reports existence and location. No capability judgment.
+    Returns text suitable for prompt injection.
+    """
+    if index is None or not task_symbols:
+        return "(no repository facts)"
+
+    lines: list[str] = []
+    for name in task_symbols:
+        defs = index.find_definition(name)
+        if defs:
+            d = defs[0]
+            location = f"{d.file_path}:{d.start_line}"
+            lines.append(f"- symbol: {name}\n  status: DEFINED\n  location: {location}")
+        else:
+            lines.append(f"- symbol: {name}\n  status: NOT_DEFINED")
+
+    if not lines:
+        return "(no repository facts)"
+
+    return "Repository Facts (machine-observed, not decisions):\n" + "\n".join(lines)
