@@ -41,7 +41,7 @@ PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文�
       "step_id": "step_1",
       "description": "做什么",
       "target_files": ["文件路径"],
-      "operation_type": "modify | create_file | delete_file",
+      "operation_type": "modify | create_file | delete_file | create_object",
       "dependencies": [],
       "content": "create_file 时的完整文件内容",
       "start_line": modify 时修改的起始行号 (从1开始),
@@ -59,6 +59,7 @@ PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文�
 5. 只输出 JSON，不要输出任何解释文字、markdown 代码围栏外的文字、或逐步推理
 6. modify/delete 的 target_files 必须落在 impact_files 内（若提供了 impact_files）
 7. create_file 不受 impact_files 限制
+8. create_object 是纯 World 对象创建，不对应文件路径；target_files 必须为空数组 []，不需要 content、start_line、end_line、new_text
 8. 多文件 API 修改时：先改 definition，再改 callers，再改 tests；用 dependencies 表达顺序
 9. 对 AMBIGUOUS symbols，不得擅自选择错误定义文件；只改任务明确指向的文件
 10. 不要修改 Machine impact set 之外的无关文件，除非任务明确要求 create_file

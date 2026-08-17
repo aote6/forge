@@ -39,6 +39,9 @@ class ExecutionAdapter:
             for op in proposal.operations:
                 op_type = op.get("type") or op.get("operation_type") or "modify"
                 targets = op.get("target_files") or proposal.target_files
+                if op_type == "create_object":
+                    intents_list.append(Intent.create_object(require_confirm=False))
+                    continue
                 if not targets:
                     continue
                 target = targets[0]

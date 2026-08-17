@@ -33,7 +33,7 @@ class PlanValidator:
             raise PlanValidationError("steps 必须是 list")
 
         existing_files = set(repo.file_tree)
-        valid_ops = {"modify", "create_file", "delete_file"}
+        valid_ops = {"modify", "create_file", "delete_file", "create_object"}
         step_ids = set()
         steps = []
         enriched_steps = []
@@ -48,11 +48,15 @@ class PlanValidator:
             if not desc:
                 raise PlanValidationError(f"{sid}: 缺少 description")
 
-            targets = s.get("target_files", [])
-            if not targets:
-                raise PlanValidationError(f"{sid}: 缺少 target_files")
-
             op = s.get("operation_type", "modify")
+            targets = s.get("target_files", [])
+            if op == "create_object":
+                if targets:
+                    raise PlanValidationError(
+                        f"{sid}: create_object 不应指定 target_files"
+                    )
+            elif not targets:
+                raise PlanValidationError(f"{sid}: 缺少 target_files")
             if op not in valid_ops:
                 raise PlanValidationError(f"{sid}: 无效 operation_type '{op}'")
 
