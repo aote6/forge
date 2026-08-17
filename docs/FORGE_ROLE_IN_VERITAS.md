@@ -1,7 +1,6 @@
-
 # Forge 在 Veritas 世界中的角色边界
 
-日期：2026-08-16
+日期：2026-08-17
 状态：补充现有文档，不替代 WRI / Recovery Constitution / STATUS
 
 ## 现有文档已定义
@@ -33,8 +32,13 @@
 
 现状：WRI 定义了 Object 创建、State 写入、Link、Capability 等能力。
 Forge 理论上可以创建新 Object 作为应用。
-边界：WRI v1 已定义接口，但 Forge 主循环未接入。
-下一步：打通主循环，让 Planner 的 Intent 真正走 WorldSession。
+
+**状态更新（2026-08-17）**：
+主循环已打通。Planner 的 Intent 现在真正走 WorldSession：
+- ExecutionAdapter → IntentExecutor → WorldSession → veritasd → Veritas Kernel
+- commit 后 Receipt → Projection → 文件系统
+- Edit Contract 已冻结（P0 Closure，见 STATUS.md 2026-08-17 条目）
+- 242 tests passed，含真实 veritasd e2e
 
 ### 3. 修改 Forge 自身代码
 
@@ -44,10 +48,16 @@ Forge 理论上可以创建新 Object 作为应用。
 
 ## 当前优先事项
 
-打通最简单闭环：让 Forge 的 Intent 执行走 WorldSession，
+**已完成（2026-08-17）**：
+打通最简单闭环：Forge 的 Intent 执行走 WorldSession，
 每次修改 commit 后 Receipt 投影回文件系统。
 这是把已有的 Projection 层接到主循环，不是从零设计。
 
-暂不做：
+**下一步**：
+- 验证 CREATE_OBJECT 纯世界对象创建语义穿透
+- 处理 test_e2e_veritas_forge 绝对路径历史问题
+- 确认 _as_root 与 veritasd SHA-256 state_commitment 输出格式对齐
+
+**暂不做**：
 - 修改 Veritas 内核（自举协议未定义）
 - 修改 Forge 自身（自指语义未定义）

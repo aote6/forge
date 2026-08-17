@@ -215,3 +215,35 @@ Forge 侧需要做的是薄适配，不复制授权语义，只做 JSONL 转发�
 - 因此当前定级为 MINOR / KNOWN DESIGN GAP，而非 Kernel security bug
 - 若未来引入多用户、远程客户端或网络 veritasd，必须在 WRI 层增加 authenticated identity binding，并重新审计 attach_identity 全链路
 - 详细审计：docs/IDENTITY_BINDING_AUDIT.md
+
+## 2026-08-17 P0: Forge Edit Contract Closure（已冻结）
+
+**背景**：跨仓库架构审计发现 Forge 的 modify_file 链路存在双轨制：Planner/PlanValidator 使用 1-based inclusive + `new_text`，而 IntentExecutor/FileProjection/PatchEngine 要求 0-based half-open + `new_lines`。全链路无转换边界，导致 commit 成功后 Projection 可能静默跳过写入（`new_lines` 缺失默认 `[]`），形成"假成功"。
+
+**修复**：
+- 新增 `forge/core/edit_contract.py`：冻结双 schema 契约
+  - Authoring Edit（Planner/LLM/人类）：1-based inclusive + `new_text`
+  - Machine EditOp（Intent/Veritas/Projection/PatchEngine）：0-based half-open + `new_lines`
+  - 唯一转换函数：`authoring_to_machine_ops()`（`start0 = start_line - 1`，`end0 = end_line`，`new_lines = splitlines(keepends=True)`）
+- `ExecutionAdapter.execute_proposal`：成为生产路径唯一转换边界，调用 `proposal_ops_to_machine()`
+- `IntentExecutor._validate_intent`：只接受 Machine EditOp，用 `validate_machine_op()` 拒绝 `new_text`/`old_text`
+- `FileProjection._dicts_to_edits`：只接受 Machine EditOp，`new_lines` 缺失不再静默 `[]`，改为报错
+- `PatchEngine`：完全无 `old_text`/`new_text` 残留
+- `ExecutionResult.status` 新增：`COMPLETE` / `ABORTED` / `WORLD_COMMITTED_PROJECTION_FAILED` / `FAILED`
+  - 区分"事务中止"和"世界已提交但投影失败"，不再混淆
+- `WorldAdapter.world_info` / `receipt_parser`：`_as_root()` 统一解析十进制/十六进制 root
+
+**验证**：
+- 新增 27 个单元测试（`test_edit_contract.py`）：转换 golden、trailing newline、machine-only 拒绝、status 语义
+- 新增 5 个 e2e 测试（`test_edit_contract_e2e.py`）：精确字节、abort 不写盘、projection failure status、**真实 veritasd commit→project→bytes**
+- 全量 `pytest`：**242 passed, 0 failed**（含真实 veritasd e2e）
+- `git diff --check`：通过
+
+**契约状态**：FORGE EDIT CONTRACT = CLOSED
+
+**遗留（非 P0 范围）**：
+- World commit 与 FS apply 仍非原子（已冻结为 `WORLD_COMMITTED_PROJECTION_FAILED`，不冒充 COMPLETE）
+- `test_e2e_veritas_forge` 绝对路径历史问题未处理
+- veritasd 未在 PATH，真实 e2e 依赖 `~/veritas_kernel/target/release/veritasd`
+
+**相关 commit**：forge `db78bef`

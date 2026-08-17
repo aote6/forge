@@ -1,7 +1,6 @@
-
 # Veritas 自举设计锚点
 
-日期：2026-08-16
+日期：2026-08-17
 状态：设计笔记，非执行计划
 
 ## 什么是 Veritas 自举
@@ -53,6 +52,12 @@
 
 ## 当前状态
 
-第一步尚未完成。
+**第一步已完成（2026-08-17）**：
+Forge 通过 Veritas 事务修改普通文件的闭环已验证。
+- P0 Edit Contract Closure 完成（commit `db78bef`）
+- 242 tests passed，含真实 veritasd e2e
+- ExecutionAdapter → IntentExecutor → WorldSession → veritasd → Receipt → Projection → 文件系统
+
+第二步（传统 git 工作流修改内核）未开始。
 自举协议（第三步）不在当前执行范围。
 本文件是未来设计锚点，不是今日任务。
