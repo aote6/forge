@@ -456,3 +456,43 @@ Planner → create_object → Validator ACCEPT → Constitution PASS → Executi
 - scan_files 增量检测，只重扫变更文件
 
 状态：未开始，不与 P0-P8 边界修复混修。
+
+## 2026-08-18 计划：移除 Hub 外部工具依赖
+
+目标：删除 zhiwang / lu / sms / Hub 调用，所有验证由 Forge 内部代码完成。
+
+理由：AI 报告不可信。验证必须基于 Forge 自己的证据链（WAL + 磁盘状态 + 测试结果），不经过 AI 也不经过外部工具。
+
+拆除步骤：
+
+1. 删除 zhiwang
+   - forge/adapters/repo.py → 直接用 take_snapshot() + file_tree
+   - UNDERSTANDING 阶段不再调 HubClient.invoke("zhiwang")
+   - 删除 forge/adapters/repo.py 或改为纯本地实现
+
+2. 删除 lu（Constitution 外部检查）
+   - forge/adapters/constitution.py → 去掉 HubClient.invoke("lu")
+   - 本地 Constitution 规则直接放 forge/ 内部
+   - 删除 forge/adapters/constitution_adapter.py（死代码）
+
+3. 删除 sms（外部测试验证）
+   - forge/adapters/verification.py → 改为 subprocess 跑 pytest
+   - 测试结果解析在 forge/verification/ 内部完成
+
+4. 删除 HubClient
+   - forge/adapters/hub_client.py
+   - forge/adapters/hub_adapter.py
+   - .forge/hub.json 配置
+
+5. 清理
+   - EngineOrchestrator 中所有 hub 参数
+   - 相关测试更新
+   - 全量测试跑通
+
+验证方式（拆完后）：
+- AI 说"看了" → RepositoryIndex 构建日志
+- AI 说"改了" → WAL TXCOMMIT + 磁盘 diff
+- AI 说"没改" → WAL 无记录
+- AI 说"创建了" → World version 递增
+
+状态：明天执行。
