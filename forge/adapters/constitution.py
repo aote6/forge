@@ -15,6 +15,20 @@ def check(proposal: ChangeProposal, project_root: str = ".", hub: HubClient | No
     if not isinstance(proposal, ChangeProposal):
         raise TypeError("constitution.check requires ChangeProposal, not bare dict")
 
+    # Runtime-only proposals (all create_object) have no source content by design.
+    # Mutation content_required must not apply to them.
+    if proposal.operations:
+        all_runtime = all(
+            (op.get("type") or op.get("operation_type")) == "create_object"
+            for op in proposal.operations
+        )
+        if all_runtime:
+            return ConstitutionResult(
+                status=CheckStatus.PASS,
+                violations=[],
+                checked_rules=["forge.runtime_operation_no_content_required"],
+            )
+
     # Content-less proposals cannot claim content-level PASS
     has_content = False
     for op in proposal.operations:
