@@ -356,3 +356,35 @@ Validator 只拒绝，不修正。
 
 状态：原则已冻结，实现待补
 下一步：按决策权边界实现 Planner 两阶段决策和 Validator fail-closed
+
+## 2026-08-17 Planner P0：Repository Facts + validation retry（无 semantic repair）
+
+背景：决策权边界原则已冻结，但 Planner 缺少机器事实注入和 Plan 级校验重试。本次 P0 验证核心假设——"给 LLM 提供足够仓库事实后，它能否自行正确选择 operation_type"。
+
+实现：
+- forge/context/planning.py：新增 compute_repository_facts(index, task_symbols)，只输出 DEFINED/NOT_DEFINED + definition location，不做 capability 判断
+- forge/planner.py：Repository Facts 注入 user_prompt；MAX_VALIDATION_RETRIES=2；REJECT 后重试 prompt 包含原始任务 + facts + 上一轮完整 Plan JSON + rejection reason
+- forge/plan_validator.py：fail-closed 硬校验强化，明确禁止自动改写 operation_type / target_files
+- tests/test_planner_p0_facts_retry.py：新增 10 个 P0 测试
+
+数据流：
+task_symbols（extract_focus_symbols）
+→ RepositoryIndex.find_definition
+→ Repository Facts（DEFINED/NOT_DEFINED + location）
+→ LLM 决策 operation_type
+→ PlanValidator ACCEPT / REJECT
+→ REJECT 后带完整上下文 retry（max 2）
+→ 耗尽 fail-closed
+
+验证：
+- P0 测试：10 passed
+- 全量 pytest：263 passed, 1 xfailed
+- 反模式测试 test_planner_must_correct_llm_modify_to_create_object 标记 strict xfail，作为架构护栏记录"禁止 semantic repair"
+
+契约状态：机器提供事实 → LLM 决策 → Validator 只拒绝不修正，闭环跑通。
+
+遗留：
+- 尚未做真实 LLM 实验验证"Facts 注入后 LLM 是否不再误判 modify"
+- P1 WORLD_OPERATION/CODE_OPERATION 二阶段 gate 暂不引入，等真实失败样本
+
+相关 commit：forge 3d16e6f
