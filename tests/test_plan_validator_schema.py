@@ -178,3 +178,73 @@ class TestNoMisleadingMissingDebug(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOperationTypeRequired(unittest.TestCase):
+    """P1a: missing operation_type must REJECT — machine must not default to modify."""
+
+    def test_missing_operation_type_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            v, repo = _repo(td, "a.py", "x = 1\n")
+            plan = {
+                "goal": "edit",
+                "steps": [
+                    {
+                        "step_id": "step_1",
+                        "description": "change",
+                        "target_files": ["a.py"],
+                        # deliberately no operation_type
+                        "start_line": 1,
+                        "end_line": 1,
+                        "new_text": "y = 2\n",
+                    }
+                ],
+            }
+            with self.assertRaises(PlanValidationError) as cm:
+                v.validate(plan, repo)
+            msg = str(cm.exception)
+            self.assertIn("operation_type", msg)
+            # Must not silently accept as modify
+            self.assertNotIn("old_text", getattr(cm.exception, "args", ()) or ())
+
+    def test_null_operation_type_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            v, repo = _repo(td, "a.py", "x = 1\n")
+            plan = {
+                "goal": "edit",
+                "steps": [
+                    {
+                        "step_id": "step_1",
+                        "description": "change",
+                        "target_files": ["a.py"],
+                        "operation_type": None,
+                        "start_line": 1,
+                        "end_line": 1,
+                        "new_text": "y = 2\n",
+                    }
+                ],
+            }
+            with self.assertRaises(PlanValidationError) as cm:
+                v.validate(plan, repo)
+            self.assertIn("operation_type", str(cm.exception))
+
+    def test_empty_string_operation_type_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            v, repo = _repo(td, "a.py", "x = 1\n")
+            plan = {
+                "goal": "edit",
+                "steps": [
+                    {
+                        "step_id": "step_1",
+                        "description": "change",
+                        "target_files": ["a.py"],
+                        "operation_type": "",
+                        "start_line": 1,
+                        "end_line": 1,
+                        "new_text": "y = 2\n",
+                    }
+                ],
+            }
+            with self.assertRaises(PlanValidationError) as cm:
+                v.validate(plan, repo)
+            self.assertIn("operation_type", str(cm.exception))

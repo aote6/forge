@@ -48,7 +48,13 @@ class PlanValidator:
             if not desc:
                 raise PlanValidationError(f"{sid}: 缺少 description")
 
-            op = s.get("operation_type", "modify")
+            # Fail-closed: missing / null / empty operation_type is REJECT.
+            # Machine must not default to "modify" — that would decide Intent for the LLM.
+            if "operation_type" not in s or s.get("operation_type") is None or s.get("operation_type") == "":
+                raise PlanValidationError(
+                    f"{sid}: 缺少 operation_type（Validator 不会默认 modify 或替 LLM 选择 Intent）"
+                )
+            op = s.get("operation_type")
             targets = s.get("target_files", [])
             if not isinstance(targets, list):
                 raise PlanValidationError(f"{sid}: target_files 必须是 list")
