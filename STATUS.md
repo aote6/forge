@@ -247,3 +247,26 @@ Forge 侧需要做的是薄适配，不复制授权语义，只做 JSONL 转发�
 - veritasd 未在 PATH，真实 e2e 依赖 `~/veritas_kernel/target/release/veritasd`
 
 **相关 commit**：forge `db78bef`
+
+## 2026-08-17 待解决：veritasd state_root 输出格式与内核 SHA-256 迁移不同步
+
+**问题**：Veritas 内核已迁移到 SHA-256（`engine.rs` 的 `state_root()` 返回 `[u8; 32]`），但 veritasd 的 `world_info` JSON 输出仍然是旧的 u64 十进制整数。
+
+**现状**：
+- Veritas 内核：`state_root()` → `[u8; 32]`（SHA-256）
+- veritasd JSON：`"state_root": 17833039905061984046`（u64 十进制，FNV-1a 旧值）
+- Forge `WorldAdapter.world_info`：`int(resp.get("state_root"))`（假设十进制）
+- Forge `receipt_parser._as_root`：十进制优先，十六进制兜底
+
+**影响**：
+- Forge 当前依赖 veritasd 的旧输出格式
+- 当 veritasd 同步到 SHA-256 后，输出变成 64 字符 hex 字符串，Forge 的 `int()` 会直接崩溃
+- 这是 Veritas ↔ Forge 接口契约未冻结的典型案例
+
+**正确方向**：
+- WRI 需要冻结 `state_root` 输出格式：32 字节 SHA-256 hex 字符串（64 个 hex 字符）
+- veritasd 的 `world_info` 应该输出 `state_commitment` + `commitment_algorithm`
+- Forge 只需要按 WRI 约定解析，不关心 Veritas 内部用什么哈希算法
+- Veritas 未来从 SHA-256 换到 SHA-512，Forge 无需改代码
+
+**状态**：未解决，等待 WRI v1.0 冻结
