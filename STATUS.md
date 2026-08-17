@@ -440,3 +440,19 @@ Planner → create_object → Validator ACCEPT → Constitution PASS → Executi
 
 遗留（下一层，不与 P8 混修）：
 - 用户说"创建一个对象"，Planner 生成了 3 个 create_object step——需要审查 Planner 对任务数量约束的处理
+
+## 遗留：RepositoryIndex / Snapshot 全量重扫（性能）
+
+问题：dp / gg 每次输入任务都会触发全量仓库扫描 + 全量 AST 索引重建。
+- take_snapshot：每次 os.walk + tree_hash
+- RepositoryIndex.build：每次 scan_files + 逐个 ast.parse
+- 项目变大后 token 和延迟都不可接受
+
+根因：无增量缓存，相同 snapshot_id 不复用索引。
+
+修复方向（明天）：
+- take_snapshot 按 tree_hash 缓存
+- RepositoryIndex.build 相同 snapshot_id 直接返回已有索引
+- scan_files 增量检测，只重扫变更文件
+
+状态：未开始，不与 P0-P8 边界修复混修。
