@@ -75,7 +75,9 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
 
     def modify_file(path: str, operations: list, object_id: int) -> ToolResult:
         try:
-            intent = Intent.modify_file(path=path, operations=operations, require_confirm=True)
+            from forge.core.edit_contract import ensure_machine_ops
+            machine_ops = ensure_machine_ops(operations)
+            intent = Intent.modify_file(path=path, operations=machine_ops, require_confirm=True)
             intent.parameters["object_id"] = object_id
             if intent.policy.get("require_confirm", True):
                 delta = executor.stage(intent)

@@ -70,15 +70,17 @@ class ExecutionAdapter:
                             f"modify requires object_id for path={target}; "
                             "Planner must re-plan or provide object_id"
                         )
-                    operations = op.get("operations") or [{
-                        "old_text": op.get("old_text", ""),
-                        "new_text": op.get("new_text", ""),
-                        "start_line": op.get("start_line"),
-                        "end_line": op.get("end_line"),
-                        "content": op.get("content", ""),
-                    }]
+                    # P0: sole authoring → machine conversion boundary.
+                    from forge.core.edit_contract import (
+                        EditContractError,
+                        proposal_ops_to_machine,
+                    )
+                    try:
+                        machine_ops = proposal_ops_to_machine(op)
+                    except EditContractError as e:
+                        raise IntentExecutionError(f"edit_contract: {e}") from e
                     intent = Intent.modify_file(
-                        path=full, operations=operations, require_confirm=False
+                        path=full, operations=machine_ops, require_confirm=False
                     )
                     intent.parameters["object_id"] = object_id
                     intents_list.append(intent)
@@ -106,6 +108,7 @@ class ExecutionAdapter:
                     world_version=getattr(receipt, "version", None),
                     files=files,
                     error=f"projection_failed: {reasons}",
+                    status="WORLD_COMMITTED_PROJECTION_FAILED",
                     receipt_summary={
                         "tx_id": getattr(receipt, "tx_id", None),
                         "version": getattr(receipt, "version", None),
@@ -113,6 +116,7 @@ class ExecutionAdapter:
                         "projection_reasons": [
                             getattr(r, "reason", "") for r in failed
                         ],
+                        "status": "WORLD_COMMITTED_PROJECTION_FAILED",
                     },
                 )
 
@@ -122,9 +126,11 @@ class ExecutionAdapter:
                 tx_id=getattr(receipt, "tx_id", None),
                 world_version=getattr(receipt, "version", None),
                 files=files,
+                status="COMPLETE",
                 receipt_summary={
                     "tx_id": getattr(receipt, "tx_id", None),
                     "version": getattr(receipt, "version", None),
+                    "status": "COMPLETE",
                 },
             )
         except PathSecurityError as e:
@@ -134,6 +140,7 @@ class ExecutionAdapter:
                 success=False,
                 files=files,
                 error=f"path_security: {e}",
+                status="ABORTED",
             )
         except IntentExecutionError as e:
             self._safe_abort()
@@ -142,6 +149,7 @@ class ExecutionAdapter:
                 success=False,
                 files=files,
                 error=str(e),
+                status="ABORTED",
             )
         except Exception as e:
             self._safe_abort()
@@ -150,6 +158,7 @@ class ExecutionAdapter:
                 success=False,
                 files=files,
                 error=f"{type(e).__name__}: {e}",
+                status="ABORTED",
             )
 
     def _resolve_object_id(self, full_path: str) -> Optional[int]:

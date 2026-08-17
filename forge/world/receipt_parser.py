@@ -6,6 +6,21 @@ WorldAdapter 和测试都使用此函数，避免解析逻辑漂移。
 from forge.world.types import Receipt, TransactionDelta, CapabilityGrantView
 
 
+def _as_root(value) -> int:
+    """Accept int or hex/decimal string roots from veritasd."""
+    if value is None:
+        return 0
+    if isinstance(value, int):
+        return value
+    s = str(value).strip()
+    if not s:
+        return 0
+    try:
+        return int(s, 10)
+    except ValueError:
+        return int(s, 16)
+
+
 def parse_receipt(resp: dict) -> Receipt:
     """从 veritasd 响应解析 Receipt（含权威 TransactionDelta）。
 
@@ -38,8 +53,8 @@ def parse_receipt(resp: dict) -> Receipt:
 
     return Receipt(
         tx_id=int(r.get("tx_id", 0)),
-        before_root=int(r.get("before_root", 0)),
-        after_root=int(r.get("after_root", 0)),
+        before_root=_as_root(r.get("before_root", 0)),
+        after_root=_as_root(r.get("after_root", 0)),
         version=int(r.get("version", 0)),
         delta=delta,
     )

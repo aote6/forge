@@ -137,9 +137,10 @@ class WorldAdapter:
     def world_info(self) -> WorldInfo:
         resp = self._send({"cmd": "world_info"})
         self._require_ok(resp)
+        from forge.world.receipt_parser import _as_root
         return WorldInfo(
             version=int(resp.get("version", 0)),
-            state_root=int(resp.get("state_root", 0)),
+            state_root=_as_root(resp.get("state_root", 0)),
             object_count=int(resp.get("object_count", 0)),
         )
 

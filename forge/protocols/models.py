@@ -282,6 +282,9 @@ class ExecutionResult:
     world_version: Optional[int] = None
     files: List[str] = field(default_factory=list)
     error: str = ""
+    # P0 edit-contract manufacturing status:
+    #   COMPLETE | ABORTED | WORLD_COMMITTED_PROJECTION_FAILED | FAILED
+    status: str = ""
     receipt_summary: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -291,6 +294,16 @@ class ExecutionResult:
     def from_dict(cls, data: dict) -> "ExecutionResult":
         if "success" not in data:
             raise ValueError("ExecutionResult.from_dict: missing required field 'success'")
+        status = data.get("status") or ""
+        if not status:
+            if data.get("success"):
+                status = "COMPLETE"
+            elif (data.get("receipt_summary") or {}).get("projection_failed"):
+                status = "WORLD_COMMITTED_PROJECTION_FAILED"
+            elif data.get("tx_id") is None:
+                status = "ABORTED"
+            else:
+                status = "FAILED"
         return cls(
             version=data.get("version", PROTOCOL_VERSION),
             proposal_id=data.get("proposal_id", ""),
@@ -299,6 +312,7 @@ class ExecutionResult:
             world_version=data.get("world_version"),
             files=list(data.get("files") or []),
             error=data.get("error", "") or "",
+            status=status,
             receipt_summary=dict(data.get("receipt_summary") or {}),
         )
 

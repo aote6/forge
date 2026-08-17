@@ -96,35 +96,32 @@ class FileProjection(Projection):
         return None
 
     def _dicts_to_edits(self, operations: list) -> list:
-        """Convert operation dicts into internal EditOp objects.
+        """Convert Machine EditOp dicts into internal EditOp objects.
 
-        start_line/end_line are passed through unchanged as a 0-indexed
-        half-open range [start_line, end_line), matching EditOp/apply_edits
-        and difflib.get_opcodes() semantics used by compute_edits(). This is
-        the contract verified by tests/test_e2e_failure_paths.py::
-        test_modify_existing_file (op {start_line:1, end_line:2} must
-        replace only line index 1, leaving line index 0 untouched) — the
-        only test that exercises this exact code path end to end.
+        Accepts ONLY the frozen machine schema:
+          0-based half-open [start_line, end_line) + new_lines: list[str]
+        No authoring conversion here — that is solely authoring_to_machine_ops.
         """
         from forge.core.patch_engine import EditOp
+        from forge.core.edit_contract import EditContractError, validate_machine_op
         edits = []
         for op in operations:
             if isinstance(op, EditOp):
                 edits.append(op)
-            else:
-                if not isinstance(op, dict) or "start_line" not in op or "end_line" not in op:
-                    raise ValueError(
-                        f"Malformed edit operation — expected dict with "
-                        f"'start_line'/'end_line'/'new_lines', got: {op!r}. "
-                        f"(old_text/new_text format is NOT supported here; "
-                        f"that belongs to lu_patch, not FileProjection.)"
-                    )
-                edits.append(EditOp(
-                    type=op.get("type", "replace"),
-                    start_line=op["start_line"],
-                    end_line=op["end_line"],
-                    new_lines=op.get("new_lines", []),
-                ))
+                continue
+            try:
+                validate_machine_op(op)
+            except EditContractError as e:
+                raise ValueError(
+                    f"FileProjection accepts Machine EditOp only "
+                    f"(0-based half-open + new_lines; no new_text/old_text): {e}"
+                ) from e
+            edits.append(EditOp(
+                type=op.get("type", "replace"),
+                start_line=op["start_line"],
+                end_line=op["end_line"],
+                new_lines=list(op["new_lines"]),
+            ))
         return edits
 
     def _group_writes_by_object(self, delta: TransactionDelta) -> dict[int, list]:

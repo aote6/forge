@@ -119,26 +119,16 @@ class IntentExecutor:
             operations = intent.parameters.get("operations")
             if not isinstance(operations, list) or not operations:
                 raise IntentExecutionError("modify_file requires a non-empty operations list")
+            # Machine EditOp only (0-based half-open + new_lines). No conversion here.
+            from forge.core.edit_contract import EditContractError, validate_machine_op
             for op in operations:
-                if not isinstance(op, dict) or "start_line" not in op or "end_line" not in op:
+                try:
+                    validate_machine_op(op)
+                except EditContractError as e:
                     raise IntentExecutionError(
-                        f"malformed modify_file operation: expected dict with "
-                        f"'start_line'/'end_line', got {op!r}"
-                    )
-                start_line = op["start_line"]
-                end_line = op["end_line"]
-                # 0-indexed half-open range [start_line, end_line), matching
-                # FileProjection._dicts_to_edits / EditOp / apply_edits.
-                if not isinstance(start_line, int) or start_line < 0:
-                    raise IntentExecutionError(
-                        f"operation start_line must be a 0-indexed non-negative integer, "
-                        f"got {start_line!r}"
-                    )
-                if not isinstance(end_line, int) or end_line < start_line:
-                    raise IntentExecutionError(
-                        f"operation end_line must be >= start_line, got "
-                        f"start_line={start_line!r}, end_line={end_line!r}"
-                    )
+                        f"modify_file requires Machine EditOp "
+                        f"(0-based half-open + new_lines, no new_text): {e}"
+                    ) from e
 
         elif intent.type is IntentType.DELETE_FILE:
             object_id = intent.parameters.get("object_id")
