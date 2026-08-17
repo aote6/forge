@@ -388,3 +388,55 @@ task_symbols（extract_focus_symbols）
 - P1 WORLD_OPERATION/CODE_OPERATION 二阶段 gate 暂不引入，等真实失败样本
 
 相关 commit：forge 3d16e6f
+
+## 2026-08-17 P7：create_object 豁免 mutation-obligations
+
+背景：P0-P2 后，纯 create_object plan 被 compute_obligations 错误要求覆盖源码 definition/caller 文件，导致"创建 World 对象"任务被 Validator 拒绝。
+
+修复：
+- is_runtime_only_plan：全部步骤均为 create_object 时返回 True
+- plan_mutation_files：create_object 不计入 mutation files
+- missing_required_obligations：纯 runtime 计划跳过 coverage
+- 混合计划（create_object + modify）仍 fail-closed
+
+测试：+3（纯 create_object 通过 / modify 仍拒 / 混合仍拒）
+全量：297 passed, 1 xfailed
+相关 commit：forge 7e05a16
+
+## 2026-08-17 P8：Constitution runtime/mutation 边界
+
+背景：P7 后，纯 create_object 通过 Validator 但在 CHECKING 被 constitution.check 的 forge.content_required 拒绝——Constitution 把所有 ChangeProposal 当源码修改，要求必须带 content。
+
+修复：
+- 纯 create_object proposal（所有 op 均为 create_object）跳过 content_required，直接 PASS
+- modify/create_file/delete_file 仍受 content_required 约束
+- 混合 plan 不受豁免
+
+测试：+4（纯 create_object 通过 / modify 仍拒 / 混合仍拒）
+全量：301 passed, 1 xfailed
+相关 commit：forge 40110d3
+
+## 2026-08-17 端到端实验：create_object 全链路闭合
+
+实验：真实 DeepSeek adapter + 真实 Veritas 执行
+
+任务：创建一个新的 World 对象，调用 tx_create_object，不修改任何源码文件。
+
+结果：
+- Planner：LLM 正确选择 create_object（assumption 明确"纯运行时计划"）
+- PlanValidator：通过
+- P7 obligations：纯 runtime 豁免生效
+- P8 Constitution：runtime 豁免生效
+- ExecutionAdapter：Intent.create_object() 成功
+- Veritas：3 次 TXCOMMIT（TX=3,4,5）
+- VERIFY：pass，failures=[]
+- 任务 checkpoint：phase=completed，errors=[]
+- World 实际状态：version=5，object_count=5，5 个 Alive 对象
+
+全链路证据：
+Planner → create_object → Validator ACCEPT → Constitution PASS → ExecutionAdapter → Intent → Veritas TXCOMMIT → WAL → World version 递增 → VERIFY PASS
+
+契约状态：runtime operation 与 mutation operation 边界在 Planner/Validator/obligations/Constitution/ExecutionAdapter 五层全部闭合。
+
+遗留（下一层，不与 P8 混修）：
+- 用户说"创建一个对象"，Planner 生成了 3 个 create_object step——需要审查 Planner 对任务数量约束的处理
