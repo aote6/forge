@@ -496,3 +496,54 @@ Planner → create_object → Validator ACCEPT → Constitution PASS → Executi
 - AI 说"创建了" → World version 递增
 
 状态：明天执行。
+
+## 2026-08-18 移除 Hub 外部依赖 + Gemini 端到端验证
+
+### Hub 拆除完成
+
+zhiwang / lu / sms / HubClient / HubAdapter 全部移除。
+
+- repo.py: get_repo_context 改用本地 build_context + git status
+- constitution.py: 本地机器规则替代 Hub lu
+- verification.py: subprocess pytest 替代 Hub sms
+- 删除 6 个 Hub adapter 文件
+- forge/ 与 tests/ 所有 .py 中 hub 引用归零
+
+测试：291 passed, 1 xfailed（删除了 10 个 Hub 专用测试）
+
+### gg.py 路径修复
+
+gg.py 默认 project_root 从 ~ 改为 cwd，不再扫描整个 Termux 主目录。
+prompt 从 53K 降到 6.5K。
+
+### Gemini 端到端验证
+
+任务：创建一个新的 World 对象。
+
+结果：
+- Planner（Gemini）：正确输出 1 个 create_object step
+- target_files=[]，operation_type=create_object
+- 执行成功：tx_id=6, version=6
+- World 实际状态：object_count 5→6，object_id=6 Alive
+- checkpoint: phase=completed, errors=[]
+
+链路：
+自然语言 → Planner → Plan → Execution → WorldRuntime → Veritas → commit → 真实 World 状态
+
+### 对比 Code + Veritas 实验
+
+在 ~/veritas_kernel 用 Claude Code 直接操作 Veritas：
+
+| 实验 | 结果 |
+|------|------|
+| 裸 Code（无协议） | ❌ 卡住问意图 |
+| Code + 6 条规则 | ✅ 单对象 / 多对象 / 错误恢复全过 |
+
+结论：Code + 最小协议说明能替代 Forge 的翻译能力。Forge 的价值在于
+把协议固化在代码/prompt 里，不需要每次给规则。
+
+### 遗留
+
+- DeepSeek 余额不足（402）
+- 稳定性实验未做：同一任务跑 5 次验证映射稳定
+- Forge 的真正护城河待验证：长期任务状态 / 强制约束 / 可审计性
