@@ -13,6 +13,10 @@ from typing import Iterable, Optional
 from forge.context.snapshot import RepositorySnapshot, take_snapshot
 from forge.context.scanner import scan_files, CODE_EXTENSIONS
 
+# Process-local cache: snapshot_id → RepositoryIndex.
+# Same snapshot_id reuses the index object; no re-scan / re-parse.
+_index_cache: dict[str, "RepositoryIndex"] = {}
+
 
 @dataclass(frozen=True)
 class Symbol:
@@ -136,7 +140,12 @@ class RepositoryIndex:
         snapshot: Optional[RepositorySnapshot] = None,
     ) -> "RepositoryIndex":
         snap = snapshot or take_snapshot(repo_path)
-        idx = cls(snapshot_id=snap.snapshot_id)
+        sid = snap.snapshot_id
+        cached = _index_cache.get(sid)
+        if cached is not None:
+            return cached
+
+        idx = cls(snapshot_id=sid)
         files, scan_errors = scan_files(repo_path)
         for e in scan_errors:
             idx.errors.append(f"{e.path}:{e.reason}")
@@ -165,6 +174,7 @@ class RepositoryIndex:
         idx.symbols.sort(key=lambda s: (s.file_path, s.start_line, s.qualified_name))
         idx.references.sort(key=lambda r: (r.file_path, r.line, r.symbol_name, r.kind))
         idx.imports.sort(key=lambda i: (i.file_path, i.line, i.module))
+        _index_cache[sid] = idx
         return idx
 
 

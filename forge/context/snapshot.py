@@ -18,6 +18,10 @@ from typing import Any, Optional
 
 from forge.context.repository import build_context
 
+# Process-local cache: tree_hash → RepositorySnapshot.
+# tree_hash still requires a scan; we only reuse the Snapshot object.
+_snapshot_cache: dict[str, "RepositorySnapshot"] = {}
+
 
 @dataclass(frozen=True)
 class RepositorySnapshot:
@@ -54,19 +58,30 @@ class RepositorySnapshot:
 
 
 def take_snapshot(repo_path: str) -> RepositorySnapshot:
-    """Compute current repository snapshot (no file content loading)."""
+    """Compute current repository snapshot (no file content loading).
+
+    Process-local cache keyed by tree_hash: after the scan that produces
+    tree_hash, the resulting RepositorySnapshot is reused on subsequent
+    calls that yield the same tree_hash. Semantics and fields unchanged.
+    """
     ctx = build_context(repo_path, include_content=False)
+    th = ctx.tree_hash
+    cached = _snapshot_cache.get(th)
+    if cached is not None:
+        return cached
     commit = (ctx.git.commit or "") if ctx.git else ""
     branch = (ctx.git.branch or "") if ctx.git else ""
     dirty = bool(ctx.git.dirty) if ctx.git else False
-    return RepositorySnapshot(
-        snapshot_id=ctx.tree_hash,
-        tree_hash=ctx.tree_hash,
+    snap = RepositorySnapshot(
+        snapshot_id=th,
+        tree_hash=th,
         commit_hash=commit,
         branch=branch,
         file_count=len(ctx.files),
         dirty=dirty,
     )
+    _snapshot_cache[th] = snap
+    return snap
 
 
 class StaleSnapshotError(Exception):
