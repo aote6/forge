@@ -5,7 +5,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -129,9 +128,7 @@ class TestVerifyStructured(unittest.TestCase):
         req = VerificationRequest(changed_files=["no_such_file_xyz.py"])
         with tempfile.TemporaryDirectory() as td:
             # no receipt → receipt fail; missing file → missing
-            vres = verify(req, project_root=td, hub=MagicMock(
-                invoke=MagicMock(return_value=SimpleNamespace(ok=True, data={"status": "pass"}, error=""))
-            ), receipt=None)
+            vres = verify(req, project_root=td, receipt=None)
             self.assertEqual(vres.status, CheckStatus.FAIL)
             sf = (vres.evidence or {}).get("structured_failures") or []
             self.assertTrue(sf)
@@ -302,7 +299,6 @@ class TestStaleStillZeroMutation(unittest.TestCase):
                 world=MagicMock(),
                 projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
-                hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
             )
             orch.execution = MagicMock()
@@ -336,7 +332,6 @@ class TestOrchestratorVerifyStoresFailure(unittest.TestCase):
                 world=MagicMock(get_version=MagicMock(return_value=1)),
                 projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
-                hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
             )
             snap = take_snapshot(str(root))
@@ -411,7 +406,6 @@ class TestDuplicateRepairOrchestratorWiring(unittest.TestCase):
                 world=MagicMock(),
                 projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=planner,
-                hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
             )
             orch.checkpoint = TaskCheckpoint(
@@ -446,7 +440,6 @@ class TestExecuteFailureSelfCorrection(unittest.TestCase):
                 world=MagicMock(),
                 projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
-                hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
             )
             orch.execution = MagicMock()
@@ -511,7 +504,6 @@ class TestExecuteFailureSelfCorrection(unittest.TestCase):
                 world=MagicMock(),
                 projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
-                hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
             )
             orch.execution = MagicMock()
@@ -572,7 +564,6 @@ class TestStaleNotInfinitePlanLoop(unittest.TestCase):
                 world=MagicMock(),
                 projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=planner,
-                hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
             )
             orch.checkpoint = TaskCheckpoint(
@@ -615,7 +606,6 @@ class TestCorrectionCountResume(unittest.TestCase):
                 world=MagicMock(),
                 projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
-                hub=MagicMock(),
                 checkpoint_store=store,
             )
             saved = store.load("t_resume_cc")

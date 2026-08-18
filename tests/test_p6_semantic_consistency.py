@@ -6,7 +6,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,16 +41,6 @@ def _w(root: Path, rel: str, content: str) -> None:
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
-
-
-def _hub_pass():
-    return MagicMock(
-        invoke=MagicMock(
-            return_value=SimpleNamespace(
-                ok=True, data={"status": "pass", "executed_checks": []}, error=""
-            )
-        )
-    )
 
 
 class TestExpectedSymbolsDerivation(unittest.TestCase):
@@ -190,7 +179,6 @@ class TestPreExecutionSnapshot(unittest.TestCase):
                 world=MagicMock(),
                 projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
-                hub=MagicMock(),
                 checkpoint_store=store,
             )
             orch.execution = MagicMock()
@@ -337,7 +325,6 @@ class TestVerifyIntegration(unittest.TestCase):
             vres = verify(
                 req,
                 project_root=str(root),
-                hub=_hub_pass(),
                 receipt={"tx_id": 1, "version": 1},
                 plan=plan,
                 pre_snapshot=pre,
@@ -371,7 +358,6 @@ class TestVerifyIntegration(unittest.TestCase):
             vres = verify(
                 req,
                 project_root=str(root),
-                hub=_hub_pass(),
                 receipt={"tx_id": 1, "version": 1},
                 plan=plan,
                 pre_snapshot=pre,

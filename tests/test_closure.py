@@ -13,8 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from forge.adapters.execution import ExecutionAdapter
-from forge.adapters.hub_client import HubClient, HubResponse
-from forge.adapters.repo import get_repo_context
 from forge.intents.executor import IntentExecutionError
 from forge.orchestrator.engine import EngineeringOrchestrator, plan_to_proposals
 from forge.protocols.models import (
@@ -78,15 +76,6 @@ class TestModifyNoCreateFallback(unittest.TestCase):
             result = ex.execute_proposal(proposal)
         self.assertFalse(result.success)
         self.assertIn("object_id", result.error or "")
-
-
-class TestHubNoFallback(unittest.TestCase):
-    def test_repo_hub_failure_raises(self):
-        hub = MagicMock(spec=HubClient)
-        hub.invoke.return_value = HubResponse(ok=False, error="hub down")
-        with self.assertRaises(RuntimeError) as cm:
-            get_repo_context("/tmp", hub=hub)
-        self.assertIn("zhiwang", str(cm.exception))
 
 
 class TestPlanToProposalsUnified(unittest.TestCase):

@@ -1,14 +1,13 @@
 """Forge v2 full-loop E2E: RepoContext → Plan → Constitution → Intent →
 Veritas → Projection → Verification → Checkpoint.
 
-Does not use hub_adapter.lu_create / lu_patch write paths.
+Mutation goes only through Intent → Veritas → Projection.
 """
 from __future__ import annotations
 
 import os
 import shutil
 import tempfile
-import warnings
 
 import pytest
 
@@ -33,20 +32,13 @@ def _try_world(project_root: str):
         return None
 
 
-def test_full_loop_with_hub():
+def test_full_loop():
     root = tempfile.mkdtemp(prefix="forge_fulllo_")
     try:
-        # Phase 1: RepoContext (prefer repo adapter; hub may be absent)
+        # Phase 1: RepoContext (local repository facts)
         from forge.adapters.repo import get_repo_context
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            try:
-                ctx = get_repo_context(root)
-            except Exception:
-                from forge.protocols.models import RepoContext
-
-                ctx = RepoContext(file_tree=[], commit_hash="")
+        ctx = get_repo_context(root)
         assert ctx is not None
 
         # Phase 2: Plan (deterministic, no LLM)
@@ -84,16 +76,9 @@ def test_full_loop_with_hub():
             ],
             reason=plan.goal,
         )
-        try:
-            check_result = constitution_check(proposal, project_root=root)
-            # Contract: status is CheckStatus enum; do not assert PASS if
-            # backend is missing — only assert type/shape.
-            assert hasattr(check_result, "status")
-            assert isinstance(check_result.status, CheckStatus)
-        except Exception as exc:
-            # Hub/Lu unavailable in sandbox is acceptable; mutation path below
-            # still validates formal write contract.
-            pytest.skip(f"constitution backend unavailable: {exc}")
+        check_result = constitution_check(proposal, project_root=root)
+        assert hasattr(check_result, "status")
+        assert isinstance(check_result.status, CheckStatus)
 
         # Phase 4: Intent → Veritas → Projection (formal mutation)
         world = _try_world(root)
@@ -124,12 +109,6 @@ def test_full_loop_with_hub():
         assert os.path.isfile(test_file)
         with open(test_file, encoding="utf-8") as f:
             assert f.read() == content
-
-        # Hard contract: lu_create remains removed
-        from forge.adapters import hub_adapter
-
-        with pytest.raises(RuntimeError, match="lu_create write path removed"):
-            hub_adapter.lu_create(test_file, content)
 
         # Phase 5: Verification adapter shape
         from forge.adapters.verification import verify as verification_verify

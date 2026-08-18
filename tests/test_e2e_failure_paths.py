@@ -1,7 +1,7 @@
 """Forge v2 failure-path E2E: modify via Intent→Veritas→Projection,
 syntax-error rejection contract, and TaskCheckpoint recovery.
 
-Migrated off forbidden lu_patch() write path and TaskCheckpoint.state.
+Mutation goes only through Intent → Veritas → Projection.
 """
 from __future__ import annotations
 
@@ -100,9 +100,9 @@ def test_modify_existing_file():
 
 
 def test_syntax_error_rollback():
-    """v2 contract: lu_patch write path stays closed; syntax-broken payload
-    is rejected by language-level checks. Formal recovery is verification
-    failure — not Lu auto-rollback.
+    """v2 contract: syntax-broken payload is rejected by language-level checks.
+
+    Formal recovery is a verification failure — not auto-rollback.
     """
     root = tempfile.mkdtemp(prefix="forge_syntax_")
     try:
@@ -110,14 +110,6 @@ def test_syntax_error_rollback():
         original = 'def hello():\n    return "Hello"\n'
         with open(test_file, "w", encoding="utf-8") as f:
             f.write(original)
-
-        from forge.adapters.lu_patch_adapter import LuWriteForbidden, patch as lu_patch
-
-        with pytest.raises(LuWriteForbidden):
-            lu_patch(test_file, "def hello():", "def hello(")
-
-        with open(test_file, encoding="utf-8") as f:
-            assert f.read() == original
 
         broken = 'def hello(\n    return "Hello"\n'
         with pytest.raises(SyntaxError):

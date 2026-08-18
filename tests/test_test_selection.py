@@ -5,8 +5,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -158,21 +156,11 @@ class TestHistoryExtract(unittest.TestCase):
 
 
 class TestVerifyAdapterTargets(unittest.TestCase):
-    def test_targets_passed_to_sms_payload(self):
+    def test_selected_targets_run_locally(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _w(root, "a.py", "def f():\n    return 1\n")
-            captured = {}
-
-            def invoke(**kwargs):
-                captured["payload"] = kwargs.get("payload")
-                return SimpleNamespace(
-                    ok=True,
-                    data={"status": "pass", "executed_checks": ["pytest"]},
-                    error="",
-                )
-
-            hub = MagicMock(invoke=MagicMock(side_effect=lambda **k: invoke(**k)))
+            _w(root, "tests/test_a.py", "def test_ok():\n    assert True\n")
             targets = {
                 "test_files": ["tests/test_a.py"],
                 "required": [{"file": "tests/test_a.py", "reason": "direct_ref"}],
@@ -185,68 +173,37 @@ class TestVerifyAdapterTargets(unittest.TestCase):
             vres = verify(
                 req,
                 project_root=str(root),
-                hub=hub,
                 receipt={"tx_id": 1, "version": 1},
                 test_targets=targets,
                 skip_build=False,
             )
             self.assertEqual(vres.status, CheckStatus.PASS)
             self.assertIn("test_selection", vres.evidence)
-            payload = captured.get("payload") or {}
-            hints = payload.get("hints") or {}
-            self.assertEqual(hints.get("test_files"), ["tests/test_a.py"])
-            self.assertIn("test_targets", hints)
+            self.assertIn("pytest", vres.evidence.get("build_checks") or [])
+            be = vres.evidence.get("build_evidence") or {}
+            self.assertEqual(be.get("exit_code"), 0)
 
-    def test_empty_targets_still_calls_sms(self):
+    def test_empty_targets_passes_without_test_run(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _w(root, "a.py", "x = 1\n")
-            hub = MagicMock(
-                invoke=MagicMock(
-                    return_value=SimpleNamespace(
-                        ok=True, data={"status": "pass"}, error=""
-                    )
-                )
-            )
             req = VerificationRequest(changed_files=["a.py"])
             vres = verify(
                 req,
                 project_root=str(root),
-                hub=hub,
                 receipt={"tx_id": 1, "version": 1},
                 test_targets={"test_files": [], "empty": True, "required": [], "advisory": [], "forced_failed": [], "reasons": {}},
             )
             self.assertEqual(vres.status, CheckStatus.PASS)
-            hub.invoke.assert_called()
+            # no selected tests → no pytest run, no failed tests
+            be = vres.evidence.get("build_evidence") or {}
+            self.assertEqual(be.get("failed_tests"), [])
 
     def test_selected_test_failure_classified(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _w(root, "a.py", "def f():\n    return 1\n")
-            hub = MagicMock(
-                invoke=MagicMock(
-                    return_value=SimpleNamespace(
-                        ok=True,
-                        data={
-                            "status": "fail",
-                            "test_failure": True,
-                            "failed_tests": ["tests/test_a.py::test_f"],
-                            "failed_files": ["tests/test_a.py"],
-                            "test_results": [
-                                {
-                                    "test_name": "tests/test_a.py::test_f",
-                                    "status": "failed",
-                                    "error_message": "assert 0",
-                                    "file": "tests/test_a.py",
-                                    "duration": 0.01,
-                                }
-                            ],
-                            "failures": ["tests failed"],
-                        },
-                        error="",
-                    )
-                )
-            )
+            _w(root, "tests/test_a.py", "def test_f():\n    assert False\n")
             targets = {
                 "test_files": ["tests/test_a.py"],
                 "required": [{"file": "tests/test_a.py"}],
@@ -259,7 +216,6 @@ class TestVerifyAdapterTargets(unittest.TestCase):
             vres = verify(
                 req,
                 project_root=str(root),
-                hub=hub,
                 receipt={"tx_id": 1, "version": 1},
                 test_targets=targets,
             )

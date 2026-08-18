@@ -28,7 +28,6 @@ from forge.protocols.models import (
     VerificationResult,
 )
 from forge.adapters.constitution import check as constitution_check
-from forge.adapters.hub_client import HubClient, HubConfig, HubResponse
 from forge.orchestrator.engine import EngineeringOrchestrator, plan_to_proposals
 
 
@@ -97,48 +96,16 @@ class TestConstitutionRequiresContent(unittest.TestCase):
             target_files=["a.py"],
             operations=[{"type": "modify", "target_files": ["a.py"]}],
         )
-        # Hub will fail (no hub); adapter must still FAIL for empty content
+        # Mutation without content must FAIL at the constitution layer.
         result = constitution_check(proposal, project_root=tempfile.mkdtemp())
         self.assertEqual(result.status, CheckStatus.FAIL)
         self.assertTrue(any(v.rule_id == "forge.content_required" for v in result.violations))
-
-
-class TestConstitutionUnrecognizedResponse(unittest.TestCase):
-    """Fail-closed: unknown Hub response format must never become PASS."""
-
-    def test_unknown_format_fails(self):
-        proposal = ChangeProposal(
-            proposal_id="x",
-            plan_id="p",
-            target_files=["a.py"],
-            operations=[{"type": "modify", "target_files": ["a.py"], "content": "x = 1"}],
-        )
-        mock_hub = MagicMock()
-        mock_hub.invoke.return_value = HubResponse(
-            ok=True,
-            data={"totally_unknown_field": 123},
-            error="",
-        )
-        result = constitution_check(proposal, project_root=tempfile.mkdtemp(), hub=mock_hub)
-        self.assertEqual(result.status, CheckStatus.FAIL)
-        self.assertTrue(
-            any(v.rule_id == "forge.unrecognized_response" for v in result.violations)
-        )
 
 
 class TestAdapterTypes(unittest.TestCase):
     def test_constitution_rejects_dict(self):
         with self.assertRaises(TypeError):
             constitution_check({"proposal_id": "x"})  # type: ignore
-
-
-class TestHubFailure(unittest.TestCase):
-    def test_missing_hub_returns_error(self):
-        cfg = HubConfig(hub_bin="/nonexistent/hub-binary-xyz")
-        client = HubClient(config=cfg, project_root=tempfile.mkdtemp())
-        resp = client.invoke("lu", "constitution_check", {})
-        self.assertFalse(resp.ok)
-        self.assertIn("not found", resp.error.lower())
 
 
 class TestOrchestratorResume(unittest.TestCase):

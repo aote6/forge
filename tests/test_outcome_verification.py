@@ -5,8 +5,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -32,18 +30,6 @@ def _w(root: Path, rel: str, content: str) -> None:
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
-
-
-def _hub_pass():
-    return MagicMock(
-        invoke=MagicMock(
-            return_value=SimpleNamespace(
-                ok=True,
-                data={"status": "pass", "executed_checks": ["unit"]},
-                error="",
-            )
-        )
-    )
 
 
 class TestSyntaxVerification(unittest.TestCase):
@@ -289,7 +275,6 @@ class TestVerifyAdapterIntegration(unittest.TestCase):
             vres = verify(
                 req,
                 project_root=str(root),
-                hub=_hub_pass(),
                 receipt={"tx_id": 1, "version": 1},
                 plan=plan,
                 execution_results=[
@@ -323,7 +308,6 @@ class TestVerifyAdapterIntegration(unittest.TestCase):
             vres = verify(
                 req,
                 project_root=str(root),
-                hub=_hub_pass(),
                 receipt={"tx_id": 1, "version": 1},
                 plan=plan,
             )
@@ -355,7 +339,6 @@ class TestVerifyAdapterIntegration(unittest.TestCase):
             vres = verify(
                 req,
                 project_root=str(root),
-                hub=_hub_pass(),
                 receipt={"tx_id": 1, "version": 1},
                 plan=plan,
                 skip_build=True,
@@ -385,7 +368,6 @@ class TestVerifyAdapterIntegration(unittest.TestCase):
             vres = verify(
                 req,
                 project_root=str(root),
-                hub=_hub_pass(),
                 receipt={"tx_id": 1, "version": 1},
                 plan=plan,
                 execution_results=[
@@ -401,36 +383,18 @@ class TestVerifyAdapterIntegration(unittest.TestCase):
     def test_build_evidence_normalized(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _w(root, "a.py", "def f():\n    return 1\n")
-            hub = MagicMock(
-                invoke=MagicMock(
-                    return_value=SimpleNamespace(
-                        ok=True,
-                        data={
-                            "status": "fail",
-                            "executed_checks": ["pytest"],
-                            "exit_code": 1,
-                            "stderr": "FAILED test_a.py::test_f",
-                            "failed_tests": ["test_a.py::test_f"],
-                            "failed_files": ["a.py"],
-                            "test_failure": True,
-                            "failures": ["tests failed"],
-                        },
-                        error="",
-                    )
-                )
-            )
-            req = VerificationRequest(changed_files=["a.py"])
+            _w(root, "tests/test_fail.py", "def test_f():\n    assert False\n")
+            req = VerificationRequest(changed_files=["tests/test_fail.py"])
             vres = verify(
                 req,
                 project_root=str(root),
-                hub=hub,
                 receipt={"tx_id": 1, "version": 1},
             )
             self.assertEqual(vres.status, CheckStatus.FAIL)
             be = vres.evidence.get("build_evidence") or {}
             self.assertEqual(be.get("exit_code"), 1)
-            self.assertIn("test_a", be.get("stderr_excerpt") or "")
+            combined = (be.get("stdout_excerpt") or "") + (be.get("stderr_excerpt") or "")
+            self.assertIn("test_fail", combined)
             sf = (vres.evidence or {}).get("structured_failures") or []
             codes = {x["code"] for x in sf}
             self.assertIn(FailureClass.TEST_FAILURE.value, codes)

@@ -255,10 +255,9 @@ class TestOrchestratorBuildsIndex(unittest.TestCase):
                 world=MagicMock(),
                 projections=ProjectionManager(checkpoint_dir=str(root / ".forge")),
                 planner=MagicMock(),
-                hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
             )
-            # avoid hub failure
+            # deterministic RepoContext (local facts already built by orchestrator)
             import forge.orchestrator.engine as eng
             orig = eng.get_repo_context
             eng.get_repo_context = lambda *a, **k: RepoContext(file_tree=["m.py"])

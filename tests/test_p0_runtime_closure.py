@@ -14,11 +14,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from forge.adapters.execution import ExecutionAdapter
-from forge.adapters.lu_patch_adapter import LuWriteForbidden
-from forge.adapters.lu_patch_adapter import create as lu_create
-from forge.adapters.lu_patch_adapter import delete as lu_delete
-from forge.adapters.lu_patch_adapter import patch as lu_patch
-from forge.adapters import hub_adapter
 from forge.intents.executor import IntentExecutionError
 from forge.orchestrator.engine import EngineeringOrchestrator
 from forge.protocols.models import (
@@ -33,35 +28,6 @@ from forge.protocols.models import (
 )
 from forge.projections.file_projection import FileProjection
 from forge.world.types import Receipt, TransactionDelta
-
-
-class TestLuWriteDisabled(unittest.TestCase):
-    def test_patch_raises(self):
-        with self.assertRaises(LuWriteForbidden):
-            lu_patch("/tmp/x.py", "a", "b")
-
-    def test_create_raises(self):
-        with self.assertRaises(LuWriteForbidden):
-            lu_create("/tmp/x.py", "content")
-
-    def test_delete_raises(self):
-        with self.assertRaises(LuWriteForbidden):
-            lu_delete("/tmp/x.py")
-
-
-class TestHubNoDirectNode(unittest.TestCase):
-    def test_call_node_removed(self):
-        with self.assertRaises(RuntimeError) as cm:
-            hub_adapter._call_node("lu", "patch", {})
-        self.assertIn("HubClient", str(cm.exception))
-
-    def test_lu_patch_write_removed(self):
-        with self.assertRaises(RuntimeError):
-            hub_adapter.lu_patch("a.py", "old", "new")
-
-    def test_lu_create_write_removed(self):
-        with self.assertRaises(RuntimeError):
-            hub_adapter.lu_create("a.py", "x")
 
 
 class TestModifyRequiresObjectId(unittest.TestCase):
@@ -105,15 +71,12 @@ class TestVerifyFailGoesToPlan(unittest.TestCase):
         world = MagicMock()
         projections = MagicMock()
         planner = MagicMock()
-        hub = MagicMock()
-        hub.invoke.return_value = MagicMock(ok=False, error="sms fail", data={})
 
         orch = EngineeringOrchestrator(
             project_root=root,
             world=world,
             projections=projections,
             planner=planner,
-            hub=hub,
         )
         plan = Plan(
             plan_id="p",

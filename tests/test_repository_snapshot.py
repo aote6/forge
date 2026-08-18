@@ -169,7 +169,6 @@ class TestExecutionGuard(unittest.TestCase):
             world=world,
             projections=projections,
             planner=MagicMock(),
-            hub=MagicMock(),
             checkpoint_store=CheckpointStore(root),
         )
         orch.execution = MagicMock()
@@ -301,7 +300,6 @@ class TestOrchestratorBindsSnapshotOnPlan(unittest.TestCase):
                 world=world,
                 projections=ProjectionManager(checkpoint_dir=os.path.join(str(root), ".forge")),
                 planner=planner,
-                hub=MagicMock(),
                 checkpoint_store=CheckpointStore(str(root)),
             )
             orch.checkpoint = TaskCheckpoint(

@@ -1,30 +1,9 @@
-"""Forge v2 real-edit contract: Intent modify path; lu_patch remains forbidden."""
+"""Forge v2 real-edit contract: Intent modify path."""
 from __future__ import annotations
 
 import ast
-import os
-import shutil
-import tempfile
-
-import pytest
 
 from forge.intents.intent import Intent
-
-
-def test_lu_patch_forbidden_for_real_edit():
-    from forge.adapters.lu_patch_adapter import LuWriteForbidden, patch as lu_patch
-
-    root = tempfile.mkdtemp(prefix="forge_edit_")
-    try:
-        path = os.path.join(root, "target.py")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write('MSG = "Hello v1"\n')
-        with pytest.raises(LuWriteForbidden):
-            lu_patch(path, 'MSG = "Hello v1"', 'MSG = "Hello v2"')
-        with open(path, encoding="utf-8") as f:
-            assert 'MSG = "Hello v1"' in f.read()
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_modify_intent_shape():
