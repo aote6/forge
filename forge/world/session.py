@@ -93,6 +93,16 @@ class WorldSession:
             "hex_value": hex_value,
         })
 
+    def read(self, object_id: int, state_id: int) -> str:
+        """Read object state value. Returns str for LLM consumption."""
+        self._ensure_open()
+        value = self._adapter.tx_read(self.session_id, state_id, object_id=object_id)
+        # Try decode as utf-8, fallback to hex
+        try:
+            return value.decode("utf-8")
+        except (UnicodeDecodeError, AttributeError):
+            return value.hex() if isinstance(value, (bytes, bytearray)) else str(value)
+
     def commit(self) -> tuple[Receipt, TransactionDelta]:
         """提交事务。delta 来自 veritasd，是权威世界状态变化。"""
         self._ensure_open()

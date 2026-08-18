@@ -181,10 +181,20 @@ class EngineeringOrchestrator:
             plan = self.checkpoint.plan if self.checkpoint else None
             n = len(plan.steps) if plan else 0
             goal = self.checkpoint.goal if self.checkpoint else task
+            receipt = self.checkpoint.extra.get("last_receipt") if self.checkpoint else None
+            world_version = self.checkpoint.extra.get("last_world_version") if self.checkpoint else None
+            detail_lines = []
+            if world_version is not None:
+                detail_lines.append(f"   world_version: {world_version}")
+            if isinstance(receipt, dict):
+                for key in ("object_id", "tx_id", "objects_created", "capability_grants"):
+                    if key in receipt and receipt[key] not in (None, [], {}):
+                        detail_lines.append(f"   {key}: {receipt[key]}")
+            detail = ("\n" + "\n".join(detail_lines)) if detail_lines else ""
             return (
                 f"✅ 任务完成: {goal}\n"
                 f"   步骤: {n} 个\n"
-                f"   phase: completed"
+                f"   phase: completed{detail}"
             )
         goal = self.checkpoint.goal if self.checkpoint else task
         errors = list(self.checkpoint.errors) if self.checkpoint else []

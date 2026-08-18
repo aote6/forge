@@ -19,6 +19,7 @@ CANONICAL_PLAN_OPERATION_TYPES = frozenset({
     "create_file",
     "delete_file",
     "create_object",
+    "link_objects",
 })
 
 # ExecutionAdapter-only legacy aliases. Not accepted by PlanValidator.

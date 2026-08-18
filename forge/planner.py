@@ -43,7 +43,7 @@ PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文�
       "step_id": "step_1",
       "description": "做什么",
       "target_files": ["文件路径"],
-      "operation_type": "modify | create_file | delete_file | create_object",
+      "operation_type": "modify | create_file | delete_file | create_object | link_objects",
       "dependencies": [],
       "content": "create_file 时的完整文件内容",
       "start_line": modify 时修改的起始行号 (从1开始),
@@ -62,6 +62,7 @@ PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文�
 6. modify/delete 的 target_files 必须落在 impact_files 内（若提供了 impact_files）
 7. create_file 不受 impact_files 限制
 8. create_object 是纯 World 对象创建，不对应文件路径；target_files 必须为空数组 []，不需要 content、start_line、end_line、new_text
+8a. link_objects 是 World 对象链接操作，在 Veritas 世界中建立对象间关系。参数：from_id（源对象 int）、to_id（目标对象 int）、link_type（"owns" | "depends_on" | "references"）。target_files 必须为空数组 []。不需要 content、start_line、end_line、new_text。from_id 和 to_id 必须是从 list_world_objects 或之前 create_object 步骤获得的对象 ID，不得编造。
 8. 多文件 API 修改时：先改 definition，再改 callers，再改 tests；用 dependencies 表达顺序
 9. 对 AMBIGUOUS symbols，不得擅自选择错误定义文件；只改任务明确指向的文件
 10. 不要修改 Machine impact set 之外的无关文件，除非任务明确要求 create_file
@@ -276,7 +277,8 @@ REQUIRED obligations 的 file 必须出现在某个 mutation step 的 target_fil
 纯 create_object 运行时计划（全部步骤均为 create_object）不修改源码，不要求 mutation-obligation 文件覆盖。
 多步骤时用 dependencies 表达「先 definition 后 callers 后 tests」。
 create_file 不受 impact_files 限制。
-create_object 的 target_files 必须为 []。
+create_object 和 link_objects 的 target_files 必须为 []。
+link_objects 需要 from_id / to_id / link_type（owns / depends_on / references）。
 机器只提供事实；请自行选择 operation_type。Validator 只 ACCEPT/REJECT，不会替你改写 plan。"""
 
         last_plan_dict = None

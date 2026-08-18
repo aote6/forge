@@ -121,6 +121,29 @@ class ExecutionAdapter:
                     intents_list.append(Intent.create_object(require_confirm=False))
                     continue
 
+                if op_type == "link_objects":
+                    # link_objects: World link operation. Requires from_id / to_id / link_type.
+                    from_id = op.get("from_id")
+                    to_id = op.get("to_id")
+                    link_type = op.get("link_type", "owns")
+                    if from_id is None or not isinstance(from_id, int):
+                        raise IntentExecutionError(
+                            "link_objects requires from_id (int)"
+                        )
+                    if to_id is None or not isinstance(to_id, int):
+                        raise IntentExecutionError(
+                            "link_objects requires to_id (int)"
+                        )
+                    intents_list.append(
+                        Intent.link_objects(
+                            from_id=from_id,
+                            to_id=to_id,
+                            link_type=link_type,
+                            require_confirm=False,
+                        )
+                    )
+                    continue
+
                 if not targets:
                     raise IntentExecutionError(
                         f"target_files required for {op_type}: "

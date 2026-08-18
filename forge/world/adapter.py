@@ -292,6 +292,23 @@ class WorldAdapter:
         resp = self._send(req)
         self._require_ok(resp)
 
+    def tx_read(self, session_id: int, state_id: int, object_id: int | None = None) -> bytes:
+        req: dict[str, Any] = {
+            "cmd": "tx_read",
+            "session_id": int(session_id),
+            "state_id": int(state_id),
+        }
+        if object_id is not None:
+            req["object_id"] = int(object_id)
+        resp = self._send(req)
+        self._require_ok(resp)
+        # veritasd returns value or hex; prefer hex for binary safety
+        hex_val = resp.get("hex")
+        if hex_val is not None:
+            return bytes.fromhex(hex_val)
+        value = resp.get("value", "")
+        return value.encode("utf-8") if isinstance(value, str) else bytes(value)
+
     def tx_commit(self, session_id: int) -> Receipt:
         resp = self._send({"cmd": "tx_commit", "session_id": int(session_id)})
         self._require_ok(resp)

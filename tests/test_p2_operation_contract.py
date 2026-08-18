@@ -33,7 +33,7 @@ class TestSSOT(unittest.TestCase):
     def test_canonical_set(self):
         self.assertEqual(
             CANONICAL_PLAN_OPERATION_TYPES,
-            frozenset({"modify", "create_file", "delete_file", "create_object"}),
+            frozenset({"modify", "create_file", "delete_file", "create_object", "link_objects"}),
         )
 
     def test_legacy_aliases(self):

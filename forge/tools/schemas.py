@@ -51,6 +51,266 @@ READ_ONLY_TOOL_DECLARATIONS = [
         "parameters": {"type": "object", "properties": {}},
     },
     {
+        "name": "world_info",
+        "description": "查看 Veritas 世界摘要：版本号、state root、对象总数。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_world_objects",
+        "description": "列出 Veritas 世界中的所有对象（id 和状态）。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_world_object",
+        "description": "查看指定 ObjectId 的对象状态。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "integer", "description": "对象 ID"},
+            },
+            "required": ["object_id"],
+        },
+    },
+    {
+        "name": "list_world_links",
+        "description": "列出 Veritas 世界中所有对象之间的链接关系（from -[type]-> to）。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "read_file_with_lines",
+        "description": "读取文件并显式附带行号（如 0042 | def foo():），用于精准对齐 Planner 的 modify 参数。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径"},
+                "start_line": {"type": "integer", "description": "起始行（1-based，可选）"},
+                "end_line": {"type": "integer", "description": "结束行（1-based，可选）"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "preview_line_mutation",
+        "description": "只读模拟：预览将 start_line 到 end_line 替换为 new_text 后的上下文。不修改文件。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径"},
+                "start_line": {"type": "integer", "description": "替换起始行（1-based）"},
+                "end_line": {"type": "integer", "description": "替换结束行（1-based）"},
+                "new_text": {"type": "string", "description": "拟替换的新文本"},
+            },
+            "required": ["path", "start_line", "end_line", "new_text"],
+        },
+    },
+    {
+        "name": "get_symbol_line_range",
+        "description": "查询文件内指定类或函数的精确起始行号和结束行号。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径"},
+                "symbol_name": {"type": "string", "description": "类名或函数名"},
+            },
+            "required": ["path", "symbol_name"],
+        },
+    },
+    {
+        "name": "find_symbol_definition",
+        "description": "精确查找类或函数的定义位置（文件名、行号、签名、docstring）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol_name": {"type": "string", "description": "要查找的类名或函数名"},
+            },
+            "required": ["symbol_name"],
+        },
+    },
+    {
+        "name": "get_call_chain",
+        "description": "查找某符号的所有直接调用者（谁调用了它）和被调用者（它调用了谁）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol_name": {"type": "string", "description": "函数或类名"},
+            },
+            "required": ["symbol_name"],
+        },
+    },
+    {
+        "name": "get_diff_summary",
+        "description": "归纳 git diff 的语义变更（变更文件、新增/删除的函数和类），省 Token。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "extract_code_skeleton",
+        "description": "提取 Python 文件的代码骨架（保留类/函数签名和 import，隐藏函数体，带行号）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "git_status_enhanced",
+        "description": "查看完整 Git 状态：staged、unstaged、untracked 文件，当前分支，最近提交。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_tests",
+        "description": "列出项目中所有测试文件（test_*.py 或 *_test.py）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "directory": {"type": "string", "description": "搜索目录，默认项目根目录"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "read_git_version",
+        "description": "读取文件在某个 git 版本（如 HEAD~1 或 commit hash）的内容。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径"},
+                "revision": {"type": "string", "description": "git 版本引用，默认 HEAD~1"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "search_history",
+        "description": "搜索对话历史日志（.forge/conversation_log.jsonl）中的关键信息。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "关键词或正则表达式"},
+                "max_results": {"type": "integer", "description": "最多返回条数，默认 5"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "summarize_file",
+        "description": "生成或读取文件的 AST 摘要（imports/classes/functions），自动缓存到 .forge/summaries/。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "get_repo_map",
+        "description": "生成工程的代码结构图（Class/Function 签名），用极少 Token 了解代码骨架。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "root_dir": {"type": "string", "description": "根目录路径，默认当前目录"},
+                "max_tokens": {"type": "integer", "description": "最大预算 tokens（粗略估计），默认 1500"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "read_files",
+        "description": "批量读取多个文件内容，支持行范围。一次调用可读多个文件，减少往返次数。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "requests": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "文件路径"},
+                            "start_line": {"type": "integer", "description": "起始行（1-based，可选）"},
+                            "end_line": {"type": "integer", "description": "结束行（1-based，可选）"},
+                        },
+                        "required": ["path"],
+                    },
+                    "description": "读取文件请求列表",
+                },
+            },
+            "required": ["requests"],
+        },
+    },
+    {
+        "name": "run_test_structured",
+        "description": "运行 pytest 并返回结构化结果（通过/失败摘要、失败测试列表），不返回冗长原始日志。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "测试文件或目录路径，默认 tests/"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "run_diagnostics",
+        "description": "对 Python 文件运行 AST 语法检查，返回结构化诊断（SyntaxError 及行号）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "directory": {"type": "string", "description": "诊断目标目录，默认当前目录"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_context_budget",
+        "description": "估算当前已跟踪文件的 Token 占用，帮助决定是否需要压缩上下文。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tracked_files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "已读取或关注的文件列表",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "inspect_last_intent",
+        "description": "查看上一次 Veritas 事务提交的执行结果（tx_id、version、对象创建等）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "history_file": {"type": "string", "description": "意图历史记录文件路径，默认 .forge/last_intent.json"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "git_log",
+        "description": "查看最近 N 条 git 提交历史。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "n": {"type": "integer", "description": "返回的提交条数，默认 10"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "run_single_test",
+        "description": "运行单个 pytest 文件或测试节点。比 run_command('python3 -m pytest ...') 更简洁。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "测试文件路径，如 tests/test_xxx.py 或 tests/test_xxx.py::test_func"},
+                "timeout": {"type": "integer", "description": "超时秒数，默认 60"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
         "name": "run_command",
         "description": "在项目根目录下执行 shell 命令（跑测试、编译、grep 等）。",
         "parameters": {

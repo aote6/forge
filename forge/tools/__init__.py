@@ -27,7 +27,7 @@ def make_tools(
     Production Runtime must keep allow_mutation=False so all mutations go through
     EngineeringOrchestrator.
     """
-    tools = make_local_tools(workspace, safe_mode=safe_mode)
+    tools = make_local_tools(workspace, safe_mode=safe_mode, world_runtime=world_runtime)
     confirm_fn = None
     abort_fn = None
 
