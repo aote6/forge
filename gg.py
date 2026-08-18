@@ -7,7 +7,7 @@ from forge.runtime import Runtime
 from forge.events import EventType
 from forge.adapters.gemini import GeminiAdapter
 
-project_root = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~")
+project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 adapter = GeminiAdapter(model_name="gemini-3.5-flash")
 tag = "Gemini"
 
