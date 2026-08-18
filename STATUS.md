@@ -441,61 +441,29 @@ Planner → create_object → Validator ACCEPT → Constitution PASS → Executi
 遗留（下一层，不与 P8 混修）：
 - 用户说"创建一个对象"，Planner 生成了 3 个 create_object step——需要审查 Planner 对任务数量约束的处理
 
-## 遗留：RepositoryIndex / Snapshot 全量重扫（性能）
+## 已解决：RepositoryIndex / Snapshot 全量重扫（性能）
 
 问题：dp / gg 每次输入任务都会触发全量仓库扫描 + 全量 AST 索引重建。
-- take_snapshot：每次 os.walk + tree_hash
-- RepositoryIndex.build：每次 scan_files + 逐个 ast.parse
-- 项目变大后 token 和延迟都不可接受
 
-根因：无增量缓存，相同 snapshot_id 不复用索引。
+修复（commit 005b0f3 + ded5174）：
+- Snapshot 缓存：相同 tree_hash 复用 RepositorySnapshot
+- RepositoryIndex 整表缓存：相同 snapshot_id 直接返回已有索引
+- 文件级增量：只重新 ast.parse 变更/新增文件，删除文件剔除符号
+- 缓存按 repo_path 隔离，避免跨仓库污染
 
-修复方向（明天）：
-- take_snapshot 按 tree_hash 缓存
-- RepositoryIndex.build 相同 snapshot_id 直接返回已有索引
-- scan_files 增量检测，只重扫变更文件
+验收：
+- 未变更文件 parse 次数 = 0
+- 单文件修改 parse 次数 = 1
+- 增量结果与全量 build 语义等价
+- 不引入持久化（进程内缓存，当前项目规模全量 build 1-2 秒可接受）
 
-状态：未开始，不与 P0-P8 边界修复混修。
+状态：✅ 已解决
 
-## 2026-08-18 计划：移除 Hub 外部工具依赖
+## 2026-08-18 已完成：移除 Hub 外部工具依赖
 
-目标：删除 zhiwang / lu / sms / Hub 调用，所有验证由 Forge 内部代码完成。
+zhiwang / lu / sms / HubClient / HubAdapter 全部移除。详见下方"移除 Hub 外部依赖"条目。
 
-理由：AI 报告不可信。验证必须基于 Forge 自己的证据链（WAL + 磁盘状态 + 测试结果），不经过 AI 也不经过外部工具。
-
-拆除步骤：
-
-1. 删除 zhiwang
-   - forge/adapters/repo.py → 直接用 take_snapshot() + file_tree
-   - UNDERSTANDING 阶段不再调 HubClient.invoke("zhiwang")
-   - 删除 forge/adapters/repo.py 或改为纯本地实现
-
-2. 删除 lu（Constitution 外部检查）
-   - forge/adapters/constitution.py → 去掉 HubClient.invoke("lu")
-   - 本地 Constitution 规则直接放 forge/ 内部
-   - 删除 forge/adapters/constitution_adapter.py（死代码）
-
-3. 删除 sms（外部测试验证）
-   - forge/adapters/verification.py → 改为 subprocess 跑 pytest
-   - 测试结果解析在 forge/verification/ 内部完成
-
-4. 删除 HubClient
-   - forge/adapters/hub_client.py
-   - forge/adapters/hub_adapter.py
-   - .forge/hub.json 配置
-
-5. 清理
-   - EngineOrchestrator 中所有 hub 参数
-   - 相关测试更新
-   - 全量测试跑通
-
-验证方式（拆完后）：
-- AI 说"看了" → RepositoryIndex 构建日志
-- AI 说"改了" → WAL TXCOMMIT + 磁盘 diff
-- AI 说"没改" → WAL 无记录
-- AI 说"创建了" → World version 递增
-
-状态：明天执行。
+状态：✅ 已完成
 
 ## 2026-08-18 移除 Hub 外部依赖 + Gemini 端到端验证
 
@@ -547,3 +515,24 @@ prompt 从 53K 降到 6.5K。
 - DeepSeek 余额不足（402）
 - 稳定性实验未做：同一任务跑 5 次验证映射稳定
 - Forge 的真正护城河待验证：长期任务状态 / 强制约束 / 可审计性
+
+## 2026-08-18 RepositoryIndex 文件级增量构建
+
+在 Snapshot/Index 两层缓存基础上，增加相邻 snapshot 间的增量重建。
+
+- 缓存按 repo_path 隔离
+- 变更/新增文件只重新 ast.parse
+- 删除文件从索引中剔除
+- errors 清理用精确前缀匹配
+
+测试：+5（test_index_incremental.py）
+全量：303 passed, 1 xfailed
+相关 commit：ded5174
+
+### 遗留更新
+
+- ✅ RepositoryIndex 全量重扫 → 已解决（进程内缓存 + 增量）
+- ✅ Hub 外部依赖 → 已移除
+- ❌ DeepSeek 余额不足 → 待充值
+- ❌ 稳定性实验（同任务跑 5 次）→ 未做
+- ❌ Forge 护城河验证（长期任务/强制约束/可审计性）→ 未做
