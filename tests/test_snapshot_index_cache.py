@@ -139,7 +139,10 @@ class TestRepositoryIndexCache(unittest.TestCase):
             idx_b = RepositoryIndex.build(str(root), snapshot=snap_b)
             self.assertIsNot(idx_a, idx_b)
             self.assertNotEqual(idx_a.snapshot_id, idx_b.snapshot_id)
-            self.assertEqual(len(index_mod._index_cache), 2)
+            # _index_cache is now keyed by repo_path; both snapshots live under
+            # the same repo key. Assert the repo has 2 snapshot entries instead.
+            repo_key = next(iter(index_mod._index_cache))
+            self.assertEqual(len(index_mod._index_cache[repo_key]), 2)
 
     def test_build_without_explicit_snapshot_still_caches(self):
         with tempfile.TemporaryDirectory() as td:

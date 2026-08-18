@@ -13,11 +13,12 @@ from typing import Iterable, Optional
 from forge.context.snapshot import RepositorySnapshot, take_snapshot
 from forge.context.scanner import scan_files, CODE_EXTENSIONS
 
-# Process-local cache: snapshot_id → RepositoryIndex.
-# Same snapshot_id reuses the index object; no re-scan / re-parse.
-_index_cache: dict[str, "RepositoryIndex"] = {}
+# Process-local cache keyed by absolute repo_path → snapshot_id → (index, fingerprints).
+_index_cache: dict[str, dict[str, tuple["RepositoryIndex", dict[str, str]]]] = {}
 
-
+# Last built index + fingerprints per repo_path for incremental rebuild.
+_repo_last_index: dict[str, "RepositoryIndex"] = {}
+_repo_last_fingerprints: dict[str, dict[str, str]] = {}
 @dataclass(frozen=True)
 class Symbol:
     name: str
@@ -139,43 +140,149 @@ class RepositoryIndex:
         repo_path: str,
         snapshot: Optional[RepositorySnapshot] = None,
     ) -> "RepositoryIndex":
+        import os as _os
+        abs_path = _os.path.abspath(_os.path.expanduser(repo_path))
         snap = snapshot or take_snapshot(repo_path)
         sid = snap.snapshot_id
-        cached = _index_cache.get(sid)
-        if cached is not None:
-            return cached
 
-        idx = cls(snapshot_id=sid)
+        # Per-repo cache namespace.
+        repo_cache = _index_cache.setdefault(abs_path, {})
+
+        # Full cache hit: identical snapshot_id, no work.
+        cached_entry = repo_cache.get(sid)
+        if cached_entry is not None:
+            idx, _ = cached_entry
+            _repo_last_index[abs_path] = idx
+            _repo_last_fingerprints[abs_path] = dict(cached_entry[1])
+            return idx
+
         files, scan_errors = scan_files(repo_path)
-        for e in scan_errors:
-            idx.errors.append(f"{e.path}:{e.reason}")
-
         py_files = [f for f in files if f.path.endswith(".py")]
-        # deterministic order
         py_files = sorted(py_files, key=lambda f: f.path)
+        new_fingerprints = {f.path: f.hash for f in py_files}
 
-        for fe in py_files:
-            full = os.path.join(repo_path, fe.path)
-            try:
-                with open(full, "r", encoding="utf-8", errors="replace") as fh:
-                    source = fh.read()
-            except OSError as e:
-                idx.errors.append(f"{fe.path}:read:{e}")
-                continue
-            try:
-                tree = ast.parse(source, filename=fe.path)
-            except SyntaxError as e:
-                idx.errors.append(f"{fe.path}:syntax:{e}")
-                continue
-            idx.files_indexed.append(fe.path)
-            _index_module(tree, fe.path, idx)
+        last_idx = _repo_last_index.get(abs_path)
+        last_fp = _repo_last_fingerprints.get(abs_path)
+        if last_idx is not None and last_fp:
+            idx = _incremental_build(
+                last_idx,
+                last_fp,
+                new_fingerprints,
+                py_files,
+                repo_path,
+                scan_errors,
+                sid,
+            )
+        else:
+            idx = _full_build(py_files, repo_path, scan_errors, sid)
 
-        # stable ordering for determinism
-        idx.symbols.sort(key=lambda s: (s.file_path, s.start_line, s.qualified_name))
-        idx.references.sort(key=lambda r: (r.file_path, r.line, r.symbol_name, r.kind))
-        idx.imports.sort(key=lambda i: (i.file_path, i.line, i.module))
-        _index_cache[sid] = idx
+        repo_cache[sid] = (idx, new_fingerprints)
+        _repo_last_index[abs_path] = idx
+        _repo_last_fingerprints[abs_path] = dict(new_fingerprints)
         return idx
+
+
+def _full_build(
+    py_files: list,
+    repo_path: str,
+    scan_errors: list,
+    sid: str,
+) -> "RepositoryIndex":
+    """Full build: parse every .py file. Used when no prior index exists."""
+    idx = RepositoryIndex(snapshot_id=sid)
+    for e in scan_errors:
+        idx.errors.append(f"{e.path}:{e.reason}")
+
+    for fe in py_files:
+        _parse_one_file(idx, fe, repo_path)
+
+    _sort_index(idx)
+    return idx
+
+
+def _incremental_build(
+    last_idx: "RepositoryIndex",
+    last_fp: dict[str, str],
+    new_fp: dict[str, str],
+    py_files: list,
+    repo_path: str,
+    scan_errors: list,
+    sid: str,
+) -> "RepositoryIndex":
+    """Incremental rebuild: only parse changed/new files; drop deleted paths."""
+    idx = RepositoryIndex(snapshot_id=sid)
+    idx.symbols = list(last_idx.symbols)
+    idx.references = list(last_idx.references)
+    idx.imports = list(last_idx.imports)
+    idx.files_indexed = list(last_idx.files_indexed)
+    idx.errors = list(last_idx.errors)
+
+    old_paths = set(last_fp.keys())
+    new_paths = set(new_fp.keys())
+
+    # 1. Deleted files: drop all records for that path.
+    deleted = old_paths - new_paths
+    if deleted:
+        idx.symbols = [s for s in idx.symbols if s.file_path not in deleted]
+        idx.references = [r for r in idx.references if r.file_path not in deleted]
+        idx.imports = [i for i in idx.imports if i.file_path not in deleted]
+        idx.files_indexed = [f for f in idx.files_indexed if f not in deleted]
+        idx.errors = [e for e in idx.errors if not any(e.startswith(f'{d}:') for d in deleted)]
+
+    # 2. Changed files: drop old records, re-parse.
+    changed = {
+        path
+        for path in (old_paths & new_paths)
+        if last_fp.get(path) != new_fp.get(path)
+    }
+    # 3. New files.
+    added = new_paths - old_paths
+
+    for path in (changed | added):
+        idx.symbols = [s for s in idx.symbols if s.file_path != path]
+        idx.references = [r for r in idx.references if r.file_path != path]
+        idx.imports = [i for i in idx.imports if i.file_path != path]
+        idx.files_indexed = [f for f in idx.files_indexed if f != path]
+
+    # Re-scan errors for current tree (path may have been added/removed).
+    idx.errors = [e for e in idx.errors if not any(e.startswith(f'{d}:') for d in (changed | added))]
+    for e in scan_errors:
+        idx.errors.append(f"{e.path}:{e.reason}")
+
+    # Parse changed + added files.
+    py_by_path = {fe.path: fe for fe in py_files}
+    for path in sorted(changed | added):
+        fe = py_by_path.get(path)
+        if fe is not None:
+            _parse_one_file(idx, fe, repo_path)
+
+    _sort_index(idx)
+    return idx
+
+
+def _parse_one_file(idx: "RepositoryIndex", fe, repo_path: str) -> None:
+    """Parse a single FileEntry and append its symbols/refs/imports to idx."""
+    full = os.path.join(repo_path, fe.path)
+    try:
+        with open(full, "r", encoding="utf-8", errors="replace") as fh:
+            source = fh.read()
+    except OSError as e:
+        idx.errors.append(f"{fe.path}:read:{e}")
+        return
+    try:
+        tree = ast.parse(source, filename=fe.path)
+    except SyntaxError as e:
+        idx.errors.append(f"{fe.path}:syntax:{e}")
+        return
+    idx.files_indexed.append(fe.path)
+    _index_module(tree, fe.path, idx)
+
+
+def _sort_index(idx: "RepositoryIndex") -> None:
+    """Stable ordering for determinism."""
+    idx.symbols.sort(key=lambda s: (s.file_path, s.start_line, s.qualified_name))
+    idx.references.sort(key=lambda r: (r.file_path, r.line, r.symbol_name, r.kind))
+    idx.imports.sort(key=lambda i: (i.file_path, i.line, i.module))
 
 
 def _index_module(tree: ast.AST, file_path: str, idx: RepositoryIndex) -> None:
