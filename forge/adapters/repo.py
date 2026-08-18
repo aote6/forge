@@ -1,33 +1,48 @@
-"""Repo adapter — protocol conversion only; Hub invokes zhiwang."""
+"""Repo adapter — local repository facts (no external repository tooling).
+
+RepoContext is built from forge.context (snapshot + git metadata). It is
+supplementary understanding; the authoritative machine facts come from
+RepositorySnapshot / RepositoryIndex, which the orchestrator builds first.
+"""
 from __future__ import annotations
 
-from forge.adapters.hub_client import HubClient
+import subprocess
+
+from forge.context.repository import build_context
 from forge.protocols.models import RepoContext
 
 
-def get_repo_context(project_root: str, hub: HubClient | None = None) -> RepoContext:
-    """Return RepoContext via Hub capability 'zhiwang'. Hub failure fails the task.
+def _git_changed_files(project_root: str) -> list[str]:
+    """Changed files from `git status --porcelain`; empty when not a git repo."""
+    try:
+        out = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            cwd=project_root,
+            stderr=subprocess.DEVNULL,
+        ).decode()
+    except Exception:
+        return []
+    changed: list[str] = []
+    for line in out.splitlines():
+        # porcelain v1: "XY <path>" or "XY <old> -> <new>" (rename)
+        path = line[3:].split(" -> ")[-1].strip().strip('"')
+        if path:
+            changed.append(path)
+    return changed
 
-    No local os.walk fallback — Hub is the sole production tool entry.
-    """
-    client = hub or HubClient(project_root=project_root)
-    resp = client.invoke(
-        capability="zhiwang",
-        action="snapshot",
-        payload={"path": project_root},
-    )
-    if not resp.ok:
-        raise RuntimeError(
-            f"Hub zhiwang unavailable — cannot build RepoContext: {resp.error}"
-        )
 
-    data = resp.data.get("data", {}) if isinstance(resp.data, dict) else {}
+def get_repo_context(project_root: str) -> RepoContext:
+    """Return RepoContext from local repository facts."""
+    ctx = build_context(project_root, include_content=False)
+    commit = (ctx.git.commit or "") if ctx.git else ""
+    branch = (ctx.git.branch or "") if ctx.git else ""
+    file_tree = [f.path for f in ctx.files]
     return RepoContext(
-        repo_id=data.get("repo_id") or project_root,
-        commit_hash=data.get("commit_hash", ""),
-        branch=data.get("branch", ""),
-        file_tree=list(data.get("file_tree") or []),
-        changed_files=list(data.get("changed_files") or []),
-        recent_changes=list(data.get("recent_changes") or []),
-        status_excerpt=data.get("status_excerpt"),
+        repo_id=ctx.repo_path,
+        commit_hash=commit,
+        branch=branch,
+        file_tree=file_tree,
+        changed_files=_git_changed_files(project_root),
+        recent_changes=[],
+        status_excerpt=None,
     )

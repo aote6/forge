@@ -1,29 +1,168 @@
-"""Verification adapter — receipt + projection + outcome + optional build check.
+"""Verification adapter — receipt + projection + outcome + local test build.
 
 VERIFY semantics (v2.2 / Priority 5):
   1. Receipt integrity: tx_id, version, delta present and valid
   2. Projection consistency: planned files exist / deleted as expected
   3. Outcome reliability: plan ops vs filesystem, Python syntax on changed files
-  4. Build check (optional): SMS/Kuai execution result
+  4. Test build (optional): local pytest on selected test files
 
 PASS requires all applicable checks to pass.
-Kuai's "no exception" is NOT treated as verification success;
-it is only one component of the build_check.
+The local test runner's "no exception" is NOT treated as verification success;
+it is only one component of the build check.
 LLM claims are never treated as verification facts.
 """
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+import time
 from typing import Any
 
-from forge.adapters.hub_client import HubClient
 from forge.protocols.models import CheckStatus, VerificationRequest, VerificationResult
+
+
+def _looks_like_test(path: str) -> bool:
+    p = (path or "").replace("\\", "/").lower()
+    base = p.rsplit("/", 1)[-1]
+    return (
+        "/tests/" in f"/{p}"
+        or p.startswith("tests/")
+        or base.startswith("test_")
+        or base.endswith("_test.py")
+    )
+
+
+def _parse_failed_tests(output: str) -> list[str]:
+    """Extract failed node ids from pytest summary (FAILED <nodeid> ...)."""
+    failed: list[str] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("FAILED "):
+            node = line[len("FAILED "):].split(" ", 1)[0].strip()
+            if node and "::" in node:
+                failed.append(node)
+    return sorted(set(failed))
+
+
+def _summary_line(output: str) -> str:
+    for line in reversed(output.splitlines()):
+        line = line.strip()
+        if line and ("failed" in line or "error" in line.lower()):
+            return line[:200]
+    return ""
+
+
+def _run_local_tests(
+    request: VerificationRequest,
+    project_root: str,
+    test_targets: dict | None,
+) -> tuple[bool, dict[str, Any], list[str]]:
+    """Run local pytest on selected test files. Returns (build_ok, evidence, failures).
+
+    No external test scheduler. Deterministic subprocess pytest.
+    """
+    test_files: list[str] = []
+    if test_targets:
+        test_files = list(test_targets.get("test_files") or [])
+    if not test_files:
+        hints = getattr(request, "hints", None) or {}
+        test_files = list(hints.get("test_files") or [])
+    if not test_files:
+        test_files = [
+            f for f in (request.changed_files or []) if _looks_like_test(f)
+        ]
+    test_files = sorted(set(test_files))
+
+    def _empty_evidence() -> dict[str, Any]:
+        return {
+            "build_status": "pass",
+            "build_checks": [],
+            "build_evidence": {
+                "command": None,
+                "exit_code": 0,
+                "stdout_excerpt": "",
+                "stderr_excerpt": "",
+                "duration": 0.0,
+                "failed_tests": [],
+                "failed_files": [],
+            },
+        }
+
+    if not test_files:
+        # No tests selected → nothing to run; not a failure.
+        return True, _empty_evidence(), []
+
+    cmd = [sys.executable, "-m", "pytest", "-q", *test_files]
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except FileNotFoundError:
+        ev = _empty_evidence()
+        ev["build_status"] = "fail"
+        ev["build_checks"] = ["pytest"]
+        ev["build_evidence"]["command"] = " ".join(cmd)
+        ev["build_evidence"]["stderr_excerpt"] = "pytest interpreter not found"
+        return False, ev, ["build: pytest not found"]
+    except subprocess.TimeoutExpired:
+        ev = _empty_evidence()
+        ev["build_status"] = "fail"
+        ev["build_checks"] = ["pytest"]
+        ev["build_evidence"]["command"] = " ".join(cmd)
+        ev["build_evidence"]["stderr_excerpt"] = "pytest timeout after 120s"
+        return False, ev, ["build: pytest timeout after 120s"]
+
+    duration = time.monotonic() - started
+    stdout = proc.stdout or ""
+    stderr = proc.stderr or ""
+    combined = stdout + "\n" + stderr
+
+    failed_tests = _parse_failed_tests(combined)
+    failed_files = sorted({t.split("::", 1)[0] for t in failed_tests})
+
+    build_ok = proc.returncode == 0
+    evidence: dict[str, Any] = {
+        "build_status": "pass" if build_ok else "fail",
+        "build_checks": ["pytest"],
+        "build_evidence": {
+            "command": " ".join(cmd),
+            "exit_code": proc.returncode,
+            "stdout_excerpt": stdout[:2000],
+            "stderr_excerpt": stderr[:2000],
+            "duration": round(duration, 3),
+            "failed_tests": failed_tests,
+            "failed_files": failed_files,
+        },
+    }
+    if not build_ok:
+        evidence["test_failure"] = True
+        evidence["failure_kind"] = "test"
+        if failed_files:
+            evidence["failed_files"] = failed_files
+        if failed_tests:
+            evidence["test_results"] = [
+                {"test_name": t, "status": "failed", "file": t.split("::", 1)[0]}
+                for t in failed_tests
+            ]
+        summary = _summary_line(combined)
+        failures = [
+            f"build: pytest failed ({proc.returncode})"
+            + (f": {summary}" if summary else "")
+        ]
+    else:
+        failures = []
+    return build_ok, evidence, failures
 
 
 def verify(
     request: VerificationRequest,
     project_root: str = ".",
-    hub: HubClient | None = None,
     *,
     receipt: Any = None,
     delta: Any = None,
@@ -39,13 +178,12 @@ def verify(
     Args:
         request: VerificationRequest with changed_files
         project_root: project directory
-        hub: HubClient for SMS/Kuai (optional)
         receipt: Veritas receipt from EXECUTING phase
         delta: TransactionDelta from EXECUTING phase
         execution_results: list of ExecutionResult from EXECUTING phase
         plan: optional Plan for outcome alignment checks (P5)
         expected_symbols: optional {file: [symbol, ...]} structural expectations
-        skip_build: if True, do not invoke SMS (useful for unit tests)
+        skip_build: if True, do not run local pytest (useful for unit tests)
         pre_snapshot: optional {path: sha256} from EXECUTE entry (P6)
         test_targets: optional P8 selection dict (test_files / required / ...)
     """
@@ -86,7 +224,6 @@ def verify(
                     evidence["delta_memory_written"] = len(getattr(delta, "memory_written", []))
     else:
         # No receipt provided — fail closed.
-        # Receipt is required for world state verification.
         checks.append("receipt")
         receipt_ok = False
         failures.append("receipt: not provided — cannot verify world state")
@@ -156,8 +293,8 @@ def verify(
     evidence["outcome_ok"] = outcome_ok
     evidence["syntax_ok"] = syntax_ok
 
-    # ── 4. Build / selected-test check (SMS/Kuai, optional) ──
-    # P8: attach machine test_targets to SMS payload via request.hints
+    # ── 4. Test build (local pytest, optional) ────────────────
+    # P8: attach machine test_targets for selection / evidence.
     if test_targets:
         evidence["test_selection"] = {
             "test_files": list(test_targets.get("test_files") or []),
@@ -169,76 +306,24 @@ def verify(
         }
         hints = dict(getattr(request, "hints", None) or {})
         hints["test_targets"] = evidence["test_selection"]
-        # File-level targets for SMS that support subset runs
         hints["test_files"] = list(test_targets.get("test_files") or [])
         if test_targets.get("forced_failed"):
             hints["failed_tests"] = list(test_targets.get("forced_failed") or [])
         request.hints = hints
 
     if not skip_build:
-        client = hub or HubClient(project_root=project_root)
+        checks.append("build")
         try:
-            resp = client.invoke(
-                capability="sms",
-                action="verify",
-                payload=request.to_dict(),
-                timeout=120,
+            build_ok, build_evidence, build_failures = _run_local_tests(
+                request, project_root, test_targets
             )
-            if resp.ok:
-                data = resp.data if isinstance(resp.data, dict) else {}
-                build_status = data.get("status", "pass")
-                build_ok = build_status == "pass"
-                checks.append("build")
-                # Normalize build/test evidence for P3 classifier
-                evidence["build_status"] = build_status
-                evidence["build_checks"] = data.get("executed_checks", [])
-                evidence["build_evidence"] = {
-                    "command": data.get("command") or data.get("cmd"),
-                    "exit_code": data.get("exit_code"),
-                    "stdout_excerpt": (data.get("stdout") or data.get("stdout_excerpt") or "")[:500],
-                    "stderr_excerpt": (data.get("stderr") or data.get("stderr_excerpt") or "")[:500],
-                    "duration": data.get("duration"),
-                    "failed_tests": data.get("failed_tests") or data.get("failures") or [],
-                    "failed_files": data.get("failed_files") or [],
-                }
-                if data.get("test_failure") or data.get("failure_kind") == "test":
-                    evidence["test_failure"] = True
-                    evidence["failure_kind"] = "test"
-                if data.get("failed_files"):
-                    evidence["failed_files"] = list(data.get("failed_files") or [])
-                # Structured per-test results if SMS provides them
-                raw_results = data.get("test_results") or data.get("results") or []
-                if isinstance(raw_results, list) and raw_results:
-                    normalized = []
-                    for item in raw_results:
-                        if not isinstance(item, dict):
-                            continue
-                        normalized.append({
-                            "test_name": item.get("test_name") or item.get("name") or item.get("nodeid") or "",
-                            "status": item.get("status") or item.get("outcome") or "",
-                            "duration": item.get("duration"),
-                            "error_message": (item.get("error_message") or item.get("error") or item.get("longrepr") or "")[:500],
-                            "file": item.get("file") or item.get("path") or "",
-                        })
-                    evidence["test_results"] = normalized
-                # Selected targets failed → mark for classifier
-                if not build_ok and test_targets and not test_targets.get("empty"):
+            evidence.update(build_evidence)
+            failures.extend(build_failures)
+            if not build_ok:
+                # Selected targets failed → mark for classifier.
+                if test_targets and not test_targets.get("empty"):
                     evidence["selected_test_failure"] = True
-                    if evidence.get("test_failure") or data.get("failed_tests"):
-                        evidence["test_failure"] = True
-                        evidence["failure_kind"] = "test"
-                if not build_ok:
-                    failures.append(f"build: {data.get('failures', ['build failed'])}")
-            else:
-                checks.append("build")
-                build_ok = False
-                failures.append(f"build: sms unavailable: {resp.error}")
-                evidence["build_evidence"] = {
-                    "exit_code": None,
-                    "stderr_excerpt": str(resp.error or "")[:500],
-                }
         except Exception as e:
-            checks.append("build")
             build_ok = False
             failures.append(f"build: {e}")
             evidence["build_evidence"] = {"stderr_excerpt": str(e)[:500]}

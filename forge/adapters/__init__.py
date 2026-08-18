@@ -1,4 +1,4 @@
-"""Capability adapters — protocol conversion only."""
-from forge.adapters.hub_client import HubClient, HubConfig, HubResponse
+"""Capability adapters — protocol conversion only.
 
-__all__ = ["HubClient", "HubConfig", "HubResponse"]
+All adapters run locally inside Forge; no external tool nodes.
+"""

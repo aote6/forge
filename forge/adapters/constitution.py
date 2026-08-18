@@ -1,7 +1,16 @@
-"""Constitution adapter — protocol in/out; Hub invokes lu rules."""
+"""Constitution adapter — local machine rules (no external rule engine).
+
+Rules enforced here (deterministic, no LLM):
+  - forge.runtime_operation_no_content_required: a pure create_object proposal
+    has no source content by design (P8) and passes without content.
+  - forge.content_required: any mutation proposal (modify / delete / mixed) with
+    no content / old_text / new_text fails closed.
+
+Structural checks (operation types, target_files, line ranges, old_text match)
+are PlanValidator's responsibility and run before CHECKING.
+"""
 from __future__ import annotations
 
-from forge.adapters.hub_client import HubClient
 from forge.protocols.models import (
     ChangeProposal,
     CheckStatus,
@@ -9,123 +18,55 @@ from forge.protocols.models import (
     ConstitutionViolation,
 )
 
+_RUNTIME_ONLY_RULE = "forge.runtime_operation_no_content_required"
+_CONTENT_REQUIRED_RULE = "forge.content_required"
 
-def check(proposal: ChangeProposal, project_root: str = ".", hub: HubClient | None = None) -> ConstitutionResult:
-    """Check ChangeProposal. Never accepts bare dict."""
+
+def _op_type(op: dict) -> str:
+    return op.get("type") or op.get("operation_type") or ""
+
+
+def check(proposal: ChangeProposal, project_root: str = ".") -> ConstitutionResult:
+    """Check ChangeProposal against local constitution rules."""
     if not isinstance(proposal, ChangeProposal):
         raise TypeError("constitution.check requires ChangeProposal, not bare dict")
 
-    # Runtime-only proposals (all create_object) have no source content by design.
-    # Mutation content_required must not apply to them.
+    # P8: runtime-only proposals (all create_object) carry no source content.
     if proposal.operations:
         all_runtime = all(
-            (op.get("type") or op.get("operation_type")) == "create_object"
-            for op in proposal.operations
+            _op_type(op) == "create_object" for op in proposal.operations
         )
         if all_runtime:
             return ConstitutionResult(
                 status=CheckStatus.PASS,
                 violations=[],
-                checked_rules=["forge.runtime_operation_no_content_required"],
+                checked_rules=[_RUNTIME_ONLY_RULE],
             )
 
-    # Content-less proposals cannot claim content-level PASS
-    has_content = False
-    for op in proposal.operations:
-        if op.get("content") or op.get("old_text") or op.get("new_text") or op.get("old") or op.get("new"):
-            has_content = True
-            break
-
+    # Content-less mutation proposals cannot claim content-level PASS.
+    has_content = any(
+        op.get("content")
+        or op.get("old_text")
+        or op.get("new_text")
+        or op.get("old")
+        or op.get("new")
+        for op in proposal.operations
+    )
     if not has_content:
         return ConstitutionResult(
             status=CheckStatus.FAIL,
             violations=[
                 ConstitutionViolation(
-                    rule_id="forge.content_required",
+                    rule_id=_CONTENT_REQUIRED_RULE,
                     message="ChangeProposal lacks content/old_text/new_text; constitution cannot PASS",
                 )
             ],
-            checked_rules=["forge.content_required"],
+            checked_rules=[_CONTENT_REQUIRED_RULE],
         )
 
-    client = hub or HubClient(project_root=project_root)
-    # create_file operations don't need lu content check (file doesn't exist yet)
-    op_type = proposal.operations[0].get("type", "") if proposal.operations else ""
-    if op_type == "create_file":
-        resp = client.invoke(
-            capability="lu",
-            action="check",
-            payload={"action": "check", "target": "", "old_text": "", "new_text": ""},
-        )
-    else:
-        # Build lu-compatible payload from proposal
-        lu_payload = {"action": "check"}
-        for op in proposal.operations:
-            if op.get("target_files"):
-                lu_payload["target"] = op["target_files"][0]
-            lu_payload["old_text"] = op.get("old_text") or ""
-            lu_payload["new_text"] = op.get("new_text") or op.get("content") or ""
-            break  # lu check handles one file at a time
-        resp = client.invoke(
-            capability="lu",
-            action="check",
-            payload=lu_payload,
-        )
-
-    if not resp.ok:
-        return ConstitutionResult(
-            status=CheckStatus.FAIL,
-            violations=[ConstitutionViolation(rule_id="hub.lu", message=resp.error)],
-            checked_rules=["hub.lu"],
-        )
-
-    data = resp.data.get("data", {}) if isinstance(resp.data, dict) else {}
-
-    # Case 1: old protocol format (has "passed")
-    if "passed" in data:
-        if data["passed"] is False or data["passed"] == False:
-            viols = [
-                ConstitutionViolation(rule_id="hub.lu", message=str(v))
-                for v in (data.get("violations") or [])
-            ]
-            return ConstitutionResult(
-                status=CheckStatus.FAIL,
-                violations=viols,
-                checked_rules=["hub.lu"],
-            )
-        return ConstitutionResult(
-            status=CheckStatus.PASS,
-            violations=[],
-            checked_rules=list(data.get("checked_rules") or ["hub.lu"]),
-        )
-
-    # Case 2: new protocol format (has "status")
-    if "status" in data:
-        status_raw = data["status"]
-        try:
-            status = CheckStatus(status_raw)
-        except ValueError:
-            status = CheckStatus.FAIL
-
-        viols = [
-            ConstitutionViolation(rule_id=v.get("rule_id", "?"), message=v.get("message", ""))
-            for v in (data.get("violations") or [])
-            if isinstance(v, dict)
-        ]
-        return ConstitutionResult(
-            status=status,
-            violations=viols,
-            checked_rules=list(data.get("checked_rules") or ["lu"]),
-        )
-
-    # Case 3: unrecognized response format — fail-closed
+    # Content present: local rules pass.
     return ConstitutionResult(
-        status=CheckStatus.FAIL,
-        violations=[
-            ConstitutionViolation(
-                rule_id="forge.unrecognized_response",
-                message="Received unrecognized Hub response format; constitution check cannot PASS",
-            )
-        ],
-        checked_rules=["forge.unrecognized_response"],
+        status=CheckStatus.PASS,
+        violations=[],
+        checked_rules=[_CONTENT_REQUIRED_RULE],
     )

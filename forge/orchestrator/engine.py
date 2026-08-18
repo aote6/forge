@@ -10,7 +10,6 @@ from typing import Optional
 
 from forge.adapters.constitution import check as constitution_check
 from forge.adapters.execution import ExecutionAdapter
-from forge.adapters.hub_client import HubClient
 from forge.adapters.repo import get_repo_context
 from forge.adapters.verification import verify as verification_verify
 from forge.memory.checkpoint import CheckpointStore
@@ -84,14 +83,12 @@ class EngineeringOrchestrator:
         world: WorldRuntime,
         projections: ProjectionManager,
         planner: Optional[Planner] = None,
-        hub: Optional[HubClient] = None,
         checkpoint_store: Optional[CheckpointStore] = None,
     ):
         self.project_root = project_root
         self.world = world
         self.projections = projections
         self.planner = planner
-        self.hub = hub or HubClient(project_root=project_root)
         self.store = checkpoint_store or CheckpointStore(project_root)
         self.execution = ExecutionAdapter(world, projections, project_root)
 
@@ -215,10 +212,8 @@ class EngineeringOrchestrator:
             idx = RepositoryIndex.build(self.project_root, snapshot=snap)
             self.checkpoint.extra["repository_index"] = idx.to_summary_dict()
             self._repository_index = idx
-            # Hub RepoContext remains supplementary understanding (may raise).
-            self.checkpoint.repo_context = get_repo_context(
-                self.project_root, hub=self.hub
-            )
+            # RepoContext is supplementary understanding from local facts.
+            self.checkpoint.repo_context = get_repo_context(self.project_root)
             self.phase = OrchestratorPhase.PLANNING
             self._persist()
             return
@@ -315,7 +310,7 @@ class EngineeringOrchestrator:
             proposals = plan_to_proposals(plan)
             self.checkpoint.change_proposals = proposals
             for p in proposals:
-                result = constitution_check(p, self.project_root, hub=self.hub)
+                result = constitution_check(p, self.project_root)
                 if result.status == CheckStatus.FAIL:
                     self.checkpoint.errors.append(
                         f"constitution: {[v.rule_id for v in result.violations]}"
@@ -498,7 +493,7 @@ class EngineeringOrchestrator:
             )
             self.checkpoint.extra["test_targets"] = test_targets
             vres = verification_verify(
-                req, self.project_root, hub=self.hub,
+                req, self.project_root,
                 receipt=last_receipt,
                 delta=last_delta,
                 execution_results=exec_results,
