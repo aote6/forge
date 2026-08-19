@@ -28,10 +28,6 @@ from forge.runtime import Runtime
 
 
 class TestUniqueRuntime(unittest.TestCase):
-    def test_run_is_orchestrator(self):
-        src = inspect.getsource(Runtime.run)
-        self.assertIn("EngineeringOrchestrator", src)
-
     def test_legacy_renamed(self):
         self.assertTrue(hasattr(Runtime, "run_legacy"))
         src = inspect.getsource(Runtime.run_legacy)

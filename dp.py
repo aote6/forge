@@ -47,10 +47,7 @@ def main():
                 break
             # 意图分流：只读查询走 run_legacy（LLM 自主工具调用），
             # 修改类任务走 run → EngineeringOrchestrator（六 Phase 闭环）
-            if is_engineering_task(user_input):
-                response = runtime.run(user_input)
-            else:
-                response = runtime.run_legacy(user_input)
+            response = runtime.run(user_input)
             if response:
                 print(f"\n🤖 {response}")
         except KeyboardInterrupt:
