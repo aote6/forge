@@ -2,8 +2,13 @@
 
 Mutations go IntentExecutor → Veritas commit → Projection.
 require_confirm=False so the agent loop is not blocked waiting for chat confirm.
+
+Auto-registration: first write to a disk path with no World object creates one
+(path@state0 + content@state1), updates ObjectPathMap, then applies the edit.
 """
 from __future__ import annotations
+
+from pathlib import Path as PathLib
 
 from forge.adapters.base import ToolResult
 from forge.intents.intent import Intent
@@ -22,12 +27,16 @@ def _format_projection_results(results) -> str:
     return "\n".join(lines)
 
 
+def _norm_path(path: str) -> str:
+    return path.replace("\\", "/").lstrip("./")
+
+
 def _resolve_oid(world, path: str, object_id: int | None) -> int | None:
     if object_id is not None:
         return int(object_id)
     if world is None:
         return None
-    path_n = path.replace("\\", "/").lstrip("./")
+    path_n = _norm_path(path)
     path_map = getattr(world, "_path_map", None)
     if path_map is not None and hasattr(path_map, "find_object_id"):
         oid = path_map.find_object_id(path_n)
@@ -40,13 +49,165 @@ def _resolve_oid(world, path: str, object_id: int | None) -> int | None:
         oid = world.find_object_id_for_path(path_n)
         if oid is not None:
             return int(oid)
+    if hasattr(world, "find_object_id"):
+        oid = world.find_object_id(path_n)
+        if oid is not None:
+            return int(oid)
     return None
+
+
+def _project_root(world) -> str:
+    return str(getattr(world, "project_root", None) or ".")
+
+
+def _read_disk(world, path: str) -> str | None:
+    fp = PathLib(_project_root(world)) / path
+    if not fp.is_file():
+        return None
+    try:
+        return fp.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _next_hint(paths: list[str] | None = None) -> str:
+    extra = ""
+    if paths:
+        extra = f"（涉及: {', '.join(paths[:5])}）"
+    return (
+        f"\nNEXT: 建议 run_test_structured() 或 git_diff() 验证本次修改{extra}"
+    )
+
+
+def _attach_next(result: ToolResult, paths: list[str] | None = None) -> ToolResult:
+    if result.success and result.display is not None:
+        if "NEXT:" not in result.display:
+            result.display = result.display.rstrip() + _next_hint(paths)
+    return result
 
 
 def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) -> dict:
     """Build semantic tool callables bound to IntentExecutor + ProjectionManager."""
 
     world = executor._world
+
+    def _sync_path_map(delta) -> None:
+        if world is None or delta is None:
+            return
+        if hasattr(world, "_update_path_map"):
+            try:
+                world._update_path_map(delta)
+                return
+            except Exception:
+                pass
+        path_map = getattr(world, "_path_map", None)
+        if path_map is not None and hasattr(path_map, "update_from_delta"):
+            path_map.update_from_delta(delta)
+
+    def _register_path(path: str, content: str) -> tuple[int, Receipt | None, TransactionDelta | None]:
+        """Ensure path has a World object. Returns (oid, receipt_or_None, delta_or_None).
+
+        If already mapped, returns (oid, None, None).
+        If newly created, returns (oid, receipt, delta) after commit+project.
+        """
+        path_n = _norm_path(path)
+        existing = _resolve_oid(world, path_n, None)
+        if existing is not None:
+            return existing, None, None
+
+        payload = content if content != "" else "\n"
+        intent = Intent.create_file(path=path_n, content=payload, require_confirm=False)
+        receipt, delta = executor.execute(intent)
+        results = projections.project(receipt, delta)
+        _sync_path_map(delta)
+
+        created = list(delta.objects_created) if delta.objects_created else []
+        oid = created[0] if created else intent.parameters.get("_created_object_id")
+        if oid is None:
+            raise RuntimeError("auto-register create_file produced no ObjectId")
+        oid = int(oid)
+        path_map = getattr(world, "_path_map", None)
+        if path_map is not None and hasattr(path_map, "set"):
+            path_map.set(oid, path_n)
+        return oid, receipt, delta
+
+    def _write_content_to_world(path: str, content: str, oid: int | None) -> ToolResult:
+        from forge.core.edit_contract import authoring_to_machine_ops
+
+        path_n = _norm_path(path)
+        registered_now = False
+
+        if oid is None:
+            # Auto-register: create World object for this path with target content
+            try:
+                oid, reg_receipt, reg_delta = _register_path(path_n, content)
+                registered_now = reg_receipt is not None
+                # Registration already wrote full content via create_file — done
+                if registered_now:
+                    proj = ""
+                    if reg_delta is not None:
+                        # projection already applied inside _register_path
+                        pass
+                    return ToolResult.ok(
+                        display=(
+                            f"RESULT: path={path_n} object_id={oid} "
+                            f"tx={reg_receipt.tx_id} version={reg_receipt.version} registered=true\n"
+                            f"Wrote file (auto-registered): {path_n}"
+                        ),
+                        payload={
+                            "path": path_n,
+                            "object_id": oid,
+                            "tx_id": reg_receipt.tx_id,
+                            "version": reg_receipt.version,
+                            "mutation": True,
+                            "registered": True,
+                            "requires_confirmation": False,
+                        },
+                    )
+            except Exception as e:
+                return ToolResult.fail(
+                    display=(
+                        f"auto-register failed for {path_n}: {e}\n"
+                        f"建议: 确认 veritasd 在线；path 合法。"
+                    )
+                )
+
+        # Existing object: full-file replace via modify
+        root = _project_root(world)
+        fp = PathLib(root) / path_n
+        old_lines = 1
+        if fp.is_file():
+            try:
+                old_lines = max(1, len(fp.read_text(encoding="utf-8", errors="replace").splitlines()))
+            except OSError:
+                old_lines = 1
+        machine_ops = authoring_to_machine_ops([{
+            "type": "replace",
+            "start_line": 1,
+            "end_line": old_lines,
+            "new_text": content,
+        }])
+        intent = Intent.modify_file(path=path_n, operations=machine_ops, require_confirm=False)
+        intent.parameters["object_id"] = int(oid)
+        receipt, delta = executor.execute(intent)
+        results = projections.project(receipt, delta)
+        _sync_path_map(delta)
+        proj = _format_projection_results(results)
+        return ToolResult.ok(
+            display=(
+                f"RESULT: path={path_n} object_id={oid} tx={receipt.tx_id} version={receipt.version}\n"
+                f"Wrote file: {path_n}\n{proj}"
+            ).rstrip(),
+            payload={
+                "path": path_n,
+                "object_id": int(oid),
+                "tx_id": receipt.tx_id,
+                "version": receipt.version,
+                "mutation": True,
+                "registered": registered_now,
+                "requires_confirmation": False,
+            },
+        )
 
     def create_object() -> ToolResult:
         try:
@@ -88,88 +249,97 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
 
     def create_file(path: str, content: str = "") -> ToolResult:
         try:
-            intent = Intent.create_file(path=path, content=content, require_confirm=False)
+            path_n = _norm_path(path)
+            payload = content if content != "" else "\n"
+            intent = Intent.create_file(path=path_n, content=payload, require_confirm=False)
             receipt, delta = executor.execute(intent)
             results = projections.project(receipt, delta)
+            _sync_path_map(delta)
             created = list(delta.objects_created) if delta.objects_created else []
             oid = created[0] if created else None
+            if oid is not None:
+                pm = getattr(world, "_path_map", None)
+                if pm is not None and hasattr(pm, "set"):
+                    pm.set(int(oid), path_n)
             proj = _format_projection_results(results)
             oid_part = f" object_id={oid}" if oid is not None else ""
-            return ToolResult.ok(
-                display=(
-                    f"RESULT: path={path}{oid_part} tx={receipt.tx_id} version={receipt.version}\n"
-                    f"Created file: {path}\n"
-                    f"{proj}"
-                ).rstrip(),
-                payload={
-                    "path": path,
-                    "object_id": int(oid) if oid is not None else None,
-                    "tx_id": receipt.tx_id,
-                    "version": receipt.version,
-                    "mutation": True,
-                    "requires_confirmation": False,
-                },
+            return _attach_next(
+                ToolResult.ok(
+                    display=(
+                        f"RESULT: path={path_n}{oid_part} tx={receipt.tx_id} version={receipt.version}\n"
+                        f"Created file: {path_n}\n{proj}"
+                    ).rstrip(),
+                    payload={
+                        "path": path_n,
+                        "object_id": int(oid) if oid is not None else None,
+                        "tx_id": receipt.tx_id,
+                        "version": receipt.version,
+                        "mutation": True,
+                        "requires_confirmation": False,
+                    },
+                ),
+                [path_n],
             )
         except Exception as e:
             return ToolResult.fail(
                 display=(
                     f"create_file failed: {e}\n"
-                    f"建议: 检查路径是否合法；若文件已存在，改用 modify_file。"
+                    f"建议: 检查路径是否合法；若文件已存在，改用 write_file / str_replace。"
                 )
             )
 
     def modify_file(path: str, operations: list, object_id: int | None = None) -> ToolResult:
-        """修改文件。object_id 可省略，将通过 path 自动解析。operations 可含多处修改。"""
         try:
             from forge.core.edit_contract import ensure_machine_ops
 
-            oid = _resolve_oid(world, path, object_id)
+            path_n = _norm_path(path)
+            oid = _resolve_oid(world, path_n, object_id)
             if oid is None:
-                return ToolResult.fail(
-                    display=(
-                        f"modify_file failed: 无法解析 path={path} 的 ObjectId\n"
-                        f"可能原因: 文件未进入 World。\n"
-                        f"建议: resolve_path_object('{path}') 或先 create_file。"
+                disk = _read_disk(world, path_n)
+                if disk is None and object_id is None:
+                    return ToolResult.fail(
+                        display=(
+                            f"modify_file failed: 无法解析 path={path_n} 且磁盘无此文件\n"
+                            f"建议: write_file 创建，或检查路径。"
+                        )
                     )
-                )
+                oid, _, _ = _register_path(path_n, disk if disk is not None else "\n")
+
             machine_ops = ensure_machine_ops(operations)
-            intent = Intent.modify_file(path=path, operations=machine_ops, require_confirm=False)
+            intent = Intent.modify_file(path=path_n, operations=machine_ops, require_confirm=False)
             intent.parameters["object_id"] = oid
             receipt, delta = executor.execute(intent)
             results = projections.project(receipt, delta)
+            _sync_path_map(delta)
             proj = _format_projection_results(results)
-            return ToolResult.ok(
-                display=(
-                    f"RESULT: path={path} object_id={oid} tx={receipt.tx_id} version={receipt.version} "
-                    f"ops={len(machine_ops)}\n"
-                    f"Modified file: {path}\n"
-                    f"{proj}"
-                ).rstrip(),
-                payload={
-                    "path": path,
-                    "object_id": oid,
-                    "tx_id": receipt.tx_id,
-                    "version": receipt.version,
-                    "ops": len(machine_ops),
-                    "mutation": True,
-                    "requires_confirmation": False,
-                },
+            return _attach_next(
+                ToolResult.ok(
+                    display=(
+                        f"RESULT: path={path_n} object_id={oid} tx={receipt.tx_id} "
+                        f"version={receipt.version} ops={len(machine_ops)}\n"
+                        f"Modified file: {path_n}\n{proj}"
+                    ).rstrip(),
+                    payload={
+                        "path": path_n,
+                        "object_id": oid,
+                        "tx_id": receipt.tx_id,
+                        "version": receipt.version,
+                        "ops": len(machine_ops),
+                        "mutation": True,
+                        "requires_confirmation": False,
+                    },
+                ),
+                [path_n],
             )
         except Exception as e:
             return ToolResult.fail(
                 display=(
                     f"modify_file failed: {e}\n"
-                    f"建议: 确认 operations 为 machine 格式 "
-                    f"(start_line/end_line 0-based half-open + new_lines)，"
-                    f"或用 preview_line_mutation 先预览。"
+                    f"建议: 优先 str_replace；或确认 operations 格式。"
                 )
             )
 
     def edit_files_batch(edits: list) -> ToolResult:
-        """批量修改多个文件，在同一 Veritas 事务中提交。
-
-        edits: [{path, operations, object_id?}, ...]
-        """
         if not edits or not isinstance(edits, list):
             return ToolResult.fail(
                 display="edit_files_batch failed: edits 必须是非空列表\n建议: 传入 [{path, operations}, ...]"
@@ -188,67 +358,76 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     return ToolResult.fail(
                         display=f"edit_files_batch: edits[{i}] 需要 path 与 operations"
                     )
-                oid = _resolve_oid(world, path, item.get("object_id"))
+                path_n = _norm_path(path)
+                oid = _resolve_oid(world, path_n, item.get("object_id"))
                 if oid is None:
-                    return ToolResult.fail(
-                        display=(
-                            f"edit_files_batch: 无法解析 path={path}\n"
-                            f"建议: resolve_path_object 或先 create_file。"
+                    disk = _read_disk(world, path_n)
+                    if disk is None:
+                        return ToolResult.fail(
+                            display=(
+                                f"edit_files_batch: 无法解析 path={path_n}\n"
+                                f"建议: 文件须已存在于磁盘，或先 write_file。"
+                            )
                         )
-                    )
+                    oid, _, _ = _register_path(path_n, disk)
                 machine_ops = ensure_machine_ops(operations)
                 intent = Intent.modify_file(
-                    path=path, operations=machine_ops, require_confirm=False
+                    path=path_n, operations=machine_ops, require_confirm=False
                 )
                 intent.parameters["object_id"] = oid
                 intents.append(intent)
-                resolved.append({"path": path, "object_id": oid, "ops": len(machine_ops)})
+                resolved.append({"path": path_n, "object_id": oid, "ops": len(machine_ops)})
 
             receipt, delta = executor.execute_batch(intents)
             results = projections.project(receipt, delta)
+            _sync_path_map(delta)
             proj = _format_projection_results(results)
             summary = ", ".join(f"{r['path']}#{r['object_id']}" for r in resolved)
-            return ToolResult.ok(
-                display=(
-                    f"RESULT: batch={len(resolved)} tx={receipt.tx_id} version={receipt.version}\n"
-                    f"Edited: {summary}\n"
-                    f"{proj}"
-                ).rstrip(),
-                payload={
-                    "tx_id": receipt.tx_id,
-                    "version": receipt.version,
-                    "edits": resolved,
-                    "mutation": True,
-                    "requires_confirmation": False,
-                },
+            return _attach_next(
+                ToolResult.ok(
+                    display=(
+                        f"RESULT: batch={len(resolved)} tx={receipt.tx_id} version={receipt.version}\n"
+                        f"Edited: {summary}\n{proj}"
+                    ).rstrip(),
+                    payload={
+                        "tx_id": receipt.tx_id,
+                        "version": receipt.version,
+                        "edits": resolved,
+                        "mutation": True,
+                        "requires_confirmation": False,
+                    },
+                ),
+                [r["path"] for r in resolved],
             )
         except Exception as e:
             return ToolResult.fail(
                 display=(
                     f"edit_files_batch failed: {e}\n"
-                    f"建议: 拆成多次 modify_file；确认每个 path 已有 ObjectId。"
+                    f"建议: 拆成多次 str_replace / modify_file。"
                 )
             )
 
     def delete_file(object_id: int | None = None, path: str = "") -> ToolResult:
         try:
+            path_n = _norm_path(path) if path else ""
             oid = object_id
-            if oid is None and path:
-                oid = _resolve_oid(world, path, None)
+            if oid is None and path_n:
+                oid = _resolve_oid(world, path_n, None)
             if oid is None:
                 return ToolResult.fail(
                     display=(
                         "delete_file failed: 需要 object_id 或可解析的 path\n"
-                        "建议: resolve_path_object(path) 获取 ID。"
+                        "建议: resolve_path_object(path)。"
                     )
                 )
-            intent = Intent.delete_file(path=path or "", require_confirm=False)
+            intent = Intent.delete_file(path=path_n or "", require_confirm=False)
             intent.parameters["object_id"] = int(oid)
             receipt, delta = executor.execute(intent)
             results = projections.project(receipt, delta)
+            _sync_path_map(delta)
             return ToolResult.ok(
                 display=(
-                    f"RESULT: object_id={oid} path={path} tx={receipt.tx_id} version={receipt.version}\n"
+                    f"RESULT: object_id={oid} path={path_n} tx={receipt.tx_id} version={receipt.version}\n"
                     f"Deleted object {oid}\n"
                     f"{_format_projection_results(results)}"
                 ).rstrip(),
@@ -256,7 +435,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     "tx_id": receipt.tx_id,
                     "version": receipt.version,
                     "object_id": int(oid),
-                    "path": path,
+                    "path": path_n,
                     "mutation": True,
                     "requires_confirmation": False,
                 },
@@ -294,7 +473,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 display=(
                     f"link_objects failed: {e}\n"
                     f"可能原因: from_id/to_id 不存在或类型非法。\n"
-                    f"建议: list_world_objects 查看有效 ID；link_type ∈ owns|depends_on|references。"
+                    f"建议: list_world_objects 查看有效 ID。"
                 )
             )
 
@@ -319,115 +498,36 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
         except Exception as e:
             return ToolResult.fail(display=f"unlink_objects failed: {e}")
 
-
-    def _full_file_ops(content: str) -> list:
-        """Single machine op that replaces entire file content."""
-        from forge.core.edit_contract import authoring_to_machine_ops
-        # authoring: 1-based inclusive end for "all lines" — use large end or compute
-        lines = content.splitlines(keepends=True)
-        if content and not content.endswith("\n") and lines:
-            # preserve no final newline semantics via new_text
-            pass
-        return authoring_to_machine_ops([{
-            "type": "replace",
-            "start_line": 1,
-            "end_line": max(1, len(content.splitlines()) or 1),
-            "new_text": content,
-        }])
-
-    def _write_content_to_world(path: str, content: str, oid: int | None) -> ToolResult:
-        from forge.core.edit_contract import authoring_to_machine_ops
-        if oid is None:
-            # create_file validator rejects empty string content
-            payload_content = content if content != "" else "\n"
-            intent = Intent.create_file(path=path, content=payload_content, require_confirm=False)
-            receipt, delta = executor.execute(intent)
-            results = projections.project(receipt, delta)
-            created = list(delta.objects_created) if delta.objects_created else []
-            new_oid = created[0] if created else None
-            return ToolResult.ok(
-                display=(
-                    f"RESULT: path={path} object_id={new_oid} tx={receipt.tx_id} version={receipt.version}\n"
-                    f"Wrote file (create): {path}"
-                ),
-                payload={
-                    "path": path,
-                    "object_id": int(new_oid) if new_oid is not None else None,
-                    "tx_id": receipt.tx_id,
-                    "version": receipt.version,
-                    "mutation": True,
-                    "requires_confirmation": False,
-                },
-            )
-        # Full-file replace via one authoring op spanning whole file
-        # end_line: existing file line count; new_text is full content
-        root = getattr(world, "project_root", None) or "."
-        from pathlib import Path as P
-        fp = P(root) / path
-        old_lines = 1
-        if fp.is_file():
-            try:
-                old_lines = max(1, len(fp.read_text(encoding="utf-8", errors="replace").splitlines()))
-            except OSError:
-                old_lines = 1
-        machine_ops = authoring_to_machine_ops([{
-            "type": "replace",
-            "start_line": 1,
-            "end_line": old_lines,
-            "new_text": content,
-        }])
-        intent = Intent.modify_file(path=path, operations=machine_ops, require_confirm=False)
-        intent.parameters["object_id"] = int(oid)
-        receipt, delta = executor.execute(intent)
-        results = projections.project(receipt, delta)
-        proj = _format_projection_results(results)
-        return ToolResult.ok(
-            display=(
-                f"RESULT: path={path} object_id={oid} tx={receipt.tx_id} version={receipt.version}\n"
-                f"Wrote file: {path}\n{proj}"
-            ).rstrip(),
-            payload={
-                "path": path,
-                "object_id": int(oid),
-                "tx_id": receipt.tx_id,
-                "version": receipt.version,
-                "mutation": True,
-                "requires_confirmation": False,
-            },
-        )
-
     def str_replace(
         path: str,
         old_string: str,
         new_string: str,
         replace_all: bool = False,
     ) -> ToolResult:
-        """Exact string replace — primary edit tool (Claude Code Edit style)."""
+        """Exact string replace with auto-registration for disk-only files."""
         try:
-            from pathlib import Path as P
-            root = getattr(world, "project_root", None) or "."
-            fp = P(root) / path
-            if not fp.is_file():
+            path_n = _norm_path(path)
+            text = _read_disk(world, path_n)
+            if text is None:
                 return ToolResult.fail(
                     display=(
-                        f"str_replace failed: 文件不存在 {path}\n"
-                        f"建议: 用 write_file 创建，或 glob_files / search_code 确认路径。"
+                        f"str_replace failed: 文件不存在 {path_n}\n"
+                        f"建议: write_file 创建，或 glob_files / search_code 确认路径。"
                     )
                 )
-            text = fp.read_text(encoding="utf-8", errors="replace")
             n = text.count(old_string)
             if n == 0:
                 return ToolResult.fail(
                     display=(
-                        f"str_replace failed: old_string 在 {path} 中未找到\n"
-                        f"建议: read_file / read_function 核对原文（须完全一致，含空白）。"
+                        f"str_replace failed: old_string 在 {path_n} 中未找到\n"
+                        f"建议: read_file / read_function 核对原文（须完全一致）。"
                     )
                 )
             if n > 1 and not replace_all:
                 return ToolResult.fail(
                     display=(
                         f"str_replace failed: old_string 出现 {n} 次，拒绝歧义替换\n"
-                        f"建议: 扩大 old_string 上下文使其唯一，或设 replace_all=true。"
+                        f"建议: 扩大 old_string 上下文，或 replace_all=true。"
                     )
                 )
             new_text = (
@@ -435,49 +535,141 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 if replace_all
                 else text.replace(old_string, new_string, 1)
             )
-            oid = _resolve_oid(world, path, None)
-            result = _write_content_to_world(path, new_text, oid)
+            oid = _resolve_oid(world, path_n, None)
+            result = _write_content_to_world(path_n, new_text, oid)
             if result.success:
+                reps = n if replace_all else 1
+                reg = result.payload.get("registered")
                 result.display = (
-                    f"RESULT: path={path} replacements={n if replace_all else 1} "
+                    f"RESULT: path={path_n} replacements={reps} "
                     f"object_id={result.payload.get('object_id')} "
-                    f"tx={result.payload.get('tx_id')} version={result.payload.get('version')}\n"
-                    f"str_replace ok: {path}"
+                    f"tx={result.payload.get('tx_id')} version={result.payload.get('version')}"
+                    f"{' registered=true' if reg else ''}\n"
+                    f"str_replace ok: {path_n}"
                 )
+                result = _attach_next(result, [path_n])
             return result
         except Exception as e:
             return ToolResult.fail(
-                display=f"str_replace failed: {e}\n建议: read_file 后重试；检查 path 与权限。"
+                display=f"str_replace failed: {e}\n建议: read_file 后重试；检查 path。"
             )
 
     def write_file(path: str, content: str = "") -> ToolResult:
-        """Create or overwrite entire file content."""
+        """Create or overwrite entire file; auto-registers disk paths into World."""
         try:
-            oid = _resolve_oid(world, path, None)
-            from pathlib import Path as P
-            root = getattr(world, "project_root", None) or "."
-            exists = (P(root) / path).is_file()
-            if oid is None and exists:
-                # on disk but not in world — create_file may fail if projection expects new
-                # still try create; if fails, surface error
-                pass
-            result = _write_content_to_world(path, content if content is not None else "", oid)
+            path_n = _norm_path(path)
+            oid = _resolve_oid(world, path_n, None)
+            result = _write_content_to_world(
+                path_n, content if content is not None else "", oid
+            )
             if result.success:
-                mode = "overwrite" if oid is not None else "create"
+                mode = "overwrite" if oid is not None else "create_or_register"
                 result.display = (
-                    f"RESULT: path={path} mode={mode} object_id={result.payload.get('object_id')} "
+                    f"RESULT: path={path_n} mode={mode} object_id={result.payload.get('object_id')} "
                     f"tx={result.payload.get('tx_id')} version={result.payload.get('version')}\n"
-                    f"write_file ok: {path}"
+                    f"write_file ok: {path_n}"
                 )
+                result = _attach_next(result, [path_n])
             return result
         except Exception as e:
             return ToolResult.fail(
                 display=(
                     f"write_file failed: {e}\n"
-                    f"建议: 检查路径；若对象状态异常，resolve_path_object 后重试。"
+                    f"建议: 检查路径；确认 veritasd 在线。"
                 )
             )
 
+    def apply_patch(patch: str) -> ToolResult:
+        """Apply a unified diff in one Veritas transaction (multi-file)."""
+        try:
+            from forge.tools.patch_utils import apply_unified_patch_to_files
+
+            root = _project_root(world)
+            plan = apply_unified_patch_to_files(root, patch)
+            if plan.get("error"):
+                return ToolResult.fail(
+                    display=(
+                        f"apply_patch failed: {plan['error']}\n"
+                        f"建议: 检查 unified diff 格式（--- / +++ / @@）。"
+                    )
+                )
+            results_meta = []
+            # Apply each file via _write_content_to_world sequentially but we want one tx
+            # Prefer batch: register all, then execute_batch of modify intents
+            from forge.core.edit_contract import authoring_to_machine_ops
+
+            intents = []
+            paths_out = []
+            for item in plan["files"]:
+                path_n = _norm_path(item["path"])
+                new_content = item["new_content"]
+                oid = _resolve_oid(world, path_n, None)
+                if oid is None:
+                    # register with NEW content in one create (covers new + existing disk)
+                    oid, reg_receipt, _ = _register_path(path_n, new_content)
+                    results_meta.append({
+                        "path": path_n,
+                        "object_id": oid,
+                        "mode": "register",
+                        "tx_id": getattr(reg_receipt, "tx_id", None),
+                    })
+                    paths_out.append(path_n)
+                    continue
+                fp = PathLib(root) / path_n
+                old_lines = 1
+                if fp.is_file():
+                    try:
+                        old_lines = max(
+                            1,
+                            len(fp.read_text(encoding="utf-8", errors="replace").splitlines()),
+                        )
+                    except OSError:
+                        old_lines = 1
+                machine_ops = authoring_to_machine_ops([{
+                    "type": "replace",
+                    "start_line": 1,
+                    "end_line": old_lines,
+                    "new_text": new_content,
+                }])
+                intent = Intent.modify_file(
+                    path=path_n, operations=machine_ops, require_confirm=False
+                )
+                intent.parameters["object_id"] = oid
+                intents.append(intent)
+                results_meta.append({"path": path_n, "object_id": oid, "mode": "modify"})
+                paths_out.append(path_n)
+
+            if intents:
+                receipt, delta = executor.execute_batch(intents)
+                projections.project(receipt, delta)
+                _sync_path_map(delta)
+                tx_id, version = receipt.tx_id, receipt.version
+            else:
+                # all were register-only creates
+                tx_id = results_meta[-1].get("tx_id") if results_meta else None
+                version = None
+
+            summary = ", ".join(f"{m['path']}" for m in results_meta)
+            return _attach_next(
+                ToolResult.ok(
+                    display=(
+                        f"RESULT: apply_patch files={len(results_meta)} tx={tx_id} version={version}\n"
+                        f"Patched: {summary}"
+                    ),
+                    payload={
+                        "tx_id": tx_id,
+                        "version": version,
+                        "files": results_meta,
+                        "mutation": True,
+                        "requires_confirmation": False,
+                    },
+                ),
+                paths_out,
+            )
+        except Exception as e:
+            return ToolResult.fail(
+                display=f"apply_patch failed: {e}\n建议: 校验 diff；或改用 str_replace。"
+            )
 
     return {
         "str_replace": str_replace,
@@ -486,6 +678,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
         "create_file": create_file,
         "modify_file": modify_file,
         "edit_files_batch": edit_files_batch,
+        "apply_patch": apply_patch,
         "delete_file": delete_file,
         "link_objects": link_objects,
         "unlink_objects": unlink_objects,

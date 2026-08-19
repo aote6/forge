@@ -1142,6 +1142,124 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             return ToolResult.fail(display=f"glob_files failed: {e}")
 
 
+
+    # Per-Runtime todo list (make_local_tools closure)
+    _todo_items: list = []
+
+    def todo_write(items: list) -> ToolResult:
+        """Replace or update in-memory task list for the current agent session."""
+        nonlocal _todo_items
+        try:
+            if not isinstance(items, list):
+                return ToolResult.fail(display="todo_write: items 必须是列表 [{id?, content, status}]")
+            allowed = {"pending", "in_progress", "done", "completed", "cancelled"}
+            normalized = []
+            for i, it in enumerate(items):
+                if not isinstance(it, dict):
+                    return ToolResult.fail(display=f"todo_write: items[{i}] 必须是 dict")
+                content = it.get("content") or it.get("title") or ""
+                if not content:
+                    return ToolResult.fail(display=f"todo_write: items[{i}] 需要 content")
+                status = (it.get("status") or "pending").lower()
+                if status == "completed":
+                    status = "done"
+                if status not in allowed:
+                    return ToolResult.fail(
+                        display=f"todo_write: status 必须是 pending|in_progress|done，收到 {status}"
+                    )
+                tid = it.get("id") or str(i + 1)
+                normalized.append({"id": str(tid), "content": str(content), "status": status})
+            _todo_items = normalized
+            lines = ["RESULT: todo updated"]
+            for it in _todo_items:
+                mark = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]", "cancelled": "[-]"}.get(
+                    it["status"], "[ ]"
+                )
+                lines.append(f"  {mark} {it['id']}. {it['content']} ({it['status']})")
+            return ToolResult.ok(
+                display="\n".join(lines),
+                payload={"todos": list(_todo_items)},
+            )
+        except Exception as e:
+            return ToolResult.fail(display=f"todo_write failed: {e}")
+
+    def todo_list() -> ToolResult:
+        """Show current in-memory todos."""
+        if not _todo_items:
+            return ToolResult.ok(display="RESULT: todo empty\n(无任务)", payload={"todos": []})
+        lines = ["RESULT: todo list"]
+        for it in _todo_items:
+            mark = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]", "cancelled": "[-]"}.get(
+                it["status"], "[ ]"
+            )
+            lines.append(f"  {mark} {it['id']}. {it['content']} ({it['status']})")
+        return ToolResult.ok(display="\n".join(lines), payload={"todos": list(_todo_items)})
+
+    def web_fetch(url: str, max_chars: int = 5000) -> ToolResult:
+        """Fetch http(s) URL text (no JS). urllib only."""
+        import re
+        import urllib.error
+        import urllib.request
+        from html.parser import HTMLParser
+
+        class _TextExtractor(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.parts: list[str] = []
+                self._skip = 0
+
+            def handle_starttag(self, tag, attrs):
+                if tag in ("script", "style", "noscript"):
+                    self._skip += 1
+
+            def handle_endtag(self, tag):
+                if tag in ("script", "style", "noscript") and self._skip:
+                    self._skip -= 1
+
+            def handle_data(self, data):
+                if self._skip:
+                    return
+                t = data.strip()
+                if t:
+                    self.parts.append(t)
+
+        try:
+            u = (url or "").strip()
+            if not (u.startswith("http://") or u.startswith("https://")):
+                return ToolResult.fail(display="web_fetch: 仅支持 http/https URL")
+            req = urllib.request.Request(
+                u,
+                headers={"User-Agent": "ForgeAgent/1.0"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read(max(1000, int(max_chars) * 4))
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+            try:
+                text = raw.decode("utf-8", errors="replace")
+            except Exception:
+                text = raw.decode("latin-1", errors="replace")
+            if "html" in ctype or text.lstrip().lower().startswith("<!doctype") or "<html" in text[:200].lower():
+                parser = _TextExtractor()
+                try:
+                    parser.feed(text)
+                    text = "\n".join(parser.parts)
+                except Exception:
+                    text = re.sub(r"<[^>]+>", " ", text)
+            text = re.sub(r"\n{3,}", "\n\n", text).strip()
+            truncated = text[: int(max_chars)]
+            if len(text) > int(max_chars):
+                truncated += "\n...(truncated)"
+            return ToolResult.ok(
+                display=f"RESULT: url={u} chars={len(truncated)}\n{truncated}",
+                payload={"url": u, "chars": len(truncated), "text": truncated},
+            )
+        except urllib.error.HTTPError as e:
+            return ToolResult.fail(display=f"web_fetch HTTP {e.code}: {url}\n建议: 检查 URL 或稍后重试。")
+        except Exception as e:
+            return ToolResult.fail(display=f"web_fetch failed: {e}\n建议: 确认网络与 URL。")
+
+
     return {
         "read_file_with_lines": read_file_with_lines,
         "preview_line_mutation": preview_line_mutation,
@@ -1164,6 +1282,9 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         "inspect_last_intent": inspect_last_intent,
         "list_files": list_files,
         "glob_files": glob_files,
+        "todo_write": todo_write,
+        "todo_list": todo_list,
+        "web_fetch": web_fetch,
         "read_file": read_file,
         "read_function": read_function,
         "search_code": search_code,

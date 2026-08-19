@@ -1,17 +1,13 @@
 # Forge 状态
 
+## 产品体验闭环（本轮）
+
+1. **自动登记**：str_replace/write_file/modify 对磁盘已有文件无 ObjectId 时，自动 create_file 登记并更新 ObjectPathMap
+2. **TodoWrite**：内存任务列表，复杂任务先拆步
+3. **apply_patch**：unified diff → 单事务多文件
+4. **NEXT 提示**：写成功后的 display 附带建议 run_test / git_diff
+5. **web_fetch**：urllib 抓取 http(s) 文本
+
 ## 生产路径
 
-Runtime.run → 工具循环（MAX 40 步）→ IntentExecutor → Veritas → Projection
-
-## 工具质量收敛（本轮）
-
-- LLM schema 从 ~40 压到 ~25；实现层仍注册旧工具以兼容测试
-- 新增首选编辑：`str_replace`（精确串替换）、`write_file`（整文件）
-- 新增 `glob_files`
-- system_prompt 改为「str_replace 优先」决策树
-- 步数上限 20 → 40
-
-## 仍保留的差异化
-
-Veritas 事务 / Receipt / World 对象链接 — 编辑对外像 Code，对内仍走事务。
+Runtime → 工具循环 → IntentExecutor → Veritas → Projection（不变）

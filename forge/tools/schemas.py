@@ -167,13 +167,44 @@ READ_ONLY_TOOL_DECLARATIONS = [
     },
     {
         "name": "resolve_path_object",
-        "description": "路径 → ObjectId。通常不必手动调用（str_replace/write_file 会自动解析）。",
+        "description": "路径 → ObjectId。通常不必手动调用（str_replace/write_file 会自动解析与登记）。",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
             },
             "required": ["path"],
+        },
+    },
+    {
+        "name": "todo_write",
+        "description": "写入/更新当前任务的待办列表。复杂任务（>3 步）应先拆解。items: [{id?, content, status}] status=pending|in_progress|done。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "description": "[{id?, content, status}]",
+                },
+            },
+            "required": ["items"],
+        },
+    },
+    {
+        "name": "todo_list",
+        "description": "查看当前内存中的待办列表。",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "web_fetch",
+        "description": "抓取 http(s) URL 的文本内容（无 JS，超时 10s，默认截断 5000 字）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "max_chars": {"type": "integer", "description": "默认 5000"},
+            },
+            "required": ["url"],
         },
     },
 ]
@@ -255,6 +286,20 @@ MUTATION_TOOL_DECLARATIONS = [
                 "edits": {"type": "array"},
             },
             "required": ["edits"],
+        },
+    },
+    {
+        "name": "apply_patch",
+        "description": (
+            "应用 unified diff（git diff 格式）到一个或多个文件，单事务提交。"
+            "支持 --- a/path +++ b/path @@ 块。多文件重构优先本工具。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "patch": {"type": "string", "description": "完整 unified diff 文本"},
+            },
+            "required": ["patch"],
         },
     },
     {
