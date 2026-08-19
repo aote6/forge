@@ -117,6 +117,17 @@ def main():
             user_input = input("\n💬 > ")
             if not user_input.strip():
                 continue
+            cmd = user_input.strip().lower()
+            if cmd in ("last", "copy", "clip"):
+                disp = getattr(runtime, "_last_tool_display", None) or "(no tool output yet)"
+                name = getattr(runtime, "_last_tool_name", "")
+                print(f"\n📋 last tool={name}\n{disp}")
+                continue
+            if cmd in ("changes",):
+                tools = runtime.executor.tools
+                if "session_changes" in tools:
+                    print("\n" + tools["session_changes"]().display)
+                continue
             if user_input.strip().lower() in ("exit", "quit", "q"):
                 try:
                     runtime.save_session_summary()

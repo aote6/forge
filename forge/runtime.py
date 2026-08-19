@@ -149,8 +149,23 @@ class ToolExecutor:
         self.call_history: dict[str, list[str]] = {}
 
     def _args_signature(self, tool_name: str, arguments: dict) -> str:
+        """Signature for retry circuit-breaker.
+
+        str_replace: tool+path+hash(old_string) so changing old_string is a fresh attempt.
+        Other tools: full args JSON.
+        """
+        args = arguments or {}
+        if tool_name == "str_replace":
+            import hashlib
+            path = str(args.get("path") or "")
+            old = str(args.get("old_string") or "")
+            h = hashlib.sha1(old.encode("utf-8", errors="replace")).hexdigest()[:12]
+            return f"str_replace:{path}:{h}"
+        if tool_name in ("write_file", "modify_file"):
+            path = str(args.get("path") or "")
+            return f"{tool_name}:{path}"
         return tool_name + ":" + json.dumps(
-            arguments, sort_keys=True, ensure_ascii=False, default=str
+            args, sort_keys=True, ensure_ascii=False, default=str
         )
 
     def reset(self):
@@ -383,6 +398,9 @@ class Runtime:
             for tc in resp.tool_calls:
                 result = self.executor.execute(tc)
                 tool_calls_n += 1
+                self._last_tool_display = result.display or ""
+                self._last_tool_name = tc.name
+
                 messages.append(ForgeMessage(
                     role="tool",
                     content=result.display,

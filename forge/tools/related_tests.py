@@ -118,3 +118,20 @@ def format_related_hint(project_root: str, path: str, symbol_hint: str | None = 
             f"HINT: run_test_structured(target={target!r}) 优先于全量"
         )
     return base + "\n" + coverage_hint(project_root, path, symbol_hint)
+
+
+def symbols_from_edit(old: str, new: str, max_n: int = 5) -> list[str]:
+    """Extract likely def/class names touched by an edit (for coverage_hint)."""
+    import re
+    names: list[str] = []
+    for blob in (old or "", new or ""):
+        for m in re.finditer(r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)", blob, re.M):
+            names.append(m.group(1))
+        for m in re.finditer(r"^\s*class\s+([A-Za-z_]\w*)", blob, re.M):
+            names.append(m.group(1))
+    # prefer names that appear in only one side or near changed lines
+    seen = []
+    for n in names:
+        if n not in seen:
+            seen.append(n)
+    return seen[:max_n]

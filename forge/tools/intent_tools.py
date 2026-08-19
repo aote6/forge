@@ -18,7 +18,7 @@ from forge.world.types import Receipt, TransactionDelta
 from forge.tools.display import format_block, snippet_around
 from forge.tools.tx_shadow import record_tx, undo_last as shadow_undo_last
 from forge.tools.project_memory import update_memory
-from forge.tools.related_tests import format_related_hint
+from forge.tools.related_tests import format_related_hint, symbols_from_edit
 from forge.tools.near_miss import find_near_misses
 from forge.tools.errors import decorate_fail_message
 from forge.tools.read_cache import invalidate as cache_invalidate
@@ -26,15 +26,22 @@ from forge.tools.session_changes import record as record_session_change
 
 
 def _format_projection_results(results) -> str:
+    """Summarize projections with explicit world/disk status."""
     if not results:
-        return ""
+        return "world=ok disk=unknown (no projection results)"
     lines = []
+    all_ok = True
+    disk_ok = True
     for r in results:
         mark = "ok" if r.success else "FAIL"
+        if not r.success:
+            all_ok = False
+            if "file" in str(getattr(r, "name", "")).lower():
+                disk_ok = False
         lines.append(f"  projection[{r.name}]: {mark} {r.reason}")
-    return "\n".join(lines)
-
-
+    world = "ok"
+    disk = "ok" if all_ok else ("FAIL" if not disk_ok else "partial")
+    return f"world={world} disk={disk}\n" + "\n".join(lines)
 def _norm_path(path: str) -> str:
     return path.replace("\\", "/").lstrip("./")
 
@@ -142,7 +149,10 @@ def _attach_diff(result: ToolResult, path: str, old: str, new: str, tool: str = 
     related = ""
     if root and path:
         try:
-            related = format_related_hint(str(root), path)
+            syms = list(pl.get("_edit_symbols") or [])
+            related = format_related_hint(
+                str(root), path, symbol_hint=(syms[0] if syms else None)
+            )
         except Exception:
             related = ""
     if related:
@@ -657,6 +667,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 if result.payload is not None:
                     result.payload["_project_root"] = _project_root(world)
                     result.payload["replacements"] = (n if replace_all else 1)
+                if result.payload is not None:
+                    result.payload["_edit_symbols"] = symbols_from_edit(text, new_text)
                 result = _attach_diff(result, path_n, text, new_text, tool="str_replace")
                 try:
                     record_session_change(
@@ -704,6 +716,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                         pass
                 if result.payload is not None:
                     result.payload["_project_root"] = _project_root(world)
+                if result.payload is not None:
+                    result.payload["_edit_symbols"] = symbols_from_edit(old_content, new_content)
                 result = _attach_diff(result, path_n, old_content, new_content, tool="write_file")
                 try:
                     record_session_change(
@@ -831,7 +845,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
 
 
     def undo_last_tx() -> ToolResult:
-        """Undo last recorded mutation via file shadow (MVP)."""
+        """Undo last mutation via file shadow; invalidate caches."""
         try:
             root = _project_root(world)
             info = shadow_undo_last(root)
@@ -844,6 +858,25 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                         hint="没有可撤销的事务；先成功 str_replace/write_file 一次。",
                     )
                 )
+            for path in info.get("paths") or []:
+                try:
+                    cache_invalidate(root, path)
+                except Exception:
+                    pass
+            try:
+                record_session_change(
+                    ",".join(info.get("paths") or []) or "(undo)",
+                    tool="undo_last_tx",
+                    tx_id=info.get("undone_tx"),
+                    summary="shadow revert",
+                    project_root=root,
+                )
+            except Exception:
+                pass
+            body = (
+                "已从 shadow 恢复磁盘文件。\n"
+                "说明: mode=file_shadow_revert；World 账本可能仍较新，以磁盘 read 为准。"
+            )
             return ToolResult.ok(
                 display=format_block(
                     "undo_last_tx",
@@ -853,8 +886,10 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                         "restored_version": info.get("restored_version"),
                         "paths": ",".join(info.get("paths") or []),
                         "mode": info.get("mode"),
+                        "world": "may_lag",
+                        "disk": "restored",
                     },
-                    body="已从 shadow 恢复文件内容。",
+                    body,
                     hint="可继续编辑或 run_test_structured",
                     clip={"undo_tx": info.get("undone_tx"), "paths": ",".join(info.get("paths") or [])},
                 ),
@@ -864,6 +899,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             return ToolResult.fail(
                 display=format_block("undo_last_tx", "FAIL", {"reason": str(e)})
             )
+
 
     return {
         "undo_last_tx": undo_last_tx,

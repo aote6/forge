@@ -1,14 +1,11 @@
 # Forge 状态
 
-## 工作协议层（本轮）
+## 精修轮（本轮）
 
-| 机制 | 说明 |
-|------|------|
-| session_changes | 本会话 mutation 账本 + 查询工具 |
-| COVERAGE_HINT | 静态「是否提到符号」；绿≠已验证 |
-| goal_clarify | 歧义任务一次性注入验收确认 |
-| STOP_HINT | 同签名连续失败软提示 + 3 次硬禁 |
-| compressed FACT | 上下文压缩保留 FACT 标记 |
-| system_prompt | 事实/推测、验收、停止、完成标准 |
+- str_replace 熔断签名: path + old_string 哈希（换 old 可重试）
+- COVERAGE_HINT 使用编辑触及的 def/class 符号
+- projection 摘要: world=/disk= 明确半成功
+- undo_last_tx: 清读缓存、记 session_changes、标明 shadow 与 World 可能滞后
+- dp.py: `last`/`copy` 打印上一工具块；`changes` 列本会话修改
 
 ## 生产路径不变
