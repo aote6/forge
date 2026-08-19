@@ -1,59 +1,36 @@
 # Forge
 
-Transactional Software Engineering Runtime for LLMs.
+Forge 是运行在 Veritas（确定性世界内核）之上的工程 Agent。
 
-Forge 是一个带状态管理能力的 AI 编排系统。它让 LLM 的操作先进入可审计、可回滚、可验证的 Veritas World 状态层，通过校验后再决定是否物化到磁盘。
+## 架构
 
-## 核心设计
+LLM（工具循环，边执行边看反馈）
+  -> ToolExecutor（32 个工具）
+    -> IntentExecutor（事务编排）
+      -> WorldSession -> veritasd -> Veritas Kernel
+        -> Projection -> 文件系统 / Git / Index
 
-机器提供事实，LLM 决策，Validator/Constitution 只 ACCEPT/REJECT，绝不 semantic repair。
+## 核心特征
 
-任务生命周期：
-
-UNDERSTANDING → PLANNING → CHECKING → EXECUTING → VERIFYING → COMPLETED/FAILED
-
-每次操作必须先写 Veritas World 事务，通过检查后才投影到文件系统。
-
-## 目录
-
-adapters/        模型适配器（DeepSeek/Gemini）、ExecutionAdapter、HubClient
-context/         RepositoryIndex、快照、impact/obligations 推导
-core/            安全路径解析、edit_contract、校验器
-intents/         Intent 数据模型与 IntentExecutor
-memory/          检查点存储
-orchestrator/    EngineeringOrchestrator 六阶段状态机
-projections/     文件/Git/索引投影（World → 磁盘）
-protocols/       Plan/ChangeProposal/OperationContract 等协议模型
-tools/           AI 可调用工具
-verification/    验证请求与结果处理
-world/           WorldRuntime、WorldSession、Veritas 适配
+- 工具循环：LLM 逐步调工具，每步看返回结果再决定下一步（类似 Code Agent）
+- Veritas 事务：所有突变走 begin -> execute -> commit/abort，不是直接写文件
+- World 操作与文件操作分开：create_object 创建世界对象，create_file 创建文件，不混淆
+- Receipt 证据：每次 commit 有 tx_id / version / root hash，可验证
 
 ## 快速开始
 
-export DEEPSEEK_API_KEY="你的key"
+在 forge 目录下执行 python3 dp.py
 
-cd ~/forge && python3 dp.py
+输入任务，例如：
+
+创建一个新的 World 对象并 link 到 id=1
+
+正确执行流程：
+1. LLM 调 create_object -> 返回 ObjectId=21
+2. LLM 调 link_objects(from_id=21, to_id=1, link_type=owns)
+3. LLM 文本总结完成
 
 ## 测试
 
-python3 -m pytest tests/ -q
-
-当前全量：301 passed, 1 xfailed（xfailed 是反模式护栏，记录禁止 semantic repair）
-
-## 关键契约
-
-CANONICAL_PLAN_OPERATION_TYPES = {modify, create_file, delete_file, create_object}
-
-create_object 是纯运行时操作，不修改源码，不要求 content/target_files/mutation obligations。
-
-LEGACY_PLAN_OPERATION_ALIASES = {create: create_file, delete: delete_file}
-
-## Hub 工具
-
-Forge 通过 HubClient 调用三个外部能力：
-
-zhiwang  仓库快照/文件树
-lu       Constitution 内容规则检查
-sms      测试/构建验证
-
-Hub 不可用时 fail-closed，不静默降级。
+python3 -m pytest -q
+# 333 passed, 1 xfailed
