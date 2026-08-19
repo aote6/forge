@@ -1,28 +1,17 @@
-# Forge 项目状态
+# Forge 状态
 
 ## 生产路径
 
-`Runtime.run` → 工具循环 → IntentExecutor → Veritas → Projection
+Runtime.run → 工具循环（MAX 40 步）→ IntentExecutor → Veritas → Projection
 
-## 本轮写代码能力升级
+## 工具质量收敛（本轮）
 
-### P0
-- 符号索引缓存 `forge/core/symbol_index.py` → `.forge/symbols.json`
-- `find_symbol_definition` 查索引
-- `resolve_path_object`；`modify_file` 自动解析 object_id
-- `edit_files_batch` 多文件单事务；`modify_file` 支持多 operations
-- mutation 工具 `require_confirm=False`（避免工具循环卡在确认）
+- LLM schema 从 ~40 压到 ~25；实现层仍注册旧工具以兼容测试
+- 新增首选编辑：`str_replace`（精确串替换）、`write_file`（整文件）
+- 新增 `glob_files`
+- system_prompt 改为「str_replace 优先」决策树
+- 步数上限 20 → 40
 
-### P1
-- `run_type_check`（mypy/pyright/ast）
-- `run_test_structured` 失败上下文（前后 5 行）
-- `read_function`
+## 仍保留的差异化
 
-### P2–P3
-- 同轮多个 tool_calls 依次执行（模型并行请求已支持）
-- mutation display 统一 `RESULT: ...`
-- 对话自动写入 conversation_log.jsonl；失败提示含建议下一步
-
-## 测试
-
-`tests/test_coding_capability_upgrades.py` + 原有工具循环/Veritas 测试。
+Veritas 事务 / Receipt / World 对象链接 — 编辑对外像 Code，对内仍走事务。

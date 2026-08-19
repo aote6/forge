@@ -33,7 +33,7 @@ from forge.tools.schemas import (
 from forge.workspace import Workspace
 from forge.world import WorldRuntime
 
-MAX_AGENT_STEPS = 20
+MAX_AGENT_STEPS = 40
 MAX_CONSECUTIVE_FAILURES = 3
 
 
@@ -192,7 +192,7 @@ class Runtime:
         _append_conversation_log(self.workspace.project_root, "user", task)
 
         all_schemas = READ_ONLY_TOOL_DECLARATIONS + MUTATION_TOOL_DECLARATIONS
-        for _ in range(20):
+        for _ in range(MAX_AGENT_STEPS):
             resp = self.adapter.send(messages, all_schemas)
             if not resp.tool_calls:
                 if resp.content:

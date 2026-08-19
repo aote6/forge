@@ -1,36 +1,31 @@
 # Forge
 
-Forge 是运行在 Veritas（确定性世界内核）之上的工程 Agent。
+运行在 Veritas 上的工程 Agent：工具循环 + 事务突变。
 
 ## 架构
 
 ```
-LLM（工具循环）
-  -> ToolExecutor
-    -> IntentExecutor（事务）
-      -> WorldSession -> veritasd -> Veritas Kernel
-        -> Projection
+LLM → 精简工具集 → IntentExecutor → Veritas → Projection
 ```
 
-生产路径唯一：`Runtime.run` → `_run_conversation`。
+## 工具设计（质量优先）
 
-## 写代码能力（本轮增强）
+LLM 可见约 **25** 个工具（非 40+）：
 
-| 能力 | 工具 / 机制 |
-|------|-------------|
-| 全仓符号索引 | `.forge/symbols.json`，`find_symbol_definition` / `rebuild_symbol_index` |
-| 按符号读代码 | `read_function(path, symbol_name)` |
-| 路径→ObjectId | `resolve_path_object`；`modify_file` 可省略 object_id |
-| 多处/多文件编辑 | `modify_file` 多 operations；`edit_files_batch` 单事务 |
-| 类型检查 | `run_type_check`（mypy/pyright/ast） |
-| 测试失败上下文 | `run_test_structured` 附带失败行前后源码 |
-| 会话记忆 | 自动写 `.forge/conversation_log.jsonl`，`search_history` 可查 |
-| 结构化返回 | 关键 mutation 以 `RESULT: key=value` 开头 |
+| 类别 | 工具 |
+|------|------|
+| 探索 | glob_files, search_code, find_symbol_definition, read_file, read_function, get_repo_map |
+| **编辑（首选）** | **str_replace**, **write_file** |
+| 编辑（高级） | modify_file, edit_files_batch, create_file, delete_file |
+| 验证 | run_test_structured, run_type_check, run_command, git_diff |
+| World | create_object, link_objects, unlink_objects, list_* |
+
+日常改代码路径：`read_*` → `str_replace` → `run_test_structured` / `git_diff`。
 
 ## 快速开始
 
 ```bash
-export DEEPSEEK_API_KEY="你的key"
+export DEEPSEEK_API_KEY=...
 python3 dp.py
 ```
 

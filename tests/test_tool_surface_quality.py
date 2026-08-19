@@ -1,0 +1,70 @@
+"""Quality-focused tool surface: curated schemas + new edit primitives."""
+from __future__ import annotations
+
+from pathlib import Path
+
+from forge.tools.schemas import (
+    READ_ONLY_TOOL_DECLARATIONS,
+    MUTATION_TOOL_DECLARATIONS,
+    MUTATION_TOOL_NAMES,
+)
+from forge.tools import make_tools
+from forge.workspace import Workspace
+
+# Target: lean LLM surface (not the old 40-tool dump)
+CORE_READ = {
+    "read_file", "read_function", "glob_files", "search_code",
+    "find_symbol_definition", "get_repo_map", "git_diff",
+    "run_command", "run_test_structured", "run_type_check",
+    "world_info", "list_world_objects", "get_world_object", "list_world_links",
+    "search_history", "resolve_path_object",
+}
+CORE_MUT = {
+    "str_replace", "write_file", "create_file", "modify_file",
+    "edit_files_batch", "delete_file", "create_object", "link_objects", "unlink_objects",
+}
+
+
+def test_llm_surface_is_curated_not_bloated():
+    ro = {d["name"] for d in READ_ONLY_TOOL_DECLARATIONS}
+    mu = {d["name"] for d in MUTATION_TOOL_DECLARATIONS}
+    assert ro == CORE_READ
+    assert mu == CORE_MUT
+    assert len(ro) + len(mu) <= 28  # hard ceiling
+    # legacy noise must not be on the LLM schema list
+    for noise in (
+        "get_call_chain", "summarize_file", "extract_code_skeleton",
+        "get_context_budget", "preview_line_mutation", "read_file_with_lines",
+        "git_status_enhanced", "list_tests", "read_git_version",
+    ):
+        assert noise not in ro and noise not in mu
+
+
+def test_str_replace_and_write_file_on_schema():
+    assert "str_replace" in MUTATION_TOOL_NAMES
+    assert "write_file" in MUTATION_TOOL_NAMES
+    sr = next(d for d in MUTATION_TOOL_DECLARATIONS if d["name"] == "str_replace")
+    assert set(sr["parameters"]["required"]) == {"path", "old_string", "new_string"}
+
+
+def test_glob_files_tool(tmp_path: Path):
+    (tmp_path / "a.py").write_text("x=1\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("y\n", encoding="utf-8")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "c.py").write_text("z=1\n", encoding="utf-8")
+    ws = Workspace(project_root=str(tmp_path))
+    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    assert "glob_files" in tools
+    r = tools["glob_files"]("**/*.py")
+    assert r.success
+    assert r.payload["count"] >= 2
+    assert any(f.endswith("a.py") for f in r.payload["files"])
+
+
+def test_implementations_still_register_legacy_helpers(tmp_path: Path):
+    """Implementations stay for tests/compat; only schemas are curated."""
+    ws = Workspace(project_root=str(tmp_path))
+    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    assert "summarize_file" in tools  # still callable if needed
+    assert "find_symbol_definition" in tools

@@ -49,11 +49,11 @@ def test_symbol_index_reload_uses_cache(tmp_path: Path):
 def test_schemas_include_new_tools():
     ro = {d["name"] for d in READ_ONLY_TOOL_DECLARATIONS}
     mu = {d["name"] for d in MUTATION_TOOL_DECLARATIONS}
-    for name in ("read_function", "run_type_check", "resolve_path_object", "rebuild_symbol_index"):
+    for name in ("read_function", "run_type_check", "resolve_path_object", "glob_files"):
         assert name in ro, name
     assert "edit_files_batch" in mu
-    assert "edit_files_batch" in MUTATION_TOOL_NAMES
-    # modify_file no longer requires object_id in schema
+    assert "str_replace" in MUTATION_TOOL_NAMES
+    assert "write_file" in MUTATION_TOOL_NAMES
     mod = next(d for d in MUTATION_TOOL_DECLARATIONS if d["name"] == "modify_file")
     req = mod["parameters"].get("required") or []
     assert "object_id" not in req

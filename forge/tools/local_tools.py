@@ -1102,6 +1102,46 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             return ToolResult.fail(display=f"resolve_path_object 失败: {e}")
 
 
+
+    def glob_files(pattern: str, max_results: int = 200) -> ToolResult:
+        """按 glob 模式列出文件（相对项目根）。"""
+        try:
+            root = Path(workspace.project_root).resolve()
+            pat = pattern or "**/*"
+            if pat.startswith("/"):
+                return ToolResult.fail(display="glob_files: 请使用相对项目根的 pattern")
+            matches = []
+            for m in sorted(root.glob(pat)):
+                if not m.is_file():
+                    continue
+                try:
+                    rel = str(m.relative_to(root)).replace("\\", "/")
+                except ValueError:
+                    continue
+                if any(
+                    part in {".git", "__pycache__", ".venv", "venv", "node_modules", ".forge"}
+                    for part in Path(rel).parts
+                ):
+                    continue
+                matches.append(rel)
+                if len(matches) >= max(1, int(max_results)):
+                    break
+            body = "\n".join(matches)
+            display = f"RESULT: glob pattern={pat} count={len(matches)}\n{body}"
+            if not matches:
+                display = (
+                    f"RESULT: glob pattern={pat} count=0\n(无匹配)\n"
+                    f"建议: 放宽 pattern，如 **/*.py"
+                )
+            _log("glob_files", {"pattern": pat, "n": len(matches)}, True)
+            return ToolResult.ok(
+                display=display,
+                payload={"pattern": pat, "files": matches, "count": len(matches)},
+            )
+        except Exception as e:
+            return ToolResult.fail(display=f"glob_files failed: {e}")
+
+
     return {
         "read_file_with_lines": read_file_with_lines,
         "preview_line_mutation": preview_line_mutation,
@@ -1123,6 +1163,7 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         "get_context_budget": get_context_budget,
         "inspect_last_intent": inspect_last_intent,
         "list_files": list_files,
+        "glob_files": glob_files,
         "read_file": read_file,
         "read_function": read_function,
         "search_code": search_code,

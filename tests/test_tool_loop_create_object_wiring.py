@@ -17,7 +17,8 @@ from forge.workspace import Workspace
 
 def test_create_object_in_mutation_schema():
     names = [d["name"] for d in MUTATION_TOOL_DECLARATIONS]
-    assert names[0] == "create_object", "create_object must be first mutation tool"
+    assert "create_object" in names
+    assert "str_replace" in names
     assert "create_object" in MUTATION_TOOL_NAMES
     # no stale orchestrator-only wording
     for d in MUTATION_TOOL_DECLARATIONS:
