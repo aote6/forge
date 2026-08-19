@@ -497,20 +497,21 @@ _MUTATION_OPERATION_TYPES = frozenset({
 
 
 def is_runtime_only_plan(plan) -> bool:
-    """True iff plan has ≥1 step and every step is create_object.
+    """True iff plan has ≥1 step and every step is a World operation.
 
-    Pure runtime plans do not mutate source files; mutation-obligation
-    coverage must not apply to them. An empty plan is not runtime-only
-    (caller should not treat it as an exemption).
+    Pure runtime plans (create_object / link_objects) do not mutate source
+    files; mutation-obligation coverage must not apply to them. An empty
+    plan is not runtime-only (caller should not treat it as an exemption).
     """
     if plan is None:
         return False
     steps = list(getattr(plan, "steps", None) or [])
     if not steps:
         return False
+    from forge.protocols.world_operations import is_world_operation
     for s in steps:
         op = getattr(s, "operation_type", None)
-        if op != "create_object":
+        if not is_world_operation(op or ""):
             return False
     return True
 

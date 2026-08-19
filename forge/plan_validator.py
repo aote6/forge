@@ -65,39 +65,19 @@ class PlanValidator:
             # Fail-closed: no auto-correction of operation_type or target_files.
             # create_object / link_objects must have empty target_files.
             # modify/create_file/delete_file must not.
-            if op in ("create_object", "link_objects"):
+            from forge.protocols.world_operations import (
+                WORLD_OPERATIONS,
+                validate_world_operation_params,
+            )
+            if op in WORLD_OPERATIONS:
                 if targets:
                     raise PlanValidationError(
                         f"{sid}: {op} 的 target_files 必须为空数组 []，"
                         f"收到 {targets}（Validator 不会自动清空或改写 operation_type）"
                     )
-                # link_objects requires from_id / to_id / link_type
-                if op == "link_objects":
-                    from_id = s.get("from_id")
-                    to_id = s.get("to_id")
-                    link_type = s.get("link_type")
-                    if from_id is None or not isinstance(from_id, int):
-                        raise PlanValidationError(
-                            f"{sid}: link_objects 缺少 from_id（必须是 int，Validator 不会自动补全）"
-                        )
-                    if to_id is None or not isinstance(to_id, int):
-                        raise PlanValidationError(
-                            f"{sid}: link_objects 缺少 to_id（必须是 int，Validator 不会自动补全）"
-                        )
-                    if link_type is None or link_type == "":
-                        raise PlanValidationError(
-                            f"{sid}: link_objects 缺少 link_type（Validator 不会默认 link_type）"
-                        )
-                    valid_link_types = {"owns", "depends_on", "references"}
-                    if link_type not in valid_link_types:
-                        raise PlanValidationError(
-                            f"{sid}: link_objects 的 link_type '{link_type}' 无效，"
-                            f"必须是 {sorted(valid_link_types)} 之一"
-                        )
-                    if from_id == to_id:
-                        raise PlanValidationError(
-                            f"{sid}: link_objects 不允许自环（from_id == to_id == {from_id}）"
-                        )
+                param_errors = validate_world_operation_params(op, s)
+                if param_errors:
+                    raise PlanValidationError(f"{sid}: " + "; ".join(param_errors))
             else:
                 # modify / create_file / delete_file require non-empty target_files
                 if not targets:

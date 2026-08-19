@@ -14,13 +14,12 @@ from __future__ import annotations
 from typing import Any, Iterable, List, Mapping, Optional
 
 # Canonical Plan operation types (Planner output / Validator / PlanStep / checkpoint).
-CANONICAL_PLAN_OPERATION_TYPES = frozenset({
-    "modify",
-    "create_file",
-    "delete_file",
-    "create_object",
-    "link_objects",
-})
+from forge.protocols.world_operations import WORLD_OPERATIONS
+
+# Canonical = file operations + world operations (SSOT-driven).
+CANONICAL_PLAN_OPERATION_TYPES = frozenset(
+    {"modify", "create_file", "delete_file"} | set(WORLD_OPERATIONS.keys())
+)
 
 # ExecutionAdapter-only legacy aliases. Not accepted by PlanValidator.
 LEGACY_PLAN_OPERATION_ALIASES = {

@@ -268,8 +268,34 @@ class EngineeringOrchestrator:
                         self.phase = OrchestratorPhase.UNDERSTANDING
                         self._persist()
                         return
+            # Inject World state as machine facts so Planner can choose
+            # World operations (create_object / link_objects) without guessing.
+            planner_task = self.checkpoint.goal
+            if self.world is not None:
+                try:
+                    info = self.world.world_info()
+                    objects = self.world.list_objects()
+                    links = self.world.get_links()
+                    obj_summary = ", ".join(
+                        f"id={o.object_id}({o.state})" for o in objects[:20]
+                    ) if objects else "(none)"
+                    link_summary = "; ".join(
+                        f"{l.from_id}->{l.to_id}:{l.link_type}" for l in links[:20]
+                    ) if links else "(none)"
+                    world_block = (
+                        f"\n\n[World 状态 — 机器事实，不可忽略]\n"
+                        f"version={info.version} object_count={info.object_count}\n"
+                        f"objects: {obj_summary}\n"
+                        f"links: {link_summary}\n"
+                        f"\n如果任务涉及创建/链接/查询对象，请使用 create_object / link_objects，"
+                        f"不要填写 impact_files 为源码文件。纯 World 操作不需要修改任何文件。"
+                    )
+                    planner_task = planner_task + world_block
+                except Exception:
+                    pass  # World unavailable — keep task unchanged
+
             plan, _raw = self.planner.plan(
-                self.checkpoint.goal,
+                planner_task,
                 self.checkpoint.repo_context,
                 self.project_root,
                 index=idx,

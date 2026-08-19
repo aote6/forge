@@ -31,10 +31,11 @@ def check(proposal: ChangeProposal, project_root: str = ".") -> ConstitutionResu
     if not isinstance(proposal, ChangeProposal):
         raise TypeError("constitution.check requires ChangeProposal, not bare dict")
 
-    # P8: runtime-only proposals (all create_object) carry no source content.
+    # P8: runtime-only proposals (World operations) carry no source content.
+    from forge.protocols.world_operations import is_world_operation
     if proposal.operations:
         all_runtime = all(
-            _op_type(op) == "create_object" for op in proposal.operations
+            is_world_operation(_op_type(op)) for op in proposal.operations
         )
         if all_runtime:
             return ConstitutionResult(

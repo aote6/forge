@@ -48,7 +48,10 @@ PLANNER_SYSTEM_PROMPT = """你是一个代码规划器。你会收到仓库文�
       "content": "create_file 时的完整文件内容",
       "start_line": modify 时修改的起始行号 (从1开始),
       "end_line": modify 时修改的结束行号 (含),
-      "new_text": "modify 时，替换 start_line 到 end_line 的新内容"
+      "new_text": "modify 时，替换 start_line 到 end_line 的新内容",
+      "from_id": link_objects 时的源对象 int,
+      "to_id": link_objects 时的目标对象 int,
+      "link_type": link_objects 时的链接类型 ("owns" | "depends_on" | "references")
     }
   ]
 }
@@ -163,21 +166,40 @@ class Planner:
             machine=machine,
             repair_constraints=repair_constraints,
         )
-        impact_section = format_impact_section(machine)
-        obligations_section = format_obligations_section(obligations)
+        # Coarse task classification FIRST — before any machine impact analysis.
+        world_op_hints = (
+            "create_object", "link_objects", "创建对象", "链接对象",
+            "世界对象", "world object", "veritas", "纯运行时",
+            "纯 world", "runtime only",
+        )
+        task_lower = task.lower()
+        is_world_op_task = any(h in task_lower for h in world_op_hints)
+
+        if is_world_op_task:
+            impact_section = "(World operation task — impact set omitted)"
+            obligations_section = "(World operation task — obligations omitted)"
+        else:
+            impact_section = format_impact_section(machine)
+            obligations_section = format_obligations_section(obligations)
 
         # File *names* only in the tree listing (never dump whole-repo source).
-        files_summary = "\n".join(repo.file_tree) if repo and repo.file_tree else "(empty repo)"
+        if is_world_op_task:
+            files_summary = "(World operation task — file tree omitted to save tokens)"
+        else:
+            files_summary = "\n".join(repo.file_tree) if repo and repo.file_tree else "(empty repo)"
 
         # Source injection: ONLY planning-relevant files (task paths / obligations / impact).
         # Do NOT iterate the entire repository — that exhausts budget before real targets.
-        content_candidates = select_planning_content_files(
-            task=task,
-            impact_files=list(machine.get("impact_files") or []),
-            obligations=obligations,
-            file_tree=None,
-            max_secondary=0,
-        )
+        if is_world_op_task:
+            content_candidates = []
+        else:
+            content_candidates = select_planning_content_files(
+                task=task,
+                impact_files=list(machine.get("impact_files") or []),
+                obligations=obligations,
+                file_tree=None,
+                max_secondary=0,
+            )
         for pth in extract_task_paths(task):
             if pth not in content_candidates:
                 content_candidates.insert(0, pth)
@@ -213,18 +235,26 @@ class Planner:
             total_chars += len(block)
 
         # Priority 2: structured repository model from index (not str(index)).
+        # Skip for World-op tasks — source symbol info is noise when the
+        # task is about runtime objects, not code modification.
         model_section = "(no repository index)"
-        if index is not None:
+        if index is not None and not is_world_op_task:
             focus = list(machine.get("impact_symbols") or [])
             if not focus:
                 focus = extract_focus_symbols(task)
             model_section = index.summary_for_planner(focus_symbols=focus or None)
+        elif is_world_op_task:
+            model_section = "(World operation task — repository model omitted)"
 
         # P0: minimal Repository Facts (DEFINED / NOT_DEFINED + location only).
-        repository_facts = compute_repository_facts(
-            index,
-            [s for s in extract_focus_symbols(task)],
-        )
+        # Skip for World-op tasks.
+        if is_world_op_task:
+            repository_facts = "(World operation task — repository facts omitted)"
+        else:
+            repository_facts = compute_repository_facts(
+                index,
+                [s for s in extract_focus_symbols(task)],
+            )
 
         failure_section = "(no structured failure)"
         if failure is not None:
