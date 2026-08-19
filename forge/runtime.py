@@ -110,7 +110,7 @@ def _save_session_summary(project_root: str, assistant_replies: list[str]) -> No
 _CONFIRMATION_TOOLS = {
     "write_file", "modify_file", "undo_last_tx", "create_object",
     "delete_file", "create_file", "unlink_objects", "link_objects",
-    "run_test_structured", "apply_patch", "edit_files_batch",
+    "run_test_structured", "apply_patch", "edit_files_batch", "todo_write",
 }
 
 
@@ -402,8 +402,9 @@ class Runtime:
                 mark_clarified()
             elif needs_clarify(task):
                 messages.append(ForgeMessage(role="user", content=clarification_message()))
-        except Exception:
-            pass
+        except Exception as e:
+            import sys
+            print(f"[forge] goal_clarify unavailable: {e}", file=sys.stderr)
 
         all_schemas = READ_ONLY_TOOL_DECLARATIONS + MUTATION_TOOL_DECLARATIONS
         tool_calls_n = 0
