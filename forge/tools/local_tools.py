@@ -17,6 +17,7 @@ from forge.tools.display import format_block, error_slices
 from forge.tools.project_memory import load_memory, update_memory, format_for_prompt
 from forge.tools.read_cache import get as cache_get, put as cache_put
 from forge.tools.errors import decorate_fail_message, classify_error
+from forge.tools.session_changes import list_changes, format_list as format_session_changes, clear as clear_session_changes
 
 LOG_PATH = Path.home() / "forge" / ".forge" / "operation_log.jsonl"
 MAX_OUTPUT_CHARS = 8000
@@ -1384,6 +1385,23 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         )
 
 
+
+    def session_changes() -> ToolResult:
+        """本会话修改清单（path / tx / summary）。"""
+        body = format_session_changes()
+        items = list_changes()
+        return ToolResult.ok(
+            display=format_block(
+                "session_changes",
+                "OK",
+                {"count": len(items)},
+                body,
+                hint="用户问改了哪些文件时优先用本工具",
+            ),
+            payload={"changes": items},
+        )
+
+
     return {
         "read_file_with_lines": read_file_with_lines,
         "preview_line_mutation": preview_line_mutation,
@@ -1410,6 +1428,7 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         "todo_list": todo_list,
         "web_fetch": web_fetch,
         "project_memory": project_memory,
+        "session_changes": session_changes,
         "read_file": read_file,
         "read_function": read_function,
         "search_code": search_code,

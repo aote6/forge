@@ -22,6 +22,7 @@ from forge.tools.related_tests import format_related_hint
 from forge.tools.near_miss import find_near_misses
 from forge.tools.errors import decorate_fail_message
 from forge.tools.read_cache import invalidate as cache_invalidate
+from forge.tools.session_changes import record as record_session_change
 
 
 def _format_projection_results(results) -> str:
@@ -657,6 +658,16 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     result.payload["_project_root"] = _project_root(world)
                     result.payload["replacements"] = (n if replace_all else 1)
                 result = _attach_diff(result, path_n, text, new_text, tool="str_replace")
+                try:
+                    record_session_change(
+                        path_n,
+                        tool="str_replace",
+                        tx_id=(result.payload or {}).get("tx_id"),
+                        summary=f"replacements={(result.payload or {}).get('replacements')}",
+                        project_root=_project_root(world),
+                    )
+                except Exception:
+                    pass
                 result = _attach_next(result, [path_n])
             return result
         except Exception as e:
@@ -694,6 +705,16 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 if result.payload is not None:
                     result.payload["_project_root"] = _project_root(world)
                 result = _attach_diff(result, path_n, old_content, new_content, tool="write_file")
+                try:
+                    record_session_change(
+                        path_n,
+                        tool="write_file",
+                        tx_id=(result.payload or {}).get("tx_id"),
+                        summary="write_file",
+                        project_root=_project_root(world),
+                    )
+                except Exception:
+                    pass
                 result = _attach_next(result, [path_n])
             return result
         except Exception as e:

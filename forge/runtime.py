@@ -115,7 +115,7 @@ def _compress_messages(messages: list, keep_recent_tools: int = 6) -> list:
             name = getattr(m, "name", None) or "tool"
             content = (getattr(m, "content", None) or "")
             first = content.strip().splitlines()[0][:120] if content.strip() else ""
-            summary = f"[compressed {name}] {first}"
+            summary = f"[compressed FACT {name}] {first}"
             try:
                 from forge.adapters.base import Message as ForgeMessage
                 out.append(ForgeMessage(role="tool", content=summary, tool_call_id=getattr(m, "tool_call_id", None), name=name))
@@ -178,9 +178,9 @@ class ToolExecutor:
         if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
             return ToolResult.fail(
                 display=(
-                    f"⛔ 该工具调用已连续失败 {consecutive_failures} 次，已禁止重试:\n"
+                    f"STOP_HINT: 同一调用已连续失败 {consecutive_failures} 次，已禁止再试。\n"
                     f"  {tool_call.name}({json.dumps(tool_call.arguments, ensure_ascii=False)})\n"
-                    f"💡 请换一种方式或告知用户遇到的问题。"
+                    f"请换策略、read 核对，或直接问用户。不要继续微调同一参数。"
                 )
             )
 
@@ -188,6 +188,14 @@ class ToolExecutor:
             result = fn(**tool_call.arguments)
             status = "success" if result.success else "fail"
             self.call_history.setdefault(sig, []).append(status)
+            if not result.success and consecutive_failures >= 1:
+                # after 1 prior fail, this is 2nd+ failure in a row for same sig
+                prefix = (
+                    f"STOP_HINT: 该调用已连续失败 {consecutive_failures + 1} 次。"
+                    f"请换方向或问用户，勿重复同一操作。\n"
+                )
+                if result.display and "STOP_HINT" not in result.display:
+                    result.display = prefix + result.display
             return result
         except TypeError as e:
             self.call_history.setdefault(sig, []).append("fail")
@@ -327,6 +335,19 @@ class Runtime:
             messages.extend(recent)
         messages.append(ForgeMessage(role="user", content=task))
         _append_conversation_log(self.workspace.project_root, "user", task)
+        try:
+            from forge.tools.goal_clarify import (
+                needs_clarify,
+                clarification_message,
+                user_looks_like_clarification,
+                mark_clarified,
+            )
+            if user_looks_like_clarification(task):
+                mark_clarified()
+            elif needs_clarify(task):
+                messages.append(ForgeMessage(role="user", content=clarification_message()))
+        except Exception:
+            pass
 
         all_schemas = READ_ONLY_TOOL_DECLARATIONS + MUTATION_TOOL_DECLARATIONS
         tool_calls_n = 0

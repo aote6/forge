@@ -1,16 +1,14 @@
 # Forge 状态
 
-## 本轮：Agent 痛点全量修复
+## 工作协议层（本轮）
 
-| 优先级 | 项 | 实现 |
-|--------|----|------|
-| P0 | 相关测试 | mutation 成功后 RELATED_TESTS + 建议 target |
-| P0 | veritasd 错误 | errors.classify → VERITAS offline 人话 |
-| P0 | 读缓存+失效 | read_cache mtime；mutation 后 invalidate |
-| P1 | 上下文压缩 | 旧 tool 结果压成一行，保留最近 6 条 |
-| P1 | todo 提醒 | 步数过半注入未完成 todo（用户消息优先） |
-| P1 | NEAR_MISS | str_replace 失败附近似片段 |
-| P2 | memory | mutation 更新 last_status + recent_files |
-| P2 | subagent evidence | 结论格式 path/line/reason/evidence |
+| 机制 | 说明 |
+|------|------|
+| session_changes | 本会话 mutation 账本 + 查询工具 |
+| COVERAGE_HINT | 静态「是否提到符号」；绿≠已验证 |
+| goal_clarify | 歧义任务一次性注入验收确认 |
+| STOP_HINT | 同签名连续失败软提示 + 3 次硬禁 |
+| compressed FACT | 上下文压缩保留 FACT 标记 |
+| system_prompt | 事实/推测、验收、停止、完成标准 |
 
 ## 生产路径不变

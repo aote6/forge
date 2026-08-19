@@ -221,6 +221,11 @@ READ_ONLY_TOOL_DECLARATIONS = [
         },
     },
     {
+        "name": "session_changes",
+        "description": "列出本会话已成功修改的文件（path/tx/summary）。用户问改了哪些文件时使用。",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "project_memory",
         "description": "查看项目记忆：测试命令、最近改过的文件、曾失败测试、上次任务。",
         "parameters": {"type": "object", "properties": {}, "required": []},
