@@ -1,4 +1,6 @@
-"""Engineering Loop 状态转移规则"""
+"""
+DEPRECATED: 六阶段 engineering 已不作为生产入口；生产 = Runtime 工具循环。本文件仅供历史测试。
+Engineering Loop 状态转移规则"""
 from forge.engineering.phases import Phase
 
 # 正常流转

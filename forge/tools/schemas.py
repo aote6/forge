@@ -1,10 +1,11 @@
 """工具声明 — LLM 可见的工具集。
 
-READ_ONLY_TOOL_DECLARATIONS: conversation / legacy 唯一允许集合。
-MUTATION_TOOL_DECLARATIONS: 仅供文档/测试对照；生产 mutation 必须走
-EngineeringOrchestrator → ExecutionAdapter → IntentExecutor，不得经 tool-loop。
+READ_ONLY_TOOL_DECLARATIONS: 只读/探索工具。
+MUTATION_TOOL_DECLARATIONS: World 与文件突变工具，供 Runtime 工具循环使用。
+  突变经 IntentExecutor → WorldSession → Veritas（commit/abort），再投影。
 
-TOOL_DECLARATIONS 保持为只读集合（兼容旧 import），避免误把 mutation 暴露给 LLM。
+TOOL_DECLARATIONS 默认 = 只读集合（兼容旧 import）。
+生产 Runtime._run_conversation 使用 READ_ONLY + MUTATION。
 """
 
 READ_ONLY_TOOL_DECLARATIONS = [
@@ -324,12 +325,29 @@ READ_ONLY_TOOL_DECLARATIONS = [
     },
 ]
 
-# Historical mutation tool schemas — NOT registered on conversation/legacy paths.
-# Mutations must go through EngineeringOrchestrator only.
+# Mutation tools for Runtime tool-loop (World + file).
+# World ops do not write files; file ops project to disk after Veritas commit.
 MUTATION_TOOL_DECLARATIONS = [
     {
+        "name": "create_object",
+        "description": (
+            "World 操作：在 Veritas 世界中创建一个纯世界对象（不创建文件、不写磁盘）。"
+            "成功后返回 ObjectId（整数）。"
+            "若任务是「创建对象 / link 对象 / World 对象」，必须用本工具，禁止用 create_file。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "create_file",
-        "description": "创建一个新文件。仅可通过 EngineeringOrchestrator 执行，不可在 tool-loop 中调用。",
+        "description": (
+            "文件操作：创建仓库中的新文件并投影到磁盘。"
+            "仅当用户明确要求创建文件/路径/代码文件时使用；"
+            "不要用本工具代替 create_object。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -341,7 +359,10 @@ MUTATION_TOOL_DECLARATIONS = [
     },
     {
         "name": "modify_file",
-        "description": "修改已有文件。仅可通过 EngineeringOrchestrator 执行。",
+        "description": (
+            "文件操作：修改已有文件内容（需 path、object_id、operations）。"
+            "仅用于已存在的仓库文件，不是 World 纯对象操作。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -354,7 +375,10 @@ MUTATION_TOOL_DECLARATIONS = [
     },
     {
         "name": "delete_file",
-        "description": "删除文件对应的 Veritas Object。仅可通过 EngineeringOrchestrator 执行。",
+        "description": (
+            "文件操作：删除文件对应的 Veritas Object（可附带 path 供投影删盘）。"
+            "不是 unlink_objects；删除的是文件对象本身。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -366,7 +390,11 @@ MUTATION_TOOL_DECLARATIONS = [
     },
     {
         "name": "link_objects",
-        "description": "在两个 Object 之间建立 Link。仅可通过 EngineeringOrchestrator 执行。",
+        "description": (
+            "World 操作：在两个已存在的 ObjectId 之间建立 Link。"
+            "from_id / to_id 必须来自 create_object 返回或 list_world_objects，禁止编造。"
+            "link_type: owns / depends_on / references（默认 owns）。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -382,7 +410,10 @@ MUTATION_TOOL_DECLARATIONS = [
     },
     {
         "name": "unlink_objects",
-        "description": "删除两个 Object 之间的 Link。仅可通过 EngineeringOrchestrator 执行。",
+        "description": (
+            "World 操作：删除两个 Object 之间的 Link。"
+            "from_id / to_id 必须是真实 ObjectId，禁止编造。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -394,7 +425,8 @@ MUTATION_TOOL_DECLARATIONS = [
     },
 ]
 
-# Default LLM-visible set: read/discovery only (P1-A closure).
+# Default LLM-visible set remains read-only for legacy imports.
+# Production Runtime._run_conversation uses READ_ONLY + MUTATION.
 TOOL_DECLARATIONS = list(READ_ONLY_TOOL_DECLARATIONS)
 
 MUTATION_TOOL_NAMES = frozenset(

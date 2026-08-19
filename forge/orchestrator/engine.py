@@ -1,4 +1,6 @@
-"""EngineeringOrchestrator — unique phase machine for Forge tasks.
+"""
+DEPRECATED: 生产路径已改为 Runtime tool-loop（_run_conversation）。本模块仅供历史测试引用，勿在新代码中调用。
+EngineeringOrchestrator — unique phase machine for Forge tasks.
 
 Runtime must not re-implement phase logic.
 """

@@ -1,4 +1,6 @@
-"""Planner — LLM 输出行号+新内容 → Forge 从仓库提取 old_text → Validator 校验
+"""
+DEPRECATED: 生产路径已改为 Runtime tool-loop。本模块仅供历史测试引用，勿在新代码中调用。
+Planner — LLM 输出行号+新内容 → Forge 从仓库提取 old_text → Validator 校验
 
 原则：
 - old_text 永远来自真实仓库，LLM 只负责"决定改哪里"。

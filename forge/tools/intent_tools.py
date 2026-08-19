@@ -1,8 +1,8 @@
 """Intent-based semantic tools for LLM.
 
-These tools expose semantic operations (CreateFile, ModifyFile, etc.)
+These tools expose semantic operations (create_object, CreateFile, ModifyFile, link_objects, etc.)
 to the LLM. They route through IntentExecutor then ProjectionManager.
-LLM never sees Veritas primitives (world_*).
+LLM never sees Veritas primitives (world_*). World ops vs file ops are distinct tools.
 """
 
 from __future__ import annotations
@@ -31,6 +31,40 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
         receipt, delta = executor._world.commit_session()
         results = projections.project(receipt, delta)
         return receipt, delta, results
+
+    def create_object() -> ToolResult:
+        """World 操作：创建纯世界对象，返回 ObjectId。不写文件。"""
+        try:
+            intent = Intent.create_object(require_confirm=False)
+            receipt, delta = executor.execute(intent)
+            results = projections.project(receipt, delta)
+            created = list(delta.objects_created) if delta.objects_created else []
+            oid = created[0] if created else intent.parameters.get("_created_object_id")
+            if oid is None:
+                return ToolResult.fail(
+                    display="create_object 已提交但未观测到 ObjectId（delta.objects_created 为空）"
+                )
+            proj = _format_projection_results(results)
+            proj_line = f"\n{proj}" if proj else ""
+            return ToolResult.ok(
+                display=(
+                    f"Created world object ObjectId={oid}\n"
+                    f"tx={receipt.tx_id} version={receipt.version}"
+                    f"{proj_line}\n"
+                    f"下一步若要 link：link_objects(from_id={oid}, to_id=<目标>, link_type=owns)"
+                ),
+                payload={
+                    "object_id": int(oid),
+                    "objects_created": [int(x) for x in created],
+                    "tx_id": receipt.tx_id,
+                    "version": receipt.version,
+                    "mutation": True,
+                    "requires_confirmation": False,
+                    "world_operation": True,
+                },
+            )
+        except Exception as e:
+            return ToolResult.fail(display=f"create_object failed: {e}")
 
     def create_file(path: str, content: str = "") -> ToolResult:
         try:
@@ -153,15 +187,32 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             intent = Intent.link_objects(from_id=from_id, to_id=to_id, link_type=link_type)
             receipt, delta = executor.execute(intent)
             results = projections.project(receipt, delta)
+            proj = _format_projection_results(results)
+            proj_line = f"\n{proj}" if proj else ""
             return ToolResult.ok(
                 display=(
-                    f"Linked {from_id} -[{link_type}]-> {to_id}, tx={receipt.tx_id}\n"
-                    f"{_format_projection_results(results)}"
+                    f"Linked ObjectId={from_id} -[{link_type}]-> ObjectId={to_id}\n"
+                    f"tx={receipt.tx_id} version={receipt.version}"
+                    f"{proj_line}"
                 ),
-                payload={"tx_id": receipt.tx_id, "mutation": True, "requires_confirmation": False},
+                payload={
+                    "tx_id": receipt.tx_id,
+                    "version": receipt.version,
+                    "from_id": int(from_id),
+                    "to_id": int(to_id),
+                    "link_type": link_type,
+                    "mutation": True,
+                    "requires_confirmation": False,
+                    "world_operation": True,
+                },
             )
         except Exception as e:
-            return ToolResult.fail(display=f"link_objects failed: {e}")
+            return ToolResult.fail(
+                display=(
+                    f"link_objects failed: {e}\n"
+                    f"提示：from_id/to_id 必须是真实 ObjectId（来自 create_object 或 list_world_objects），禁止编造。"
+                )
+            )
 
     def unlink_objects(from_id: int, to_id: int) -> ToolResult:
         try:
@@ -179,6 +230,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             return ToolResult.fail(display=f"unlink_objects failed: {e}")
 
     return {
+        "create_object": create_object,
         "create_file": create_file,
         "modify_file": modify_file,
         "delete_file": delete_file,

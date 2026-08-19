@@ -1,4 +1,6 @@
-"""PlanValidator — 独立于 Planner 的 Plan 结构校验器"""
+"""
+DEPRECATED: 生产路径已改为 Runtime tool-loop。本模块仅供历史测试引用，勿在新代码中调用。
+PlanValidator — 独立于 Planner 的 Plan 结构校验器"""
 import os
 from forge.protocols.models import Plan, PlanStep, RepoContext
 

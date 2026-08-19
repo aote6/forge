@@ -1,4 +1,6 @@
-"""Engineering Loop 阶段定义"""
+"""
+DEPRECATED: 六阶段 engineering 已不作为生产入口；生产 = Runtime 工具循环。本文件仅供历史测试。
+Engineering Loop 阶段定义"""
 from enum import Enum
 
 

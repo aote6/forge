@@ -1,11 +1,12 @@
 """Runtime — session shell for Forge.
 
-Production engineering path is uniquely:
-  Runtime.run(task) → EngineeringOrchestrator.run()
+Production path (唯一):
+  Runtime.run(task) → _run_conversation() 工具循环
+    → READ_ONLY + MUTATION schemas
+    → ToolExecutor → IntentExecutor → Veritas commit/abort → Projection
 
-The legacy tool-loop (run_legacy) and conversation tool-loop are
-read/discovery only. All engineering mutations must go through
-Runtime.run → EngineeringOrchestrator (P1-A).
+run_legacy 仅保留为交互式只读/确认兜底，已 deprecated，禁止作为 mutation 主路径。
+旧 EngineeringOrchestrator / Planner 不再由本模块调用。
 """
 from __future__ import annotations
 
@@ -20,8 +21,6 @@ from forge.conversation import Conversation
 from forge.events import Event, EventType
 from forge.memory import MemoryStore
 from forge.memory.checkpoint import CheckpointStore
-from forge.orchestrator.engine import EngineeringOrchestrator
-from forge.planner import Planner
 from forge.projections.base import ProjectionManager
 from forge.projections.file_projection import FileProjection
 from forge.projections.git_projection import GitProjection
@@ -138,7 +137,6 @@ class Runtime:
         self.phase = AgentPhase.IDLE
         self._handlers: dict = {t: [] for t in EventType}
         self._task_memory = CheckpointStore(workspace.project_root)
-        self._planner = Planner(adapter)
 
     def _recover_projections(self):
         from forge.recovery.replay import ProjectionRecovery
@@ -222,10 +220,10 @@ class Runtime:
             self.phase = AgentPhase.DISCOVERY
 
     def run_legacy(self, user_input: str) -> str:
-        """DEPRECATED interactive tool-loop.
+        """DEPRECATED interactive tool-loop (只读/确认兜底).
 
         Must not be used for engineering mutation tasks.
-        Production path is Runtime.run → EngineeringOrchestrator.
+        Production path is Runtime.run → _run_conversation (full tool-loop).
         """
         if self.phase == AgentPhase.WAIT_CONFIRM:
             if is_confirm(user_input):

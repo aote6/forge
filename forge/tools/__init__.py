@@ -1,8 +1,9 @@
 """工具组装入口。
 
-P1-A: conversation / legacy 默认只注册只读工具。
-      mutation 必须经 EngineeringOrchestrator → ExecutionAdapter。
-P1-B: confirm 成功条件 = commit 成功 + 全部 projection 成功。
+生产 Runtime 使用 allow_mutation=True：注册只读 + mutation 工具，
+突变经 IntentExecutor → WorldSession → Veritas（commit/abort）再投影。
+allow_mutation=False 时仅只读（兼容旧调用）。
+confirm 成功条件 = commit 成功 + 全部 projection 成功。
 """
 from __future__ import annotations
 
@@ -23,9 +24,9 @@ def make_tools(
     """Assemble tool callables for Runtime tool-loops.
 
     allow_mutation=False (default): only local read/discovery tools.
-    allow_mutation=True: also register intent mutation tools (tests / explicit opt-in only).
-    Production Runtime must keep allow_mutation=False so all mutations go through
-    EngineeringOrchestrator.
+    allow_mutation=True: also register intent mutation tools (create_object,
+    create_file, link_objects, ...). Production Runtime uses allow_mutation=True;
+    mutations stay transactional via IntentExecutor + Veritas.
     """
     tools = make_local_tools(workspace, safe_mode=safe_mode, world_runtime=world_runtime)
     confirm_fn = None

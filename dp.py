@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Forge 入口 - 强制 DeepSeek"""
+"""Forge 入口 - 强制 DeepSeek；生产路径 = Runtime 工具循环。"""
 import sys, os
 from forge.workspace import Workspace
 from forge.memory import MemoryStore
@@ -11,13 +11,6 @@ project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 adapter = DeepSeekAdapter(model_name="deepseek-v4-flash")
 tag = "DeepSeek"
 
-MUTATION_KEYWORDS = (
-    "改", "修复", "添加", "删除", "实现", "重构", "创建", "新增", "修改",
-    "fix", "add", "implement", "refactor", "create", "delete",
-)
-
-def is_engineering_task(user_input: str) -> bool:
-    return any(kw in user_input for kw in MUTATION_KEYWORDS)
 
 def main():
     print(f"🔌 使用 {tag}")
@@ -33,8 +26,7 @@ def main():
         f" {'✅' if e.data['success'] else '❌'}"
     ))
 
-    print("⚒️ Forge Engineering Orchestrator | 输入 q 退出")
-    print("  工程任务走 Runtime.run → EngineeringOrchestrator（六 Phase 闭环）")
+    print("⚒️ Forge | 工具循环（只读 + World/文件 mutation）| 输入 q 退出")
     print("=" * 40)
 
     while True:
@@ -45,8 +37,6 @@ def main():
             if user_input.strip().lower() in ("exit", "quit", "q"):
                 print("👋")
                 break
-            # 意图分流：只读查询走 run_legacy（LLM 自主工具调用），
-            # 修改类任务走 run → EngineeringOrchestrator（六 Phase 闭环）
             response = runtime.run(user_input)
             if response:
                 print(f"\n🤖 {response}")
