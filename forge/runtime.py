@@ -101,8 +101,25 @@ def _save_session_summary(project_root: str, assistant_replies: list[str]) -> No
         pass
 
 
+# 结果确认型工具：第一行就是精华（RESULT: path=... tx=... 之类），压成一行安全。
+# 其余(默认)按"内容承载型"处理：read_file/str_replace/near_miss/diff 等，
+# 精华常常不在第一行，压缩过头是长会话后期质量下滑的直接原因之一。
+# NOTE: 这份名单是从代码里认出的工具名猜的，请对照 forge/tools/schemas.py
+# 里的实际工具名核对一遍，缺漏的往"内容型"（默认分支）方向偏，不要往
+# "确认型"偏——宁可少压缩，不要错压缩。
+_CONFIRMATION_TOOLS = {
+    "write_file", "modify_file", "undo_last_tx", "create_object",
+    "delete_file", "create_file", "unlink_objects", "link_objects",
+    "run_test_structured", "apply_patch", "edit_files_batch",
+}
+
+
 def _compress_messages(messages: list, keep_recent_tools: int = 6) -> list:
-    """Replace older tool results with one-line summaries to curb context rot."""
+    """Replace older tool results with summaries to curb context rot.
+
+    结果确认型工具压成一行；内容承载型工具保留更大预算（多行+字符上限），
+    避免第20步之后模型"以为看过"实则早被压没了的内容。
+    """
     if len(messages) < 24:
         return messages
     tool_idxs = [i for i, m in enumerate(messages) if getattr(m, "role", None) == "tool"]
@@ -114,8 +131,22 @@ def _compress_messages(messages: list, keep_recent_tools: int = 6) -> list:
         if i in drop:
             name = getattr(m, "name", None) or "tool"
             content = (getattr(m, "content", None) or "")
-            first = content.strip().splitlines()[0][:120] if content.strip() else ""
-            summary = f"[compressed FACT {name}] {first}"
+            stripped = content.strip()
+            if not stripped:
+                summary = f"[compressed FACT {name}] "
+            elif name in _CONFIRMATION_TOOLS:
+                first = stripped.splitlines()[0][:120]
+                summary = f"[compressed FACT {name}] {first}"
+            else:
+                lines = stripped.splitlines()
+                kept = lines[:8]
+                body = "\n".join(kept)[:800]
+                truncated = len(lines) > 8 or len(body) < len(stripped)
+                more = (
+                    f"\n...[截断，原始长度 {len(stripped)} 字符/{len(lines)} 行]"
+                    if truncated else ""
+                )
+                summary = f"[compressed {name}]\n{body}{more}"
             try:
                 from forge.adapters.base import Message as ForgeMessage
                 out.append(ForgeMessage(role="tool", content=summary, tool_call_id=getattr(m, "tool_call_id", None), name=name))
@@ -161,9 +192,19 @@ class ToolExecutor:
             old = str(args.get("old_string") or "")
             h = hashlib.sha1(old.encode("utf-8", errors="replace")).hexdigest()[:12]
             return f"str_replace:{path}:{h}"
-        if tool_name in ("write_file", "modify_file"):
+        if tool_name == "write_file":
+            import hashlib
             path = str(args.get("path") or "")
-            return f"{tool_name}:{path}"
+            content = str(args.get("content") or "")
+            h = hashlib.sha1(content.encode("utf-8", errors="replace")).hexdigest()[:12]
+            return f"write_file:{path}:{h}"
+        if tool_name == "modify_file":
+            import hashlib
+            path = str(args.get("path") or "")
+            ops = args.get("operations") or []
+            ops_json = json.dumps(ops, sort_keys=True, ensure_ascii=False, default=str)
+            h = hashlib.sha1(ops_json.encode("utf-8", errors="replace")).hexdigest()[:12]
+            return f"modify_file:{path}:{h}"
         return tool_name + ":" + json.dumps(
             args, sort_keys=True, ensure_ascii=False, default=str
         )

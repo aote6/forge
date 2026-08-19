@@ -7,6 +7,7 @@ Auto-registration: first write to a disk path with no World object creates one
 (path@state0 + content@state1), updates ObjectPathMap, then applies the edit.
 """
 from __future__ import annotations
+import sys
 
 from pathlib import Path as PathLib
 
@@ -861,8 +862,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             for path in info.get("paths") or []:
                 try:
                     cache_invalidate(root, path)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[undo_last_tx] cache_invalidate failed for {path}: {e}", file=sys.stderr)
             try:
                 record_session_change(
                     ",".join(info.get("paths") or []) or "(undo)",
@@ -871,8 +872,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     summary="shadow revert",
                     project_root=root,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[undo_last_tx] record_session_change failed: {e}", file=sys.stderr)
             body = (
                 "已从 shadow 恢复磁盘文件。\n"
                 "说明: mode=file_shadow_revert；World 账本可能仍较新，以磁盘 read 为准。"

@@ -103,7 +103,17 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
                     outputs.append("--- (missing path) ---\nError: path is required")
                     continue
                 try:
-                    content = workspace.read_file(path, start_line or 1, end_line or 0)
+                    no_range = not start_line and not end_line
+                    cached = cache_get(workspace.project_root, path) if no_range else None
+                    if cached:
+                        content = cached[0]
+                    else:
+                        content = workspace.read_file(path, start_line or 1, end_line or 0)
+                        if no_range:
+                            try:
+                                cache_put(workspace.project_root, path, content)
+                            except Exception:
+                                pass
                     header = f"--- {path}"
                     if start_line or end_line:
                         header += f" (lines {start_line or 1}-{end_line or 'end'})"

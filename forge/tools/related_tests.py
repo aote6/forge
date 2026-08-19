@@ -123,15 +123,25 @@ def format_related_hint(project_root: str, path: str, symbol_hint: str | None = 
 def symbols_from_edit(old: str, new: str, max_n: int = 5) -> list[str]:
     """Extract likely def/class names touched by an edit (for coverage_hint)."""
     import re
-    names: list[str] = []
-    for blob in (old or "", new or ""):
+
+    def _extract(blob: str) -> list[str]:
+        names: list[str] = []
         for m in re.finditer(r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)", blob, re.M):
             names.append(m.group(1))
         for m in re.finditer(r"^\s*class\s+([A-Za-z_]\w*)", blob, re.M):
             names.append(m.group(1))
-    # prefer names that appear in only one side or near changed lines
-    seen = []
-    for n in names:
+        return names
+
+    old_names = _extract(old or "")
+    new_names = _extract(new or "")
+    old_set, new_set = set(old_names), set(new_names)
+    # 真正变化的符号优先(对称差)，未变的公共符号垫后补位
+    changed = [n for n in new_names if n not in old_set] + \
+              [n for n in old_names if n not in new_set]
+    common = [n for n in new_names if n in old_set]
+
+    seen: list[str] = []
+    for n in changed + common:
         if n not in seen:
             seen.append(n)
     return seen[:max_n]
