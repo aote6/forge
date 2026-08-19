@@ -101,6 +101,48 @@ def _save_session_summary(project_root: str, assistant_replies: list[str]) -> No
         pass
 
 
+def _compress_messages(messages: list, keep_recent_tools: int = 6) -> list:
+    """Replace older tool results with one-line summaries to curb context rot."""
+    if len(messages) < 24:
+        return messages
+    tool_idxs = [i for i, m in enumerate(messages) if getattr(m, "role", None) == "tool"]
+    if len(tool_idxs) <= keep_recent_tools:
+        return messages
+    drop = set(tool_idxs[:-keep_recent_tools])
+    out = []
+    for i, m in enumerate(messages):
+        if i in drop:
+            name = getattr(m, "name", None) or "tool"
+            content = (getattr(m, "content", None) or "")
+            first = content.strip().splitlines()[0][:120] if content.strip() else ""
+            summary = f"[compressed {name}] {first}"
+            try:
+                from forge.adapters.base import Message as ForgeMessage
+                out.append(ForgeMessage(role="tool", content=summary, tool_call_id=getattr(m, "tool_call_id", None), name=name))
+            except Exception:
+                out.append(m)
+        else:
+            out.append(m)
+    return out
+
+
+def _todo_nudge_from_tools(tools: dict) -> str:
+    """If todo_list exists and has pending items, return a short reminder."""
+    fn = tools.get("todo_list")
+    if not fn:
+        return ""
+    try:
+        r = fn()
+        items = (r.payload or {}).get("todos") or []
+        pending = [it for it in items if it.get("status") in ("pending", "in_progress")]
+        if not pending:
+            return ""
+        lines = [f"- [{it.get('status')}] {it.get('content')}" for it in pending[:7]]
+        return "\n[system reminder] 未完成 todo（以用户最新消息为准）:\n" + "\n".join(lines)
+    except Exception:
+        return ""
+
+
 class ToolExecutor:
     def __init__(self, tools: dict):
         self.tools = tools
@@ -289,7 +331,15 @@ class Runtime:
         all_schemas = READ_ONLY_TOOL_DECLARATIONS + MUTATION_TOOL_DECLARATIONS
         tool_calls_n = 0
         assistant_replies: list[str] = []
-        for _ in range(MAX_AGENT_STEPS):
+        half = max(5, MAX_AGENT_STEPS // 2)
+        nudged = False
+        for step_i in range(MAX_AGENT_STEPS):
+            messages = _compress_messages(messages)
+            if step_i >= half and not nudged:
+                nudge = _todo_nudge_from_tools(self.executor.tools)
+                if nudge:
+                    messages.append(ForgeMessage(role="user", content=nudge))
+                    nudged = True
             resp = self.adapter.send(messages, all_schemas)
             if not resp.tool_calls:
                 if resp.content:

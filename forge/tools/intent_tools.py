@@ -18,6 +18,10 @@ from forge.world.types import Receipt, TransactionDelta
 from forge.tools.display import format_block, snippet_around
 from forge.tools.tx_shadow import record_tx, undo_last as shadow_undo_last
 from forge.tools.project_memory import update_memory
+from forge.tools.related_tests import format_related_hint
+from forge.tools.near_miss import find_near_misses
+from forge.tools.errors import decorate_fail_message
+from forge.tools.read_cache import invalidate as cache_invalidate
 
 
 def _format_projection_results(results) -> str:
@@ -133,10 +137,21 @@ def _attach_diff(result: ToolResult, path: str, old: str, new: str, tool: str = 
         "summary": f"edited {path}",
         "undo": "undo_last_tx()",
     }
+    root = pl.get("_project_root")
+    related = ""
+    if root and path:
+        try:
+            related = format_related_hint(str(root), path)
+        except Exception:
+            related = ""
+    if related:
+        body = body + "\n" + related
     result.display = format_block(tool, "OK", kv, body, hint=hint, clip=clip)
     pl["diff"] = diff
     pl["before_snippet"] = before
     pl["after_snippet"] = after
+    if related:
+        pl["related_tests_hint"] = related
     result.payload = pl
     return result
 
@@ -588,11 +603,17 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     old_string = needle2
                     n = text.count(old_string)
             if n == 0:
+                misses = find_near_misses(text, old_string)
+                body = "old_string 未找到"
+                if misses:
+                    body = body + "\n--- NEAR_MISS candidates ---\n" + "\n----\n".join(misses)
                 return ToolResult.fail(
-                    display=(
-                        f"str_replace failed: old_string 在 {path_n} 中未找到\n"
-                        f"建议: read_file / read_function 核对原文，确保 old_string 完全一致"
-                        f"（含缩进与换行）。可先复制文件中的精确片段。"
+                    display=format_block(
+                        "str_replace",
+                        "FAIL",
+                        {"path": path_n, "reason": "old_string not found"},
+                        body,
+                        hint="复制 NEAR_MISS 片段作为 old_string，或 read_function 后再改",
                     )
                 )
             if n > 1 and not replace_all:
@@ -628,15 +649,19 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                             result.payload.get("version"),
                             {path_n: text},
                         )
-                        update_memory(_project_root(world), recent_files=path_n)
+                        update_memory(_project_root(world), recent_files=path_n, last_status="edited")
+                        cache_invalidate(_project_root(world), path_n)
                     except Exception:
                         pass
+                if result.payload is not None:
+                    result.payload["_project_root"] = _project_root(world)
+                    result.payload["replacements"] = (n if replace_all else 1)
                 result = _attach_diff(result, path_n, text, new_text, tool="str_replace")
                 result = _attach_next(result, [path_n])
             return result
         except Exception as e:
             return ToolResult.fail(
-                display=f"str_replace failed: {e}\n建议: read_file 后重试；检查 path。"
+                display=decorate_fail_message(format_block("str_replace","FAIL",{"reason":str(e)}), e)
             )
 
     def write_file(path: str, content: str = "") -> ToolResult:
@@ -662,9 +687,12 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                             result.payload.get("version"),
                             {path_n: old_content},
                         )
-                        update_memory(_project_root(world), recent_files=path_n)
+                        update_memory(_project_root(world), recent_files=path_n, last_status="edited")
+                        cache_invalidate(_project_root(world), path_n)
                     except Exception:
                         pass
+                if result.payload is not None:
+                    result.payload["_project_root"] = _project_root(world)
                 result = _attach_diff(result, path_n, old_content, new_content, tool="write_file")
                 result = _attach_next(result, [path_n])
             return result

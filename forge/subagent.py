@@ -15,7 +15,11 @@ SUBAGENT_MAX_STEPS = 15
 SUBAGENT_SYSTEM = """你是 Forge 子 Agent。完成主 Agent 交给你的子任务。
 - 用工具探索与必要的小修改（str_replace / write_file）。
 - 不要无限搜索；找到结论后用自然语言总结并停止调用工具。
-- 最终回复必须是简洁结论（例如：bug 在 path 第 N 行，原因是…；或已修改哪些文件）。
+- 最终回复必须是简洁结论，并尽量用固定格式：
+  path: ...
+  line: ...
+  reason: ...
+  evidence: <一行原文>
 - 不要把完整文件内容贴回最终结论。
 """
 

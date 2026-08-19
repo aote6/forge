@@ -15,6 +15,8 @@ from forge.adapters.base import ToolResult
 from forge.core.security import is_dangerous_command, needs_git_confirmation, is_allowed_command
 from forge.tools.display import format_block, error_slices
 from forge.tools.project_memory import load_memory, update_memory, format_for_prompt
+from forge.tools.read_cache import get as cache_get, put as cache_put
+from forge.tools.errors import decorate_fail_message, classify_error
 
 LOG_PATH = Path.home() / "forge" / ".forge" / "operation_log.jsonl"
 MAX_OUTPUT_CHARS = 8000
@@ -845,9 +847,21 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
                         hint="glob_files 或 search_code 确认路径",
                     )
                 )
-            raw = full.read_text(encoding="utf-8", errors="replace")
-            lines = raw.splitlines()
-            total = len(lines)
+            # cache for unchanged files (mtime-keyed)
+            cached = cache_get(workspace.project_root, path)
+            if cached and not (end and end > 0) and not (start and int(start) > 1):
+                raw, meta = cached
+                lines = raw.splitlines()
+                total = len(lines)
+                # still apply outline logic below using cached text
+            else:
+                raw = full.read_text(encoding="utf-8", errors="replace")
+                lines = raw.splitlines()
+                total = len(lines)
+                try:
+                    cache_put(workspace.project_root, path, raw)
+                except Exception:
+                    pass
             start = int(start) if start else 1
             end = int(end) if end else 0
 
@@ -1114,7 +1128,7 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             )
         except Exception as e:
             return ToolResult.fail(
-                display=format_block("run_command", "FAIL", {"cmd": cmd, "reason": str(e)})
+                display=decorate_fail_message(format_block("run_command", "FAIL", {"cmd": cmd, "reason": str(e)}), e)
             )
 
 
