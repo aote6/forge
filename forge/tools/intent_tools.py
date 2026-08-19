@@ -15,6 +15,9 @@ from forge.intents.intent import Intent
 from forge.intents.executor import IntentExecutor
 from forge.projections.base import ProjectionManager
 from forge.world.types import Receipt, TransactionDelta
+from forge.tools.display import format_block, snippet_around
+from forge.tools.tx_shadow import record_tx, undo_last as shadow_undo_last
+from forge.tools.project_memory import update_memory
 
 
 def _format_projection_results(results) -> str:
@@ -98,21 +101,43 @@ def _make_unified_diff(path: str, old: str, new: str, max_lines: int = 80) -> st
     return "".join(lines)
 
 
-def _attach_diff(result: ToolResult, path: str, old: str, new: str) -> ToolResult:
+def _attach_diff(result: ToolResult, path: str, old: str, new: str, tool: str = "edit") -> ToolResult:
     if not result.success:
         return result
     diff = _make_unified_diff(path, old, new)
-    if not diff:
-        return result
-    body = (result.display or "").rstrip()
-    if "\nNEXT:" in body:
-        head, tail = body.split("\nNEXT:", 1)
-        result.display = head + "\nDIFF:\n" + diff.rstrip() + "\nNEXT:" + tail
-    else:
-        result.display = body + "\nDIFF:\n" + diff.rstrip()
-    if result.payload is not None:
-        result.payload = dict(result.payload)
-        result.payload["diff"] = diff
+    before = snippet_around(old or "", max_lines=5)
+    after = snippet_around(new or "", max_lines=5)
+    body_parts = [
+        "--- BEFORE (snippet) ---",
+        before,
+        "--- AFTER (snippet) ---",
+        after,
+    ]
+    if diff:
+        body_parts.extend(["--- DIFF ---", diff.rstrip()])
+    body = "\n".join(body_parts)
+    pl = dict(result.payload or {})
+    kv = {
+        "path": path,
+        "object_id": pl.get("object_id"),
+        "tx": pl.get("tx_id"),
+        "version": pl.get("version"),
+        "replacements": pl.get("replacements"),
+        "mode": pl.get("mode"),
+        "registered": pl.get("registered"),
+    }
+    hint = "不对就 undo_last_tx()；建议 run_test_structured 或 git_diff"
+    clip = {
+        "task": f"{tool} path={path}",
+        "tx": pl.get("tx_id"),
+        "summary": f"edited {path}",
+        "undo": "undo_last_tx()",
+    }
+    result.display = format_block(tool, "OK", kv, body, hint=hint, clip=clip)
+    pl["diff"] = diff
+    pl["before_snippet"] = before
+    pl["after_snippet"] = after
+    result.payload = pl
     return result
 
 
@@ -595,7 +620,18 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     f"{' registered=true' if reg else ''}\n"
                     f"str_replace ok: {path_n}"
                 )
-                result = _attach_diff(result, path_n, text, new_text)
+                if result.success and result.payload:
+                    try:
+                        record_tx(
+                            _project_root(world),
+                            result.payload.get("tx_id"),
+                            result.payload.get("version"),
+                            {path_n: text},
+                        )
+                        update_memory(_project_root(world), recent_files=path_n)
+                    except Exception:
+                        pass
+                result = _attach_diff(result, path_n, text, new_text, tool="str_replace")
                 result = _attach_next(result, [path_n])
             return result
         except Exception as e:
@@ -618,7 +654,18 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     f"tx={result.payload.get('tx_id')} version={result.payload.get('version')}\n"
                     f"write_file ok: {path_n}"
                 )
-                result = _attach_diff(result, path_n, old_content, new_content)
+                if result.success and result.payload:
+                    try:
+                        record_tx(
+                            _project_root(world),
+                            result.payload.get("tx_id"),
+                            result.payload.get("version"),
+                            {path_n: old_content},
+                        )
+                        update_memory(_project_root(world), recent_files=path_n)
+                    except Exception:
+                        pass
+                result = _attach_diff(result, path_n, old_content, new_content, tool="write_file")
                 result = _attach_next(result, [path_n])
             return result
         except Exception as e:
@@ -733,7 +780,44 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 display=f"apply_patch failed: {e}\n建议: 校验 diff；或改用 str_replace。"
             )
 
+
+    def undo_last_tx() -> ToolResult:
+        """Undo last recorded mutation via file shadow (MVP)."""
+        try:
+            root = _project_root(world)
+            info = shadow_undo_last(root)
+            if not info.get("ok"):
+                return ToolResult.fail(
+                    display=format_block(
+                        "undo_last_tx",
+                        "FAIL",
+                        {"reason": info.get("error")},
+                        hint="没有可撤销的事务；先成功 str_replace/write_file 一次。",
+                    )
+                )
+            return ToolResult.ok(
+                display=format_block(
+                    "undo_last_tx",
+                    "OK",
+                    {
+                        "undone_tx": info.get("undone_tx"),
+                        "restored_version": info.get("restored_version"),
+                        "paths": ",".join(info.get("paths") or []),
+                        "mode": info.get("mode"),
+                    },
+                    body="已从 shadow 恢复文件内容。",
+                    hint="可继续编辑或 run_test_structured",
+                    clip={"undo_tx": info.get("undone_tx"), "paths": ",".join(info.get("paths") or [])},
+                ),
+                payload=info,
+            )
+        except Exception as e:
+            return ToolResult.fail(
+                display=format_block("undo_last_tx", "FAIL", {"reason": str(e)})
+            )
+
     return {
+        "undo_last_tx": undo_last_tx,
         "str_replace": str_replace,
         "write_file": write_file,
         "create_object": create_object,

@@ -17,7 +17,7 @@ from __future__ import annotations
 READ_ONLY_TOOL_DECLARATIONS = [
     {
         "name": "read_file",
-        "description": "读取文件内容。可用 start/end 限制行范围（1-based，end=0 表示读到末尾）。",
+        "description": "读取文件。大文件无行范围时返回函数/类大纲；指定 start/end 读片段；小文件返回全文。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -221,6 +221,11 @@ READ_ONLY_TOOL_DECLARATIONS = [
         },
     },
     {
+        "name": "project_memory",
+        "description": "查看项目记忆：测试命令、最近改过的文件、曾失败测试、上次任务。",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "web_fetch",
         "description": "抓取 http(s) URL 的文本内容（无 JS，超时 10s，默认截断 5000 字）。",
         "parameters": {
@@ -238,6 +243,11 @@ READ_ONLY_TOOL_DECLARATIONS = [
 # Mutations — text-first edit primitives + World + batch
 # ---------------------------------------------------------------------------
 MUTATION_TOOL_DECLARATIONS = [
+    {
+        "name": "undo_last_tx",
+        "description": "撤销最近一次成功的文件修改（shadow/事务）。改错了优先调用，不要盲猜第二次 str_replace。",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
     {
         "name": "str_replace",
         "description": (

@@ -1,30 +1,25 @@
 # Forge
 
-Veritas 上的工程 Agent：工具循环 + 事务 + Subagent。
+Veritas 工程 Agent：敢改、能撤、大文件不瞎、结果可复制。
 
 ## 快速开始
 
 ```bash
-./install.sh          # 检查 Python / veritasd，跑测试，生成 bin/forge
-export PATH="$PWD/bin:$PATH"
+./install.sh
 export DEEPSEEK_API_KEY=...
-forge                 # 或 python3 dp.py
+python3 dp.py
 ```
 
-## 主路径
+## 干活 AI 友好能力
 
-```
-glob/search/read → str_replace|write_file|apply_patch → (自动 DIFF) → test/diff
-复杂探索 → spawn_subagent → 结论
-```
-
-## 体验要点
-
-- **改完自动 DIFF**：mutation 成功返回里带 `DIFF:` 块
-- **测试失败带源码窗口**：`failure_context`（前后 5 行）
-- **启动检查 veritasd**：离线仅警告，文件编辑仍可用
-- **会话历史**：`.forge/conversation_history.json`，下次注入摘要
-- **自动登记**：磁盘文件首次写入进入 World
+| 能力 | 说明 |
+|------|------|
+| **undo_last_tx** | 撤销最近一次修改（shadow MVP） |
+| **read_file 大纲** | 大文件返回函数/类列表 |
+| **BEFORE/AFTER + DIFF** | 改完一眼看懂 |
+| **ERROR_SLICES** | run_command 自动抽 Traceback 附近 |
+| **project_memory** | 测试命令、最近文件、跨会话 |
+| **FORGE 块** | `=== FORGE/... ===` 方便手机复制给其他 AI |
 
 ## 测试
 

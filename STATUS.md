@@ -1,16 +1,14 @@
 # Forge 状态
 
-## 工程化体验（本轮）
+## 本轮（敢干活 UX）
 
-| 项 | 说明 |
-|----|------|
-| P0 自动 DIFF | str_replace / write_file / apply_patch 成功后附 unified diff |
-| P1 测试定位 | run_test_structured → failure_context + source 窗口 |
-| P2 veritasd 检查 | dp.py 启动非阻塞探测 |
-| P3 install.sh | Python≥3.10、找 veritasd、pytest、bin/forge |
-| P4 历史持久化 | conversation_history.json + session_summary 注入 |
-| P5 返回格式 | 高频工具 RESULT:/FAILED: 前缀 |
+- format_block 统一手机/多 AI 复制块
+- undo_last_tx（.forge/tx_shadow 文件级撤销，深度 5）
+- read_file >150 行 → outline
+- mutation 返回 BEFORE/AFTER/DIFF + CLIP
+- run_command ERROR_SLICES
+- project_memory.json + 启动注入 system
 
-## 生产路径
+## 生产路径不变
 
-Runtime → 工具循环 → IntentExecutor → Veritas → Projection
+工具循环 → IntentExecutor → Veritas → Projection

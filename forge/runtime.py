@@ -272,7 +272,12 @@ class Runtime:
         from forge.tools.schemas import MUTATION_TOOL_DECLARATIONS
 
         prior = _load_session_summary(self.workspace.project_root)
-        system = SYSTEM_INSTRUCTION + (prior or "")
+        try:
+            from forge.tools.project_memory import format_for_prompt
+            mem = format_for_prompt(self.workspace.project_root)
+        except Exception:
+            mem = ""
+        system = SYSTEM_INSTRUCTION + (prior or "") + (mem or "")
         messages = [ForgeMessage(role="system", content=system)]
         history = self.conversation.get_messages()
         if history:

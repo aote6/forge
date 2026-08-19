@@ -13,6 +13,8 @@ from pathlib import Path
 
 from forge.adapters.base import ToolResult
 from forge.core.security import is_dangerous_command, needs_git_confirmation, is_allowed_command
+from forge.tools.display import format_block, error_slices
+from forge.tools.project_memory import load_memory, update_memory, format_for_prompt
 
 LOG_PATH = Path.home() / "forge" / ".forge" / "operation_log.jsonl"
 MAX_OUTPUT_CHARS = 8000
@@ -831,14 +833,16 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             return ToolResult.fail(display=f"列出文件失败: {e}")
 
     def read_file(path: str, start: int = 1, end: int = 0) -> ToolResult:
-        """读取文件。未指定行范围且超过 200 行时：前 100 + 后 50，中间省略。"""
+        """读取文件。大文件无行范围时返回符号大纲，避免撑爆上下文。"""
         try:
             full = Path(workspace.project_root) / path
             if not full.is_file():
                 return ToolResult.fail(
-                    display=(
-                        f"read_file failed: 文件不存在 {path}\n"
-                        f"建议: glob_files 或 search_code 确认路径。"
+                    display=format_block(
+                        "read_file",
+                        "FAIL",
+                        {"path": path, "reason": "not found"},
+                        hint="glob_files 或 search_code 确认路径",
                     )
                 )
             raw = full.read_text(encoding="utf-8", errors="replace")
@@ -846,37 +850,77 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             total = len(lines)
             start = int(start) if start else 1
             end = int(end) if end else 0
+
+            # Explicit range
             if end and end > 0:
                 lo = max(1, start)
                 hi = min(total, end)
                 chunk = lines[lo - 1 : hi]
                 numbered = "\n".join(f"{lo + i}| {ln}" for i, ln in enumerate(chunk))
-                content = f"{path} L{lo}-{hi}/{total}\n{numbered}"
-            elif total > 200 and start <= 1:
-                head = lines[:100]
-                tail = lines[-50:]
-                omitted = total - 150
-                head_s = "\n".join(f"{i+1}| {ln}" for i, ln in enumerate(head))
-                tail_start = total - 50 + 1
-                tail_s = "\n".join(f"{tail_start + i}| {ln}" for i, ln in enumerate(tail))
-                content = (
-                    f"{path} ({total} lines, truncated)\n{head_s}\n"
-                    f"...（省略 {omitted} 行）...\n{tail_s}\n"
-                    f"提示: 用 read_function 或 read_file(path, start, end) 取完整片段。"
+                body = f"{path} L{lo}-{hi}/{total}\n{numbered}"
+                return ToolResult.ok(
+                    display=format_block(
+                        "read_file",
+                        "OK",
+                        {"path": path, "lines": total, "mode": "range"},
+                        body,
+                    ),
+                    payload={"path": path, "lines": total, "mode": "range"},
                 )
-            else:
-                lo = max(1, start)
-                chunk = lines[lo - 1 :]
-                numbered = "\n".join(f"{lo + i}| {ln}" for i, ln in enumerate(chunk))
-                content = f"{path} L{lo}-{total}/{total}\n{numbered}"
-            _log("read_file", {"path": path, "lines": total}, True)
+
+            # Large file without range -> outline
+            if total > 150 and start <= 1:
+                outline_lines = []
+                if path.endswith(".py"):
+                    try:
+                        import ast as _ast
+                        tree = _ast.parse(raw)
+                        n = 0
+                        for node in tree.body:
+                            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                                n += 1
+                                end_l = getattr(node, "end_lineno", node.lineno) or node.lineno
+                                kind = "class" if isinstance(node, _ast.ClassDef) else "def"
+                                outline_lines.append(
+                                    f"[{n}] {kind} {node.name} (L{node.lineno}-{end_l})"
+                                )
+                    except Exception:
+                        outline_lines = []
+                if not outline_lines:
+                    # anchor every 50 lines
+                    for i in range(0, total, 50):
+                        outline_lines.append(f"[L{i+1}] {lines[i][:80]}")
+                body = "\n".join(outline_lines[:40])
+                if total > 150:
+                    body += f"\n... ({total} lines total)"
+                return ToolResult.ok(
+                    display=format_block(
+                        "read_file",
+                        "OK",
+                        {"path": path, "lines": total, "mode": "outline"},
+                        body,
+                        hint='read_function(path, name) 或 read_file(path, start, end)',
+                    ),
+                    payload={"path": path, "lines": total, "mode": "outline", "outline": outline_lines[:40]},
+                )
+
+            lo = max(1, start)
+            chunk = lines[lo - 1 :]
+            numbered = "\n".join(f"{lo + i}| {ln}" for i, ln in enumerate(chunk))
+            body = f"{path} L{lo}-{total}/{total}\n{numbered}"
             return ToolResult.ok(
-                display=_truncate_head(content) if total > 500 else content,
-                payload={"path": path, "lines": total},
+                display=format_block(
+                    "read_file",
+                    "OK",
+                    {"path": path, "lines": total, "mode": "full"},
+                    body if total <= 500 else _truncate_head(body),
+                ),
+                payload={"path": path, "lines": total, "mode": "full"},
             )
         except Exception as e:
-            _log("read_file", {"path": path}, False, str(e))
-            return ToolResult.fail(display=f"read_file failed: {e}")
+            return ToolResult.fail(
+                display=format_block("read_file", "FAIL", {"path": path, "reason": str(e)})
+            )
 
 
     def search_code(pattern: str, path: str = ".") -> ToolResult:
@@ -1019,54 +1063,59 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             return ToolResult.fail(display=f"run_single_test 失败: {e}")
 
     def run_command(cmd: str, timeout: int = 60) -> ToolResult:
-        blocked = is_dangerous_command(cmd)
-        if blocked:
-            _log("run_command", {"cmd": cmd}, False, f"blocked: {blocked}")
-            return ToolResult.fail(
-                display=f"🚫 命令被安全策略拦截（命中规则: {blocked}）\n如确需执行，请手动在终端运行。"
-            )
-
-        if safe_mode == "whitelist":
-            if not is_allowed_command(cmd):
-                _log("run_command", {"cmd": cmd}, False, "not in whitelist")
-                return ToolResult.fail(
-                    display=f"⏸️ 命令不在白名单中，需要确认:\n  {cmd}\n💡 请手动在终端执行或切换到黑名单模式。"
-                )
-
-        git_check = needs_git_confirmation(cmd)
-        if git_check:
-            _log("run_command", {"cmd": cmd}, False, f"git confirm: {git_check}")
-            return ToolResult.fail(
-                display=f"⏸️ Git 操作需要确认:\n  {cmd}\n💡 请手动在终端执行此 Git 命令。"
-            )
-
+        """执行 shell；保留尾部输出，并提取 Error/Traceback 切片。"""
         try:
-            result = subprocess.run(
-                cmd, shell=True, cwd=workspace.project_root,
-                capture_output=True, text=True, timeout=timeout,
+            if is_dangerous_command(cmd):
+                return ToolResult.fail(
+                    display=format_block(
+                        "run_command", "FAIL", {"cmd": cmd, "reason": "dangerous"},
+                        hint="命令被安全策略拦截",
+                    )
+                )
+            r = subprocess.run(
+                cmd,
+                shell=True,
+                cwd=workspace.project_root,
+                capture_output=True,
+                text=True,
+                timeout=int(timeout) if timeout else 60,
             )
-            display = f"$ {cmd}\n[exit {result.returncode}]\n"
-            if result.stdout:
-                display += f"--- stdout ---\n{result.stdout}\n"
-            if result.stderr:
-                display += f"--- stderr ---\n{result.stderr}\n"
-            display = _truncate(display)
-            _log("run_command", {"cmd": cmd}, result.returncode == 0, f"exit={result.returncode}")
-            payload = {
-                "returncode": result.returncode,
-                "cmd": cmd,
-                "mutation": False,
-                "phase": "verifying",
-            }
-            if result.returncode == 0:
-                return ToolResult.ok(display=display, payload=payload)
-            return ToolResult.fail(display=display + "\n建议: 查看 stderr/末尾输出定位错误。", payload=payload)
-        except subprocess.TimeoutExpired:
-            _log("run_command", {"cmd": cmd}, False, "timeout")
-            return ToolResult.fail(display=f"命令超时（>{timeout}秒）: {cmd}")
+            out = (r.stdout or "") + (r.stderr or "")
+            tail = _truncate(out)
+            slices = error_slices(out)
+            body = tail
+            if slices:
+                body = tail + "\n--- ERROR_SLICES ---\n" + slices
+            ok = r.returncode == 0
+            # learn test command
+            if "pytest" in cmd or "npm test" in cmd or "cargo test" in cmd:
+                try:
+                    update_memory(workspace.project_root, test_command=cmd.strip())
+                except Exception:
+                    pass
+            return ToolResult.ok(
+                display=format_block(
+                    "run_command",
+                    "OK" if ok else "FAIL",
+                    {"cmd": cmd, "exit": r.returncode},
+                    body,
+                    hint="" if ok else "看 ERROR_SLICES / 尾部输出",
+                ),
+                payload={"returncode": r.returncode, "cmd": cmd},
+            ) if ok else ToolResult.fail(
+                display=format_block(
+                    "run_command",
+                    "FAIL",
+                    {"cmd": cmd, "exit": r.returncode},
+                    body,
+                    hint="看 ERROR_SLICES；或 run_test_structured",
+                ),
+                payload={"returncode": r.returncode, "cmd": cmd},
+            )
         except Exception as e:
-            _log("run_command", {"cmd": cmd}, False, str(e))
-            return ToolResult.fail(display=f"执行失败: {e}")
+            return ToolResult.fail(
+                display=format_block("run_command", "FAIL", {"cmd": cmd, "reason": str(e)})
+            )
 
 
     def read_function(path: str, symbol_name: str) -> ToolResult:
@@ -1305,6 +1354,22 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             return ToolResult.fail(display=f"web_fetch failed: {e}\n建议: 确认网络与 URL。")
 
 
+
+    def project_memory() -> ToolResult:
+        """返回项目记忆（测试命令、最近文件等）。"""
+        data = load_memory(workspace.project_root)
+        if not data:
+            return ToolResult.ok(
+                display=format_block("project_memory", "OK", {"empty": True}, "(empty)"),
+                payload={},
+            )
+        body = "\n".join(f"{k}: {v}" for k, v in data.items())
+        return ToolResult.ok(
+            display=format_block("project_memory", "OK", {"keys": len(data)}, body),
+            payload=data,
+        )
+
+
     return {
         "read_file_with_lines": read_file_with_lines,
         "preview_line_mutation": preview_line_mutation,
@@ -1330,6 +1395,7 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         "todo_write": todo_write,
         "todo_list": todo_list,
         "web_fetch": web_fetch,
+        "project_memory": project_memory,
         "read_file": read_file,
         "read_function": read_function,
         "search_code": search_code,

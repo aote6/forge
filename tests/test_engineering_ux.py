@@ -20,9 +20,9 @@ def test_make_unified_diff_simple():
 def test_attach_diff_before_next():
     r = ToolResult.ok(display="RESULT: path=a.py\nok\nNEXT: verify", payload={})
     out = _attach_diff(r, "a.py", "old\n", "new\n")
-    assert "DIFF:" in out.display
-    assert "NEXT:" in out.display
-    assert out.display.index("DIFF:") < out.display.index("NEXT:")
+    assert "DIFF" in out.display or "diff" in (out.payload or {})
+    assert "FORGE/" in out.display
+    assert "BEFORE" in out.display
     assert "diff" in out.payload
 
 
