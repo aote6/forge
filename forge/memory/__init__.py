@@ -1,7 +1,9 @@
-from forge.memory.checkpoint import CheckpointStore
+"""Memory package — process-local MemoryStore.
 
-# MemoryStore is defined in sibling module forge/memory.py (file vs package shadow).
-# Re-export so `from forge.memory import MemoryStore` works for production entrypoints.
+Task CheckpointStore (orchestrator recovery) was removed with the six-phase path.
+"""
+from __future__ import annotations
+
 try:
     import importlib.util
     import os
@@ -29,4 +31,4 @@ except Exception:  # pragma: no cover
             return self.facts.get(key)
 
 
-__all__ = ["CheckpointStore", "MemoryStore"]
+__all__ = ["MemoryStore"]

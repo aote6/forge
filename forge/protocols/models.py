@@ -14,6 +14,10 @@ from typing import Any, Dict, List, Optional
 
 PROTOCOL_VERSION = "2.0"
 
+CANONICAL_PLAN_OPERATION_TYPES = frozenset({
+    "modify", "create_file", "delete_file", "create_object", "link_objects", "unlink_objects",
+})
+
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -99,30 +103,24 @@ class PlanStep:
 
     @classmethod
     def from_dict(cls, data: dict) -> "PlanStep":
-        from forge.protocols.operation_contract import (
-            CANONICAL_PLAN_OPERATION_TYPES,
-            OperationContractError,
-            require_target_files_list,
-        )
-
         if not isinstance(data, dict):
-            raise OperationContractError("PlanStep.from_dict requires a dict")
+            raise ValueError("PlanStep.from_dict requires a dict")
 
         if "operation_type" not in data:
-            raise OperationContractError(
+            raise ValueError(
                 "PlanStep missing operation_type (will not default to modify)"
             )
         op = data.get("operation_type")
         if op is None or op == "":
-            raise OperationContractError(
+            raise ValueError(
                 "PlanStep operation_type is null/empty (will not default to modify)"
             )
         if not isinstance(op, str):
-            raise OperationContractError(
+            raise ValueError(
                 f"PlanStep operation_type must be str, got {type(op).__name__}"
             )
         if op not in CANONICAL_PLAN_OPERATION_TYPES:
-            raise OperationContractError(
+            raise ValueError(
                 f"PlanStep unknown operation_type {op!r}: "
                 f"expected one of {sorted(CANONICAL_PLAN_OPERATION_TYPES)}"
             )
@@ -130,10 +128,12 @@ class PlanStep:
         if "target_files" in data:
             tf = data.get("target_files")
             if tf is None:
-                raise OperationContractError(
+                raise ValueError(
                     "PlanStep target_files is null (must be a list)"
                 )
-            target_files = list(require_target_files_list(tf, field_name="target_files"))
+            if not isinstance(tf, list):
+                raise ValueError("PlanStep target_files must be a list")
+            target_files = list(tf)
         else:
             target_files = []
 
@@ -216,38 +216,31 @@ class ChangeProposal:
 
     @classmethod
     def from_dict(cls, data: dict) -> "ChangeProposal":
-        from forge.protocols.operation_contract import (
-            OperationContractError,
-            require_target_files_list,
-            validate_proposal_operations_structure,
-        )
-
         if not isinstance(data, dict):
-            raise OperationContractError("ChangeProposal.from_dict requires a dict")
+            raise ValueError("ChangeProposal.from_dict requires a dict")
 
         if "target_files" in data:
             tf = data.get("target_files")
             if tf is None:
-                raise OperationContractError(
+                raise ValueError(
                     "ChangeProposal target_files is null (must be a list)"
                 )
-            target_files = list(
-                require_target_files_list(tf, field_name="target_files")
-            )
+            if not isinstance(tf, list):
+                raise ValueError("ChangeProposal target_files must be a list")
+            target_files = list(tf)
         else:
             target_files = []
 
         if "operations" in data:
             ops = data.get("operations")
             if ops is None:
-                raise OperationContractError(
+                raise ValueError(
                     "ChangeProposal operations is null (must be a list)"
                 )
             if not isinstance(ops, list):
-                raise OperationContractError(
+                raise ValueError(
                     f"ChangeProposal operations must be a list, got {type(ops).__name__}"
                 )
-            validate_proposal_operations_structure(ops)
             operations = list(ops)
         else:
             operations = []

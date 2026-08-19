@@ -2,63 +2,70 @@
 
 ## 定位
 
-Forge 是运行在 Veritas 世界上的工程 Agent。LLM 通过工具循环逐步执行任务，突变操作经 IntentExecutor -> WorldSession -> Veritas 事务 -> commit -> Projection。
+Forge 是运行在 Veritas 世界上的工程 Agent。LLM 通过工具循环逐步执行任务，突变经 IntentExecutor → WorldSession → Veritas 事务 → commit → Projection。
 
-依赖方向：Forge -> Veritas（经 WorldRuntime -> veritasd -> Kernel）。
+依赖方向：Forge → Veritas（经 WorldRuntime → veritasd → Kernel）。
 
 ## 生产 Runtime（唯一）
 
+```
 User Task
-  -> Runtime.run(task)
-    -> _run_conversation(task)  # 工具循环，唯一执行路径
-      -> adapter.send(messages, READ_ONLY + MUTATION schemas)
-        -> ToolExecutor.execute(tool_call)
-          -> IntentExecutor -> WorldSession -> Veritas commit/abort
-          -> ProjectionManager.project(...)
+  → Runtime.run(task)
+    → _run_conversation(task)   # 唯一执行路径
+      → adapter.send(messages, READ_ONLY + MUTATION schemas)
+        → ToolExecutor.execute(tool_call)
+          → IntentExecutor → WorldSession → Veritas commit/abort
+          → ProjectionManager.project(...)
+```
 
-- Runtime.run 是唯一生产入口。所有任务走工具循环。
-- Runtime.run_legacy 已废弃，仅保留兼容。
-- 突变工具内部处理事务（begin -> execute -> commit/abort），LLM 不直接管理事务。
-- World 操作（create_object / link_objects）和文件操作（create_file / modify_file / delete_file）在工具层硬分开。
+- `Runtime.run` 是唯一生产入口。
+- `Runtime.run_legacy` 仅交互式只读/确认兜底，已标注 deprecated。
+- 突变工具内部处理事务；LLM 不直接管理 begin/commit。
+- World 操作与文件操作在工具层硬分开。
 
-## 工具集（32 个）
+## 工具集
 
-### World 操作（不写文件）
+### World（不写文件）
 
-- create_object: 创建纯世界对象，返回 ObjectId
-- link_objects: 建立对象链接（from_id, to_id, link_type）
-- unlink_objects: 删除链接
-- list_world_objects / list_world_links / world_info / get_world_object: 查询
+- create_object / link_objects / unlink_objects
+- list_world_objects / list_world_links / world_info / get_world_object
 
-### 文件操作（投影到磁盘）
+### 文件（投影到磁盘）
 
 - create_file / modify_file / delete_file
 
-### 只读探索（26 个）
+### 只读探索
 
-- list_files / read_file / read_files / read_file_with_lines
-- search_code / get_repo_map / summarize_file / extract_code_skeleton
-- find_symbol_definition / get_call_chain / get_symbol_line_range
-- git_diff / git_log / git_status_enhanced / read_git_version / get_diff_summary
-- run_command / run_single_test / run_test_structured / run_diagnostics
-- get_context_budget / search_history / preview_line_mutation
-- inspect_last_intent
+- list_files / read_file / search_code / get_repo_map / git_* / run_* / …
 
-## 已废弃模块（不删，测试仍引用）
+## 已删除的旧架构（本轮清理）
 
-- forge/orchestrator/engine.py — 旧六阶段 Orchestrator
-- forge/planner.py — 旧 Planner（生成完整 Plan JSON）
-- forge/plan_validator.py — 旧 Plan 结构校验
-- forge/engineering/* — 旧六阶段状态机
+| 删除项 | 说明 |
+|--------|------|
+| `forge/orchestrator/` | 六阶段 EngineeringOrchestrator |
+| `forge/planner.py` / `plan_validator.py` | 旧 Plan 生成与校验 |
+| `forge/engineering/` | 旧工程状态机 |
+| `forge/context/` | Planner 用仓库索引/快照 |
+| `forge/adapters/execution.py` 等 | 仅服务 Orchestrator 的适配器 |
+| `forge/protocols/operation_contract.py` / `world_operations.py` | Plan 侧 SSOT |
+| `forge/failures.py` / `forge/verification/` | 旧 VERIFY 路径 |
+| `forge/memory/checkpoint.py` | Orchestrator TaskCheckpoint 存储 |
+| 一批 `tests/test_planner*` / `test_orchestrator*` / `test_plan_*` 等 | 验证旧路径的测试 |
+
+## 保留核心
+
+- `runtime` / `tools` / `world` / `intents` / `projections` / `recovery`
+- `core`（edit_contract 等）
+- `adapters`：base / deepseek / gemini
+- `protocols/models.py`：共享 dataclass（无编排）
 
 ## 已知限制
 
 - veritasd 需在 PATH 或默认路径可用
 - 单活跃 Session（Runtime 级）
-- LLM 工具循环最多 20 轮
-- 工具数量多，LLM 需要清晰的 system prompt 引导（已提供决策树格式）
+- 工具循环默认最多 20 轮
 
 ## 测试状态
 
-- 333 passed, 1 xfailed
-- test_tool_loop_create_object_wiring.py: 验证 create_object 工具接线
+- 本轮清理后：全绿（passed + skipped 依赖 veritasd；无 failed）
+- `tests/test_tool_loop_create_object_wiring.py`：create_object 工具接线

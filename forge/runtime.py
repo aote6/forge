@@ -6,7 +6,6 @@ Production path (唯一):
     → ToolExecutor → IntentExecutor → Veritas commit/abort → Projection
 
 run_legacy 仅保留为交互式只读/确认兜底，已 deprecated，禁止作为 mutation 主路径。
-旧 EngineeringOrchestrator / Planner 不再由本模块调用。
 """
 from __future__ import annotations
 
@@ -20,7 +19,6 @@ from forge.confirmation import is_cancel, is_confirm
 from forge.conversation import Conversation
 from forge.events import Event, EventType
 from forge.memory import MemoryStore
-from forge.memory.checkpoint import CheckpointStore
 from forge.projections.base import ProjectionManager
 from forge.projections.file_projection import FileProjection
 from forge.projections.git_projection import GitProjection
@@ -136,7 +134,6 @@ class Runtime:
         self.conversation.append(Message(role="system", content=SYSTEM_INSTRUCTION))
         self.phase = AgentPhase.IDLE
         self._handlers: dict = {t: [] for t in EventType}
-        self._task_memory = CheckpointStore(workspace.project_root)
 
     def _recover_projections(self):
         from forge.recovery.replay import ProjectionRecovery
