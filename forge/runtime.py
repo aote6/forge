@@ -56,22 +56,36 @@ def _append_conversation_log(project_root: str, role: str, content: str, **extra
 
 
 def _load_session_summary(project_root: str) -> str:
-    """Load prior session summary for system prompt injection."""
+    """Load prior session summary / conversation history for system prompt."""
     from pathlib import Path as _P
-    path = _P(project_root) / ".forge" / "session_summary.json"
-    if not path.is_file():
-        return ""
+    root = _P(project_root) / ".forge"
+    notes = []
+    tasks = []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        notes = data.get("notes") or data.get("summaries") or []
-        if not notes:
-            return ""
-        body = "\n".join(f"- {n}" for n in notes[-5:])
-        return "\n\n## 上次会话摘要\n" + body
+        hist = root / "conversation_history.json"
+        if hist.is_file():
+            data = json.loads(hist.read_text(encoding="utf-8"))
+            notes = list(data.get("notes") or [])
+            summary = data.get("summary") or {}
+            tasks = list(summary.get("last_tasks") or [])
+            if not notes:
+                notes = list(summary.get("last_conclusions") or [])
+        path = root / "session_summary.json"
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            notes = notes or list(data.get("notes") or data.get("summaries") or [])
     except Exception:
         return ""
-
-
+    if not notes and not tasks:
+        return ""
+    parts = ["\n\n## 上次会话摘要"]
+    if tasks:
+        parts.append("任务:")
+        parts.extend(f"- {t}" for t in tasks[-3:])
+    if notes:
+        parts.append("结论:")
+        parts.extend(f"- {n[:300]}" for n in notes[-5:])
+    return "\n".join(parts)
 def _save_session_summary(project_root: str, assistant_replies: list[str]) -> None:
     from pathlib import Path as _P
     try:

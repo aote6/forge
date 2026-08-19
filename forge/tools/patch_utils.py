@@ -142,5 +142,5 @@ def apply_unified_patch_to_files(project_root: str, patch: str) -> dict:
             new_content = _apply_hunks_to_text(original, f["hunks"])
         except ValueError as e:
             return {"files": [], "error": f"{path}: {e}"}
-        out.append({"path": path, "new_content": new_content})
+        out.append({"path": path, "old_content": original, "new_content": new_content})
     return {"files": out}

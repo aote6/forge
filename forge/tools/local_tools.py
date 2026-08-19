@@ -159,23 +159,30 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
                     continue
                 seen.add(k)
                 uniq.append(c)
-            display = f"$ pytest {target}\n[exit {r.returncode}]\n{_truncate(out)}"
+            prefix = "RESULT" if r.returncode == 0 else "FAILED"
+            display = f"{prefix}: pytest target={target} exit={r.returncode}\n{_truncate(out)}"
             if uniq:
                 display += "\n\n--- failure context ---"
                 for c in uniq[:8]:
                     display += f"\n{c['file']}:{c['line']}\n{c['snippet']}\n"
             _log("run_test_structured", {"target": target}, r.returncode == 0)
+            failure_context = [
+                {"file": c["file"], "line": c["line"], "source": c["snippet"]}
+                for c in uniq[:8]
+            ]
             payload = {
                 "returncode": r.returncode,
+                "failed_tests": failures,
                 "failures": failures,
                 "contexts": uniq[:8],
+                "failure_context": failure_context,
                 "mutation": False,
                 "phase": "verifying",
             }
             if r.returncode == 0:
                 return ToolResult.ok(display=display, payload=payload)
             return ToolResult.fail(
-                display=display + "\n建议: 根据 failure context 用 read_function 或 modify_file 修复。",
+                display=display + "\n建议: 根据 failure_context 源码窗口直接修复，无需再 read_file。",
                 payload=payload,
             )
         except Exception as e:

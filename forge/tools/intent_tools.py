@@ -79,6 +79,43 @@ def _next_hint(paths: list[str] | None = None) -> str:
     )
 
 
+def _make_unified_diff(path: str, old: str, new: str, max_lines: int = 80) -> str:
+    """Build a short unified diff for display (no git required)."""
+    import difflib
+    a = (old or "").splitlines(keepends=True)
+    b = (new or "").splitlines(keepends=True)
+    if a == b:
+        return ""
+    lines = list(
+        difflib.unified_diff(
+            a, b, fromfile=f"a/{path}", tofile=f"b/{path}", lineterm="\n"
+        )
+    )
+    if not lines:
+        return ""
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + [f"... ({len(lines) - max_lines} more diff lines)\n"]
+    return "".join(lines)
+
+
+def _attach_diff(result: ToolResult, path: str, old: str, new: str) -> ToolResult:
+    if not result.success:
+        return result
+    diff = _make_unified_diff(path, old, new)
+    if not diff:
+        return result
+    body = (result.display or "").rstrip()
+    if "\nNEXT:" in body:
+        head, tail = body.split("\nNEXT:", 1)
+        result.display = head + "\nDIFF:\n" + diff.rstrip() + "\nNEXT:" + tail
+    else:
+        result.display = body + "\nDIFF:\n" + diff.rstrip()
+    if result.payload is not None:
+        result.payload = dict(result.payload)
+        result.payload["diff"] = diff
+    return result
+
+
 def _attach_next(result: ToolResult, paths: list[str] | None = None) -> ToolResult:
     if result.success and result.display is not None:
         if "NEXT:" not in result.display:
@@ -558,6 +595,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     f"{' registered=true' if reg else ''}\n"
                     f"str_replace ok: {path_n}"
                 )
+                result = _attach_diff(result, path_n, text, new_text)
                 result = _attach_next(result, [path_n])
             return result
         except Exception as e:
@@ -570,9 +608,9 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
         try:
             path_n = _norm_path(path)
             oid = _resolve_oid(world, path_n, None)
-            result = _write_content_to_world(
-                path_n, content if content is not None else "", oid
-            )
+            old_content = _read_disk(world, path_n) or ""
+            new_content = content if content is not None else ""
+            result = _write_content_to_world(path_n, new_content, oid)
             if result.success:
                 mode = "overwrite" if oid is not None else "create_or_register"
                 result.display = (
@@ -580,6 +618,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     f"tx={result.payload.get('tx_id')} version={result.payload.get('version')}\n"
                     f"write_file ok: {path_n}"
                 )
+                result = _attach_diff(result, path_n, old_content, new_content)
                 result = _attach_next(result, [path_n])
             return result
         except Exception as e:
@@ -661,18 +700,30 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 version = None
 
             summary = ", ".join(f"{m['path']}" for m in results_meta)
+            diff_blocks = []
+            for item in plan.get("files") or []:
+                path_n = _norm_path(item["path"])
+                d = _make_unified_diff(
+                    path_n, item.get("old_content", ""), item.get("new_content", "")
+                )
+                if d:
+                    diff_blocks.append(d.rstrip())
+            display = (
+                f"RESULT: apply_patch files={len(results_meta)} tx={tx_id} version={version}\n"
+                f"Patched: {summary}"
+            )
+            if diff_blocks:
+                display = display + "\nDIFF:\n" + "\n\n".join(diff_blocks)
             return _attach_next(
                 ToolResult.ok(
-                    display=(
-                        f"RESULT: apply_patch files={len(results_meta)} tx={tx_id} version={version}\n"
-                        f"Patched: {summary}"
-                    ),
+                    display=display,
                     payload={
                         "tx_id": tx_id,
                         "version": version,
                         "files": results_meta,
                         "mutation": True,
                         "requires_confirmation": False,
+                        "diff": "\n\n".join(diff_blocks) if diff_blocks else "",
                     },
                 ),
                 paths_out,
