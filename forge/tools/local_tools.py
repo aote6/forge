@@ -109,41 +109,72 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             return ToolResult.fail(display=f"read_files 失败: {e}")
 
     def run_test_structured(target: str = "tests/") -> ToolResult:
-        """运行 pytest 并返回结构化结果。"""
+        """跑 pytest，失败时附带失败行前后源码上下文。"""
+        import subprocess
         try:
-            cmd = f"python3 -m pytest {target} -q --tb=short"
-            result = subprocess.run(
-                cmd, shell=True, cwd=workspace.project_root,
-                capture_output=True, text=True, timeout=120,
+            cmd = ["python3", "-m", "pytest", target, "-q", "--tb=short"]
+            r = subprocess.run(
+                cmd, cwd=workspace.project_root, capture_output=True, text=True, timeout=120
             )
-            output = result.stdout + result.stderr
+            out = (r.stdout or "") + (r.stderr or "")
             failures = []
-            for line in output.splitlines():
-                if line.startswith("FAILED") or "AssertionError" in line or "Error" in line:
+            for line in out.splitlines():
+                if " FAILED" in line or line.startswith("FAILED "):
                     failures.append(line.strip()[:200])
-            # 提取最后一行汇总
-            summary = ""
-            for line in output.splitlines():
-                if "passed" in line or "failed" in line or "error" in line:
-                    summary = line.strip()
-                    break
-            parsed = {
-                "exit_code": result.returncode,
-                "passed": result.returncode == 0,
-                "summary": summary,
-                "failed_tests": failures[:20],
+            # Extract file:line from short traceback and attach source windows
+            contexts = []
+            import re as _re
+            for mline in out.splitlines():
+                mm = _re.search(r'([\w./\\-]+\.py):(\d+):', mline)
+                if not mm:
+                    continue
+                rel, ln = mm.group(1), int(mm.group(2))
+                full = Path(workspace.project_root) / rel
+                if not full.is_file():
+                    continue
+                try:
+                    lines = full.read_text(encoding="utf-8", errors="replace").splitlines()
+                except OSError:
+                    continue
+                i = max(0, ln - 1)
+                lo, hi = max(0, i - 5), min(len(lines), i + 6)
+                snippet = []
+                for j in range(lo, hi):
+                    mark = ">>" if j == i else "  "
+                    snippet.append(f"{mark} {j+1}: {lines[j]}")
+                contexts.append({"file": rel, "line": ln, "snippet": "\n".join(snippet)})
+            # dedupe by file:line
+            seen = set()
+            uniq = []
+            for c in contexts:
+                k = (c["file"], c["line"])
+                if k in seen:
+                    continue
+                seen.add(k)
+                uniq.append(c)
+            display = f"$ pytest {target}\n[exit {r.returncode}]\n{_truncate(out)}"
+            if uniq:
+                display += "\n\n--- failure context ---"
+                for c in uniq[:8]:
+                    display += f"\n{c['file']}:{c['line']}\n{c['snippet']}\n"
+            _log("run_test_structured", {"target": target}, r.returncode == 0)
+            payload = {
+                "returncode": r.returncode,
+                "failures": failures,
+                "contexts": uniq[:8],
+                "mutation": False,
+                "phase": "verifying",
             }
-            _log("run_test_structured", {"target": target}, result.returncode == 0)
-            display = _truncate(json.dumps(parsed, ensure_ascii=False, indent=2))
-            if result.returncode == 0:
-                return ToolResult.ok(display=display, payload={"mutation": False, **parsed})
-            return ToolResult.fail(display=display, payload={"mutation": False, **parsed})
-        except subprocess.TimeoutExpired:
-            _log("run_test_structured", {"target": target}, False, "timeout")
-            return ToolResult.fail(display=f"测试超时（>120秒）: {target}")
+            if r.returncode == 0:
+                return ToolResult.ok(display=display, payload=payload)
+            return ToolResult.fail(
+                display=display + "\n建议: 根据 failure context 用 read_function 或 modify_file 修复。",
+                payload=payload,
+            )
         except Exception as e:
             _log("run_test_structured", {"target": target}, False, str(e))
             return ToolResult.fail(display=f"run_test_structured 失败: {e}")
+
 
     def run_diagnostics(directory: str = ".") -> ToolResult:
         """运行 AST 语法检查，返回结构化诊断。"""
@@ -186,6 +217,80 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         except Exception as e:
             _log("run_diagnostics", {"directory": directory}, False, str(e))
             return ToolResult.fail(display=f"run_diagnostics 失败: {e}")
+
+
+    def run_type_check(path: str = ".", tool: str = "auto") -> ToolResult:
+        """类型检查：优先 mypy/pyright，否则做基础 AST 注解一致性启发式。"""
+        import shutil
+        import subprocess
+        root = Path(workspace.project_root)
+        target = str((root / path).resolve()) if path != "." else str(root)
+
+        def _run(cmd):
+            return subprocess.run(cmd, cwd=workspace.project_root, capture_output=True, text=True, timeout=90)
+
+        chosen = tool
+        if tool == "auto":
+            if shutil.which("mypy"):
+                chosen = "mypy"
+            elif shutil.which("pyright"):
+                chosen = "pyright"
+            else:
+                chosen = "ast"
+
+        if chosen == "mypy":
+            r = _run(["mypy", "--ignore-missing-imports", "--no-error-summary", path if path != "." else "."])
+            display = f"$ mypy {path}\n[exit {r.returncode}]\n{_truncate((r.stdout or '') + (r.stderr or ''))}"
+            ok = r.returncode == 0
+            _log("run_type_check", {"tool": "mypy"}, ok)
+            return (ToolResult.ok if ok else ToolResult.fail)(display=display, payload={"tool": "mypy", "returncode": r.returncode})
+
+        if chosen == "pyright":
+            r = _run(["pyright", "--outputjson", path if path != "." else "."])
+            display = f"$ pyright {path}\n[exit {r.returncode}]\n{_truncate((r.stdout or '') + (r.stderr or ''))}"
+            ok = r.returncode == 0
+            _log("run_type_check", {"tool": "pyright"}, ok)
+            return (ToolResult.ok if ok else ToolResult.fail)(display=display, payload={"tool": "pyright", "returncode": r.returncode})
+
+        # AST heuristic: compare annotated assigns with obvious wrong literal types
+        issues = []
+        import ast as _ast
+        skip = {".git", ".forge", "__pycache__", ".venv", "venv"}
+        files = []
+        base = root / path if path != "." else root
+        if base.is_file() and str(base).endswith(".py"):
+            files = [base]
+        else:
+            for dp, dns, fns in os.walk(base):
+                dns[:] = [d for d in dns if d not in skip]
+                for fn in fns:
+                    if fn.endswith(".py"):
+                        files.append(Path(dp) / fn)
+        for fp in files[:80]:
+            try:
+                tree = _ast.parse(fp.read_text(encoding="utf-8", errors="replace"))
+            except (SyntaxError, OSError) as e:
+                issues.append(f"{fp.relative_to(root)}: parse error: {e}")
+                continue
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.AnnAssign) and node.value is not None and node.annotation is not None:
+                    ann = node.annotation
+                    ann_name = ann.id if isinstance(ann, _ast.Name) else None
+                    val = node.value
+                    if ann_name == "int" and isinstance(val, _ast.Constant) and not isinstance(val.value, int):
+                        issues.append(f"{fp.relative_to(root)}:{node.lineno}: annotated int got {type(val.value).__name__}")
+                    if ann_name == "str" and isinstance(val, _ast.Constant) and not isinstance(val.value, str):
+                        issues.append(f"{fp.relative_to(root)}:{node.lineno}: annotated str got {type(val.value).__name__}")
+                    if ann_name == "bool" and isinstance(val, _ast.Constant) and not isinstance(val.value, bool):
+                        issues.append(f"{fp.relative_to(root)}:{node.lineno}: annotated bool got {type(val.value).__name__}")
+        if not issues:
+            display = "run_type_check(ast): no obvious annotation mismatches (mypy/pyright not installed)"
+            _log("run_type_check", {"tool": "ast"}, True)
+            return ToolResult.ok(display=display, payload={"tool": "ast", "issues": []})
+        display = "run_type_check(ast) issues:\n" + "\n".join(issues[:40])
+        _log("run_type_check", {"tool": "ast"}, False)
+        return ToolResult.fail(display=display, payload={"tool": "ast", "issues": issues[:40]})
+
 
     def get_context_budget(tracked_files: list | None = None) -> ToolResult:
         """统计当前已跟踪文件的 Token 预算。"""
@@ -324,54 +429,39 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             return ToolResult.fail(display=f"get_symbol_line_range 失败: {e}")
 
     def find_symbol_definition(symbol_name: str) -> ToolResult:
-        """在工程中精确查找类/函数/变量的定义位置。"""
+        """全仓符号索引查找定义（.forge/symbols.json），避免逐文件 AST 全扫。"""
         try:
-            matches = []
-            for root, _, files in os.walk(workspace.project_root):
-                if any(skip in root for skip in (".git", "__pycache__", ".venv", ".pytest_cache")):
-                    continue
-                for f in files:
-                    if not f.endswith(".py"):
-                        continue
-                    full_path = Path(root) / f
-                    rel_path = str(full_path.relative_to(workspace.project_root))
-                    try:
-                        with open(full_path, "r", encoding="utf-8") as file:
-                            tree = ast.parse(file.read(), filename=rel_path)
-                        for node in ast.walk(tree):
-                            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                                if node.name == symbol_name:
-                                    kind = "class" if isinstance(node, ast.ClassDef) else "def"
-                                    args = ""
-                                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                                        args = ", ".join(a.arg for a in node.args.args)
-                                    docstring = ast.get_docstring(node) or ""
-                                    matches.append({
-                                        "file": rel_path,
-                                        "line": node.lineno,
-                                        "kind": kind,
-                                        "name": node.name,
-                                        "args": args,
-                                        "docstring": docstring[:100],
-                                    })
-                    except Exception:
-                        continue
-            _log("find_symbol_definition", {"symbol": symbol_name}, True)
-            if not matches:
-                return ToolResult.ok(
-                    display=f"未找到符号 '{symbol_name}' 的定义。",
-                    payload={"mutation": False, "matches": []},
+            from forge.core.symbol_index import lookup_symbol, load_symbol_index
+            load_symbol_index(workspace.project_root)  # ensure cache
+            hits = lookup_symbol(workspace.project_root, symbol_name, exact=True)
+            if not hits:
+                # soft match
+                hits = lookup_symbol(workspace.project_root, symbol_name, exact=False)[:20]
+                if not hits:
+                    _log("find_symbol_definition", {"symbol": symbol_name}, True, "not found")
+                    return ToolResult.ok(
+                        display=(
+                            f"未找到符号 '{symbol_name}'\n"
+                            f"建议: 检查拼写，或用 search_code 做文本搜索。"
+                        ),
+                        payload={"symbol": symbol_name, "hits": [], "matches": []},
+                    )
+            lines = [f"符号 '{symbol_name}' 命中 {len(hits)} 处:"]
+            for h in hits[:30]:
+                lines.append(
+                    f"  {h.get('kind','?')} {h.get('qualname', symbol_name)} "
+                    f"@ {h['path']}:{h['start_line']}-{h['end_line']}"
                 )
-            lines = [f"找到 {len(matches)} 处定义:"]
-            for m in matches:
-                sig = m["name"] + ("(" + m["args"] + ")" if m["args"] else "()") if m["kind"] == "def" else m["name"]
-                lines.append(f"  [{m['kind']}] {sig} -> {m['file']}:{m['line']}")
-                if m["docstring"]:
-                    lines.append(f"    doc: {m['docstring']}")
-            return ToolResult.ok(display="\n".join(lines), payload={"mutation": False, "matches": matches})
+            display = "\n".join(lines)
+            _log("find_symbol_definition", {"symbol": symbol_name, "hits": len(hits)}, True)
+            return ToolResult.ok(
+                display=display,
+                payload={"symbol": symbol_name, "hits": hits[:30]},
+            )
         except Exception as e:
             _log("find_symbol_definition", {"symbol": symbol_name}, False, str(e))
             return ToolResult.fail(display=f"find_symbol_definition 失败: {e}")
+
 
     def get_call_chain(symbol_name: str) -> ToolResult:
         """查找某符号的所有直接调用者和被调用者。"""
@@ -933,6 +1023,85 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             _log("run_command", {"cmd": cmd}, False, str(e))
             return ToolResult.fail(display=f"执行失败: {e}")
 
+
+    def read_function(path: str, symbol_name: str) -> ToolResult:
+        """只读取指定函数/类的源码（基于符号索引或单文件 AST）。"""
+        try:
+            from forge.core.symbol_index import lookup_function_range
+            rng = lookup_function_range(workspace.project_root, path, symbol_name)
+            if not rng:
+                return ToolResult.fail(
+                    display=(
+                        f"在 {path} 中未找到 '{symbol_name}'\n"
+                        f"建议: find_symbol_definition('{symbol_name}') 确认位置。"
+                    )
+                )
+            start_line, end_line = rng
+            target = Path(workspace.project_root) / path
+            lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+            # 1-based inclusive
+            chunk = lines[start_line - 1 : end_line]
+            numbered = "\n".join(f"{start_line + i}| {ln}" for i, ln in enumerate(chunk))
+            display = f"{path} :: {symbol_name} (L{start_line}-{end_line})\n{numbered}"
+            _log("read_function", {"path": path, "symbol": symbol_name}, True)
+            return ToolResult.ok(
+                display=display,
+                payload={
+                    "path": path,
+                    "symbol": symbol_name,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "content": "\n".join(chunk),
+                },
+            )
+        except Exception as e:
+            return ToolResult.fail(display=f"read_function 失败: {e}")
+
+    def rebuild_symbol_index() -> ToolResult:
+        """强制重建全仓符号索引（.forge/symbols.json）。"""
+        try:
+            from forge.core.symbol_index import build_symbol_index
+            data = build_symbol_index(workspace.project_root, force=True)
+            n_sym = len(data.get("symbols") or {})
+            n_file = len(data.get("files") or {})
+            display = f"RESULT: symbol_index rebuilt files={n_file} symbol_names={n_sym}"
+            return ToolResult.ok(display=display, payload={"files": n_file, "symbols": n_sym})
+        except Exception as e:
+            return ToolResult.fail(display=f"rebuild_symbol_index 失败: {e}")
+
+    def resolve_path_object(path: str) -> ToolResult:
+        """文件路径 → Veritas ObjectId（查 ObjectPathMap）。"""
+        try:
+            if world_runtime is None:
+                return ToolResult.fail(
+                    display="resolve_path_object 失败: WorldRuntime 未绑定\n建议: 确认 Runtime 已启动 Veritas。"
+                )
+            path_n = path.replace("\\\\", "/").lstrip("./")
+            oid = None
+            path_map = getattr(world_runtime, "_path_map", None)
+            if path_map is not None and hasattr(path_map, "find_object_id"):
+                oid = path_map.find_object_id(path_n)
+                if oid is None:
+                    oid = path_map.find_object_id(path)
+            if oid is None and hasattr(world_runtime, "find_object_id_for_path"):
+                oid = world_runtime.find_object_id_for_path(path_n)
+            if oid is None:
+                return ToolResult.fail(
+                    display=(
+                        f"路径 '{path}' 未找到对应 ObjectId\n"
+                        f"可能原因: 文件尚未经 create_file 进入 World，或 path map 未重建。\n"
+                        f"建议: list_world_objects 或先 create_file。"
+                    )
+                )
+            display = f"RESULT: path={path_n} object_id={int(oid)}"
+            return ToolResult.ok(
+                display=display,
+                payload={"path": path_n, "object_id": int(oid)},
+            )
+        except Exception as e:
+            return ToolResult.fail(display=f"resolve_path_object 失败: {e}")
+
+
     return {
         "read_file_with_lines": read_file_with_lines,
         "preview_line_mutation": preview_line_mutation,
@@ -950,10 +1119,12 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         "read_files": read_files,
         "run_test_structured": run_test_structured,
         "run_diagnostics": run_diagnostics,
+        "run_type_check": run_type_check,
         "get_context_budget": get_context_budget,
         "inspect_last_intent": inspect_last_intent,
         "list_files": list_files,
         "read_file": read_file,
+        "read_function": read_function,
         "search_code": search_code,
         "git_diff": git_diff,
         "git_log": git_log,
@@ -963,4 +1134,6 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         "list_world_objects": list_world_objects,
         "get_world_object": get_world_object,
         "list_world_links": list_world_links,
+        "resolve_path_object": resolve_path_object,
+        "rebuild_symbol_index": rebuild_symbol_index,
     }

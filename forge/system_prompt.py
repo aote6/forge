@@ -23,6 +23,15 @@ World（不写文件、不创建磁盘路径）:
 5. 多步必须串工具：先 create_object，再把返回的 ObjectId 原样传入 link_objects。
 6. 任务完成后一句话总结（含 ObjectId / link），然后停止调用工具。
 
+## 写代码技巧
+- 改文件：modify_file(path, operations) — object_id 可省略（自动解析）
+- 多文件一次提交：edit_files_batch([{path, operations}, ...])
+- 读函数省 token：read_function(path, symbol_name)
+- 找定义：find_symbol_definition（查 .forge/symbols.json 索引）
+- 路径→ID：resolve_path_object(path)
+- 类型检查：run_type_check；测试失败看 run_test_structured 的 failure context
+- 关键工具返回以 RESULT: 开头，便于提取字段
+
 ## 正确示例
 用户: 创建一个新的 World 对象并 link 到 id=1
 步骤:

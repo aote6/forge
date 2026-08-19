@@ -323,6 +323,46 @@ READ_ONLY_TOOL_DECLARATIONS = [
             "required": ["cmd"],
         },
     },
+    {
+        "name": "read_function",
+        "description": "只读取指定函数/类的源码（按符号名，基于符号索引）。比 read_file 更省 token。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径"},
+                "symbol_name": {"type": "string", "description": "函数或类名"},
+            },
+            "required": ["path", "symbol_name"],
+        },
+    },
+    {
+        "name": "run_type_check",
+        "description": "类型检查：优先 mypy/pyright；不可用时做 AST 注解启发式检查。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件或目录，默认 ."},
+                "tool": {"type": "string", "description": "auto|mypy|pyright|ast，默认 auto"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "resolve_path_object",
+        "description": "文件路径 → Veritas ObjectId。修改文件前可用此工具确认 ID。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "相对项目根的文件路径"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "rebuild_symbol_index",
+        "description": "强制重建全仓符号索引缓存（.forge/symbols.json）。",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
 ]
 
 # Mutation tools for Runtime tool-loop (World + file).
@@ -360,17 +400,42 @@ MUTATION_TOOL_DECLARATIONS = [
     {
         "name": "modify_file",
         "description": (
-            "文件操作：修改已有文件内容（需 path、object_id、operations）。"
-            "仅用于已存在的仓库文件，不是 World 纯对象操作。"
+            "文件操作：修改已有文件。operations 可含多处修改。"
+            "object_id 可选——省略时按 path 自动解析。"
+            "不是 World 纯对象操作。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "文件路径"},
-                "object_id": {"type": "integer", "description": "文件的 Veritas Object ID"},
-                "operations": {"type": "array", "description": "修改操作列表"},
+                "object_id": {
+                    "type": "integer",
+                    "description": "可选。省略则按 path 查 ObjectPathMap",
+                },
+                "operations": {
+                    "type": "array",
+                    "description": "修改操作列表（可多处）。machine: start_line/end_line + new_lines",
+                },
             },
-            "required": ["path", "object_id", "operations"],
+            "required": ["path", "operations"],
+        },
+    },
+    {
+        "name": "edit_files_batch",
+        "description": (
+            "文件操作：在同一 Veritas 事务中批量修改多个文件。"
+            "edits: [{path, operations, object_id?}, ...]。"
+            "比多次 modify_file 更高效。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "edits": {
+                    "type": "array",
+                    "description": "[{path, operations, object_id?}, ...]",
+                },
+            },
+            "required": ["edits"],
         },
     },
     {

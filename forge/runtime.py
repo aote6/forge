@@ -37,6 +37,23 @@ MAX_AGENT_STEPS = 20
 MAX_CONSECUTIVE_FAILURES = 3
 
 
+
+def _append_conversation_log(project_root: str, role: str, content: str, **extra) -> None:
+    """Append one JSONL line to .forge/conversation_log.jsonl for search_history."""
+    import json
+    import time
+    from pathlib import Path as _P
+    try:
+        log_dir = _P(project_root) / ".forge"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / "conversation_log.jsonl"
+        rec = {"ts": time.time(), "role": role, "content": (content or "")[:4000], **extra}
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 class ToolExecutor:
     def __init__(self, tools: dict):
         self.tools = tools
@@ -172,6 +189,7 @@ class Runtime:
             recent = [m for m in history if m.role != "system"][-20:]
             messages.extend(recent)
         messages.append(ForgeMessage(role="user", content=task))
+        _append_conversation_log(self.workspace.project_root, "user", task)
 
         all_schemas = READ_ONLY_TOOL_DECLARATIONS + MUTATION_TOOL_DECLARATIONS
         for _ in range(20):
@@ -180,12 +198,16 @@ class Runtime:
                 if resp.content:
                     self.conversation.append(ForgeMessage(role="user", content=task))
                     self.conversation.append(ForgeMessage(role="assistant", content=resp.content))
+                    _append_conversation_log(
+                        self.workspace.project_root, "assistant", resp.content or ""
+                    )
                 return resp.content or "(no response)"
             messages.append(ForgeMessage(
                 role="assistant",
                 content=resp.content,
                 tool_calls=resp.tool_calls
             ))
+            # Parallel tool_calls from the model: execute all in this turn (sequential apply).
             for tc in resp.tool_calls:
                 result = self.executor.execute(tc)
                 messages.append(ForgeMessage(
@@ -194,6 +216,13 @@ class Runtime:
                     tool_call_id=tc.id,
                     name=tc.name
                 ))
+                _append_conversation_log(
+                    self.workspace.project_root,
+                    "tool",
+                    result.display or "",
+                    name=tc.name,
+                    success=bool(result.success),
+                )
         return "(达到最大工具调用次数)"
 
     # Backward-compat alias

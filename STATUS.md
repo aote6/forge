@@ -1,71 +1,28 @@
 # Forge 项目状态
 
-## 定位
+## 生产路径
 
-Forge 是运行在 Veritas 世界上的工程 Agent。LLM 通过工具循环逐步执行任务，突变经 IntentExecutor → WorldSession → Veritas 事务 → commit → Projection。
+`Runtime.run` → 工具循环 → IntentExecutor → Veritas → Projection
 
-依赖方向：Forge → Veritas（经 WorldRuntime → veritasd → Kernel）。
+## 本轮写代码能力升级
 
-## 生产 Runtime（唯一）
+### P0
+- 符号索引缓存 `forge/core/symbol_index.py` → `.forge/symbols.json`
+- `find_symbol_definition` 查索引
+- `resolve_path_object`；`modify_file` 自动解析 object_id
+- `edit_files_batch` 多文件单事务；`modify_file` 支持多 operations
+- mutation 工具 `require_confirm=False`（避免工具循环卡在确认）
 
-```
-User Task
-  → Runtime.run(task)
-    → _run_conversation(task)   # 唯一执行路径
-      → adapter.send(messages, READ_ONLY + MUTATION schemas)
-        → ToolExecutor.execute(tool_call)
-          → IntentExecutor → WorldSession → Veritas commit/abort
-          → ProjectionManager.project(...)
-```
+### P1
+- `run_type_check`（mypy/pyright/ast）
+- `run_test_structured` 失败上下文（前后 5 行）
+- `read_function`
 
-- `Runtime.run` 是唯一生产入口。
-- `Runtime.run_legacy` 仅交互式只读/确认兜底，已标注 deprecated。
-- 突变工具内部处理事务；LLM 不直接管理 begin/commit。
-- World 操作与文件操作在工具层硬分开。
+### P2–P3
+- 同轮多个 tool_calls 依次执行（模型并行请求已支持）
+- mutation display 统一 `RESULT: ...`
+- 对话自动写入 conversation_log.jsonl；失败提示含建议下一步
 
-## 工具集
+## 测试
 
-### World（不写文件）
-
-- create_object / link_objects / unlink_objects
-- list_world_objects / list_world_links / world_info / get_world_object
-
-### 文件（投影到磁盘）
-
-- create_file / modify_file / delete_file
-
-### 只读探索
-
-- list_files / read_file / search_code / get_repo_map / git_* / run_* / …
-
-## 已删除的旧架构（本轮清理）
-
-| 删除项 | 说明 |
-|--------|------|
-| `forge/orchestrator/` | 六阶段 EngineeringOrchestrator |
-| `forge/planner.py` / `plan_validator.py` | 旧 Plan 生成与校验 |
-| `forge/engineering/` | 旧工程状态机 |
-| `forge/context/` | Planner 用仓库索引/快照 |
-| `forge/adapters/execution.py` 等 | 仅服务 Orchestrator 的适配器 |
-| `forge/protocols/operation_contract.py` / `world_operations.py` | Plan 侧 SSOT |
-| `forge/failures.py` / `forge/verification/` | 旧 VERIFY 路径 |
-| `forge/memory/checkpoint.py` | Orchestrator TaskCheckpoint 存储 |
-| 一批 `tests/test_planner*` / `test_orchestrator*` / `test_plan_*` 等 | 验证旧路径的测试 |
-
-## 保留核心
-
-- `runtime` / `tools` / `world` / `intents` / `projections` / `recovery`
-- `core`（edit_contract 等）
-- `adapters`：base / deepseek / gemini
-- `protocols/models.py`：共享 dataclass（无编排）
-
-## 已知限制
-
-- veritasd 需在 PATH 或默认路径可用
-- 单活跃 Session（Runtime 级）
-- 工具循环默认最多 20 轮
-
-## 测试状态
-
-- 本轮清理后：全绿（passed + skipped 依赖 veritasd；无 failed）
-- `tests/test_tool_loop_create_object_wiring.py`：create_object 工具接线
+`tests/test_coding_capability_upgrades.py` + 原有工具循环/Veritas 测试。
