@@ -1,4 +1,6 @@
-"""用户确认指令解析"""
+"""
+DEPRECATED: DEPRECATED: tool-loop does not use chat confirm; kept for run_legacy.
+用户确认指令解析"""
 import re
 
 

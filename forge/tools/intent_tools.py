@@ -515,19 +515,29 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                         f"建议: write_file 创建，或 glob_files / search_code 确认路径。"
                     )
                 )
+            # Tolerate leading/trailing whitespace on old_string from the model
+            needle = old_string.strip("\n\r")
+            if needle != old_string and needle and needle in text:
+                old_string = needle
             n = text.count(old_string)
+            if n == 0:
+                needle2 = old_string.strip()
+                if needle2 and needle2 in text:
+                    old_string = needle2
+                    n = text.count(old_string)
             if n == 0:
                 return ToolResult.fail(
                     display=(
                         f"str_replace failed: old_string 在 {path_n} 中未找到\n"
-                        f"建议: read_file / read_function 核对原文（须完全一致）。"
+                        f"建议: read_file / read_function 核对原文，确保 old_string 完全一致"
+                        f"（含缩进与换行）。可先复制文件中的精确片段。"
                     )
                 )
             if n > 1 and not replace_all:
                 return ToolResult.fail(
                     display=(
                         f"str_replace failed: old_string 出现 {n} 次，拒绝歧义替换\n"
-                        f"建议: 扩大 old_string 上下文，或 replace_all=true。"
+                        f"建议: 扩大 old_string 上下文使其唯一，或设 replace_all=true。"
                     )
                 )
             new_text = (
@@ -535,6 +545,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 if replace_all
                 else text.replace(old_string, new_string, 1)
             )
+
             oid = _resolve_oid(world, path_n, None)
             result = _write_content_to_world(path_n, new_text, oid)
             if result.success:
@@ -575,7 +586,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             return ToolResult.fail(
                 display=(
                     f"write_file failed: {e}\n"
-                    f"建议: 检查路径；确认 veritasd 在线。"
+                    f"建议: 检查路径是否正确，父目录是否存在；确认 veritasd 在线。"
                 )
             )
 

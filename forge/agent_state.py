@@ -1,4 +1,6 @@
-"""Agent 任务阶段状态机"""
+"""
+DEPRECATED: DEPRECATED: phase machine for run_legacy only; production uses tool-loop.
+Agent 任务阶段状态机"""
 from enum import Enum
 
 

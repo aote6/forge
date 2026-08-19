@@ -29,6 +29,13 @@ def _log(name: str, args: dict, success: bool, note: str = ""):
 
 
 def _truncate(text: str) -> str:
+    """Default: keep the tail (errors usually at the end)."""
+    if len(text) > MAX_OUTPUT_CHARS:
+        return "...[输出已截断前部]\n\n" + text[-MAX_OUTPUT_CHARS:]
+    return text
+
+
+def _truncate_head(text: str) -> str:
     if len(text) > MAX_OUTPUT_CHARS:
         return text[:MAX_OUTPUT_CHARS] + "\n\n...[输出已截断]"
     return text
@@ -817,22 +824,53 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             return ToolResult.fail(display=f"列出文件失败: {e}")
 
     def read_file(path: str, start: int = 1, end: int = 0) -> ToolResult:
+        """读取文件。未指定行范围且超过 200 行时：前 100 + 后 50，中间省略。"""
         try:
-            content = workspace.read_file(path, start, end)
-            _log("read_file", {"path": path}, True)
+            full = Path(workspace.project_root) / path
+            if not full.is_file():
+                return ToolResult.fail(
+                    display=(
+                        f"read_file failed: 文件不存在 {path}\n"
+                        f"建议: glob_files 或 search_code 确认路径。"
+                    )
+                )
+            raw = full.read_text(encoding="utf-8", errors="replace")
+            lines = raw.splitlines()
+            total = len(lines)
+            start = int(start) if start else 1
+            end = int(end) if end else 0
+            if end and end > 0:
+                lo = max(1, start)
+                hi = min(total, end)
+                chunk = lines[lo - 1 : hi]
+                numbered = "\n".join(f"{lo + i}| {ln}" for i, ln in enumerate(chunk))
+                content = f"{path} L{lo}-{hi}/{total}\n{numbered}"
+            elif total > 200 and start <= 1:
+                head = lines[:100]
+                tail = lines[-50:]
+                omitted = total - 150
+                head_s = "\n".join(f"{i+1}| {ln}" for i, ln in enumerate(head))
+                tail_start = total - 50 + 1
+                tail_s = "\n".join(f"{tail_start + i}| {ln}" for i, ln in enumerate(tail))
+                content = (
+                    f"{path} ({total} lines, truncated)\n{head_s}\n"
+                    f"...（省略 {omitted} 行）...\n{tail_s}\n"
+                    f"提示: 用 read_function 或 read_file(path, start, end) 取完整片段。"
+                )
+            else:
+                lo = max(1, start)
+                chunk = lines[lo - 1 :]
+                numbered = "\n".join(f"{lo + i}| {ln}" for i, ln in enumerate(chunk))
+                content = f"{path} L{lo}-{total}/{total}\n{numbered}"
+            _log("read_file", {"path": path, "lines": total}, True)
             return ToolResult.ok(
-                display=_truncate(content),
-                payload={"path": path, "mutation": False},
+                display=_truncate_head(content) if total > 500 else content,
+                payload={"path": path, "lines": total},
             )
-        except PermissionError as e:
-            _log("read_file", {"path": path}, False, str(e))
-            return ToolResult.fail(display=f"🚫 {e}")
-        except FileNotFoundError:
-            _log("read_file", {"path": path}, False, "not found")
-            return ToolResult.fail(display=f"文件不存在: {path}")
         except Exception as e:
             _log("read_file", {"path": path}, False, str(e))
-            return ToolResult.fail(display=f"读取失败: {e}")
+            return ToolResult.fail(display=f"read_file failed: {e}")
+
 
     def search_code(pattern: str, path: str = ".") -> ToolResult:
         try:
@@ -1015,7 +1053,7 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             }
             if result.returncode == 0:
                 return ToolResult.ok(display=display, payload=payload)
-            return ToolResult.fail(display=display, payload=payload)
+            return ToolResult.fail(display=display + "\n建议: 查看 stderr/末尾输出定位错误。", payload=payload)
         except subprocess.TimeoutExpired:
             _log("run_command", {"cmd": cmd}, False, "timeout")
             return ToolResult.fail(display=f"命令超时（>{timeout}秒）: {cmd}")

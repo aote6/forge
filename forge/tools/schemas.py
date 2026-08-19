@@ -196,6 +196,23 @@ READ_ONLY_TOOL_DECLARATIONS = [
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "spawn_subagent",
+        "description": (
+            "派生子 Agent 处理复杂探索/定位子任务。"
+            "子 Agent 有独立上下文与工具循环（只读+str_replace/write_file），"
+            "最多 15 步；只把最终结论返回给主 Agent，避免搜索过程污染上下文。"
+            "适合：跨多文件找 bug、梳理调用链、做小范围修复。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "给子 Agent 的明确子任务描述"},
+                "max_steps": {"type": "integer", "description": "默认 15，上限 15"},
+            },
+            "required": ["task"],
+        },
+    },
+    {
         "name": "web_fetch",
         "description": "抓取 http(s) URL 的文本内容（无 JS，超时 10s，默认截断 5000 字）。",
         "parameters": {

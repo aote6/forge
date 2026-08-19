@@ -1,13 +1,20 @@
 # Forge 状态
 
-## 产品体验闭环（本轮）
+## 本轮（Subagent + UX）
 
-1. **自动登记**：str_replace/write_file/modify 对磁盘已有文件无 ObjectId 时，自动 create_file 登记并更新 ObjectPathMap
-2. **TodoWrite**：内存任务列表，复杂任务先拆步
-3. **apply_patch**：unified diff → 单事务多文件
-4. **NEXT 提示**：写成功后的 display 附带建议 run_test / git_diff
-5. **web_fetch**：urllib 抓取 http(s) 文本
+| 项 | 状态 |
+|----|------|
+| spawn_subagent | 独立工具循环，只读+str_replace/write_file，返回结论 |
+| 失败恢复建议 | str_replace / write_file / run_command / link 等 fail 文案增强 |
+| run_command 截断 | 保留末尾（错误常在最后） |
+| str_replace 空白容错 | strip 首尾空白后再匹配 |
+| read_file 长文件 | >200 行默认前 100 + 后 50 |
+| 会话摘要 | q 退出保存；启动注入 |
+| 世界摘要 | dp.py 启动打印一行 |
+| 工具统计 | 任务结束打印 tools=N |
+| require_confirm | Intent 默认 False |
+| run_legacy / confirmation / agent_state | DEPRECATED |
 
-## 生产路径
+## 生产路径不变
 
-Runtime → 工具循环 → IntentExecutor → Veritas → Projection（不变）
+Runtime.run → 工具循环 → IntentExecutor → Veritas → Projection

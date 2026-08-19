@@ -12,6 +12,23 @@ adapter = DeepSeekAdapter(model_name="deepseek-v4-flash")
 tag = "DeepSeek"
 
 
+def _print_world_summary(runtime: Runtime) -> None:
+    try:
+        tools = runtime.executor.tools
+        if "world_info" in tools:
+            r = tools["world_info"]()
+            if r.success:
+                print(f"🌍 {r.display.split(chr(10))[0][:120]}")
+                return
+        w = runtime.world
+        if w is not None and hasattr(w, "info"):
+            info = w.info()
+            print(f"🌍 世界: {info}")
+            return
+    except Exception as e:
+        print(f"🌍 世界: (不可用: {e})")
+
+
 def main():
     print(f"🔌 使用 {tag}")
     print(f"📁 项目: {os.path.abspath(os.path.expanduser(project_root))}")
@@ -26,7 +43,9 @@ def main():
         f" {'✅' if e.data['success'] else '❌'}"
     ))
 
-    print("⚒️ Forge | 工具循环（只读 + World/文件 mutation）| 输入 q 退出")
+    _print_world_summary(runtime)
+
+    print("⚒️ Forge | 工具循环 | 输入 q 退出")
     print("=" * 40)
 
     while True:
@@ -35,12 +54,23 @@ def main():
             if not user_input.strip():
                 continue
             if user_input.strip().lower() in ("exit", "quit", "q"):
+                try:
+                    runtime.save_session_summary()
+                    print("💾 已保存会话摘要 (.forge/session_summary.json)")
+                except Exception:
+                    pass
                 print("👋")
                 break
             response = runtime.run(user_input)
+            n = getattr(runtime, "_last_tool_calls", 0)
+            print(f"\n📊 本次工具调用: {n}")
             if response:
                 print(f"\n🤖 {response}")
         except KeyboardInterrupt:
+            try:
+                runtime.save_session_summary()
+            except Exception:
+                pass
             print("\n👋")
             break
         except Exception as e:

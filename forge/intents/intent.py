@@ -50,7 +50,7 @@ class Intent:
         path: str,
         content: str = "",
         overwrite: bool = False,
-        require_confirm: bool = True,
+        require_confirm: bool = False,
     ) -> "Intent":
         return cls(
             type=IntentType.CREATE_FILE,
@@ -63,7 +63,7 @@ class Intent:
         cls,
         path: str,
         operations: list[dict],
-        require_confirm: bool = True,
+        require_confirm: bool = False,
     ) -> "Intent":
         return cls(
             type=IntentType.MODIFY_FILE,
@@ -72,7 +72,7 @@ class Intent:
         )
 
     @classmethod
-    def delete_file(cls, path: str = "", require_confirm: bool = True) -> "Intent":
+    def delete_file(cls, path: str = "", require_confirm: bool = False) -> "Intent":
         return cls(
             type=IntentType.DELETE_FILE,
             parameters={"path": path},

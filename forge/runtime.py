@@ -5,7 +5,7 @@ Production path (唯一):
     → READ_ONLY + MUTATION schemas
     → ToolExecutor → IntentExecutor → Veritas commit/abort → Projection
 
-run_legacy 仅保留为交互式只读/确认兜底，已 deprecated，禁止作为 mutation 主路径。
+run_legacy / AgentPhase 确认流已 DEPRECATED；生产只用 _run_conversation。
 """
 from __future__ import annotations
 
@@ -50,6 +50,39 @@ def _append_conversation_log(project_root: str, role: str, content: str, **extra
         rec = {"ts": time.time(), "role": role, "content": (content or "")[:4000], **extra}
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+
+def _load_session_summary(project_root: str) -> str:
+    """Load prior session summary for system prompt injection."""
+    from pathlib import Path as _P
+    path = _P(project_root) / ".forge" / "session_summary.json"
+    if not path.is_file():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        notes = data.get("notes") or data.get("summaries") or []
+        if not notes:
+            return ""
+        body = "\n".join(f"- {n}" for n in notes[-5:])
+        return "\n\n## 上次会话摘要\n" + body
+    except Exception:
+        return ""
+
+
+def _save_session_summary(project_root: str, assistant_replies: list[str]) -> None:
+    from pathlib import Path as _P
+    try:
+        log_dir = _P(project_root) / ".forge"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / "session_summary.json"
+        notes = [r.strip()[:500] for r in assistant_replies if r and r.strip()][-5:]
+        path.write_text(
+            json.dumps({"notes": notes}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     except Exception:
         pass
 
@@ -143,6 +176,34 @@ class Runtime:
             projections=self.projections,
             allow_mutation=True,
         )
+        def spawn_subagent(task: str, max_steps: int = 15) -> ToolResult:
+            """Run an isolated subagent tool-loop; return conclusion text only."""
+            from forge.subagent import run_subagent
+            from forge.tools.schemas import MUTATION_TOOL_DECLARATIONS
+
+            try:
+                schemas = list(READ_ONLY_TOOL_DECLARATIONS) + list(MUTATION_TOOL_DECLARATIONS)
+                conclusion = run_subagent(
+                    self.adapter,
+                    tools,
+                    schemas,
+                    task,
+                    max_steps=int(max_steps) if max_steps else 15,
+                )
+                return ToolResult.ok(
+                    display="RESULT: subagent_done\n" + (conclusion or ""),
+                    payload={"conclusion": conclusion, "subagent": True},
+                )
+            except Exception as e:
+                return ToolResult.fail(
+                    display=(
+                        "spawn_subagent failed: "
+                        + str(e)
+                        + "\n建议: 缩小子任务范围；确认模型与 veritasd 可用。"
+                    )
+                )
+
+        tools["spawn_subagent"] = spawn_subagent
         self.executor = ToolExecutor(tools)
         self._confirm_fn = confirm_fn
         self._abort_fn = abort_fn
@@ -173,17 +234,32 @@ class Runtime:
 
     def run(self, task: str, task_id: str | None = None) -> str:
         """Single path: tool-calling loop with all tools."""
+        self._last_tool_calls = 0
+        self._last_assistant_replies = []
         result = self._run_conversation(task)
+        n = getattr(self, "_last_tool_calls", 0)
+        print(f"[stats] tools={n}", file=sys.stderr)
         if result is None:
             return "(no response)"
         return result if isinstance(result, str) else str(result)
+
+    def save_session_summary(self) -> None:
+        """Persist last assistant replies for next process start."""
+        replies = getattr(self, "_last_assistant_replies", None) or []
+        # also pull from conversation
+        for m in self.conversation.get_messages():
+            if getattr(m, "role", None) == "assistant" and getattr(m, "content", None):
+                replies.append(m.content)
+        _save_session_summary(self.workspace.project_root, replies)
 
     def _run_conversation(self, task: str) -> str:
         """Tool-calling loop with all tools (read + mutation)."""
         from forge.adapters.base import Message as ForgeMessage
         from forge.tools.schemas import MUTATION_TOOL_DECLARATIONS
 
-        messages = [ForgeMessage(role="system", content=SYSTEM_INSTRUCTION)]
+        prior = _load_session_summary(self.workspace.project_root)
+        system = SYSTEM_INSTRUCTION + (prior or "")
+        messages = [ForgeMessage(role="system", content=system)]
         history = self.conversation.get_messages()
         if history:
             recent = [m for m in history if m.role != "system"][-20:]
@@ -192,6 +268,8 @@ class Runtime:
         _append_conversation_log(self.workspace.project_root, "user", task)
 
         all_schemas = READ_ONLY_TOOL_DECLARATIONS + MUTATION_TOOL_DECLARATIONS
+        tool_calls_n = 0
+        assistant_replies: list[str] = []
         for _ in range(MAX_AGENT_STEPS):
             resp = self.adapter.send(messages, all_schemas)
             if not resp.tool_calls:
@@ -201,15 +279,20 @@ class Runtime:
                     _append_conversation_log(
                         self.workspace.project_root, "assistant", resp.content or ""
                     )
+                    assistant_replies.append(resp.content)
+                self._last_tool_calls = tool_calls_n
+                self._last_assistant_replies = assistant_replies
                 return resp.content or "(no response)"
             messages.append(ForgeMessage(
                 role="assistant",
                 content=resp.content,
                 tool_calls=resp.tool_calls
             ))
-            # Parallel tool_calls from the model: execute all in this turn (sequential apply).
+            if resp.content:
+                assistant_replies.append(resp.content)
             for tc in resp.tool_calls:
                 result = self.executor.execute(tc)
+                tool_calls_n += 1
                 messages.append(ForgeMessage(
                     role="tool",
                     content=result.display,
@@ -223,6 +306,8 @@ class Runtime:
                     name=tc.name,
                     success=bool(result.success),
                 )
+        self._last_tool_calls = tool_calls_n
+        self._last_assistant_replies = assistant_replies
         return "(达到最大工具调用次数)"
 
     # Backward-compat alias
