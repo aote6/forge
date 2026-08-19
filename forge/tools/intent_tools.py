@@ -698,10 +698,17 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             result = _write_content_to_world(path_n, new_content, oid)
             if result.success:
                 mode = "overwrite" if oid is not None else "create_or_register"
+                overwrite_hint = ""
+                if mode == "overwrite" and old_content.strip() and old_content != new_content:
+                    old_lines = old_content.count("\n") + 1
+                    overwrite_hint = (
+                        f"\nHINT: 覆盖了已存在文件({old_lines}行)。"
+                        f"若只想改部分内容，下次可用 str_replace/modify_file 更安全。"
+                    )
                 result.display = (
                     f"RESULT: path={path_n} mode={mode} object_id={result.payload.get('object_id')} "
                     f"tx={result.payload.get('tx_id')} version={result.payload.get('version')}\n"
-                    f"write_file ok: {path_n}"
+                    f"write_file ok: {path_n}{overwrite_hint}"
                 )
                 if result.success and result.payload:
                     try:

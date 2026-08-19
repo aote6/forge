@@ -1,20 +1,28 @@
 # Forge 状态
 
-## 精修轮（本轮 + AI审计跟进）
-- str_replace/write_file/modify_file 熔断签名统一为内容感知（path+内容hash），避免同路径改内容被误判重复调用
-- symbols_from_edit 改为优先返回真正变化的符号（对称差），未变符号垫后，避免 max_n 截断丢失关键新增符号
-- session_changes 持久化改为追加写 jsonl（原全量重写是 O(n²)），summary 做换行清洗
-- undo_last_tx 两处裸吞异常改为 stderr 日志，便于长会话排查
-- _compress_messages 按工具类型分层：确认型工具（write_file/modify_file/undo_last_tx等）仍压成一行；
-  内容型工具（read_file/str_replace/diff等）保留多行+800字符预算，避免第20步后模型"以为看过"实则内容已被压没
-- read_files（批量读）接入 read_cache，此前只有单文件 read_file 命中缓存，批量路径完全绕开
-- system_prompt.py 工具简写对齐 schemas.py 真实工具名（glob→glob_files, search→search_code）
+## 精修轮（第三轮：架构澄清 + P0清单复核）
+- system_prompt.py: write_file 覆盖已存在文件时加前置提示（不拦截，仅提示"若只改部分内容建议用str_replace"）
+- STOP_HINT 熔断消息加失败原因分类（type_mismatch/exception/logic），并附带针对性建议文案
+- 手动验证熔断机制：连续3次失败后第4次准确拦截，reason分类正确显示
 
-## 已知技术债（未处理，供下轮参考）
-- 全库 47 处裸 `except Exception:`（历史遗留为主），建议分批清理而非一次性
-- goal_clarify 调用点外层裹了裸 except，模块失效时无可观测性
-- `forge: tx=NN v=NN` 自动commit与人类feature commit混在主线历史，
-  可用 `git log --grep="^forge: tx=" --invert-grep` 过滤；是否挪到独立ref待定
-- todo_write 未纳入 _CONFIRMATION_TOOLS，走默认多行压缩分支，非错误但浪费上下文预算
+## 架构澄清（重要，写给下轮/其他AI实例看）
+- 原始P0清单"TaskIntent/IntentType命名冲突"、"world-state vs code操作误分类硬校验器"
+  两项，排查后确认：这两个问题依附的旧架构（Planner/plan_validator.py 独立分类层）
+  已在 59fa405 重构中被完全删除。新架构下模型直接选择具体工具
+  （write_file/create_object/...），不存在独立的"分类判断"步骤会出错。
+  **结论：这两项P0问题本身已随架构变更失效，不需要继续排查旧代码。**
+- "机器判定已定义符号事实标注"：查了 edit_contract.py 的 ensure_machine_ops，
+  确认这是行编辑操作的 authoring/machine 两种schema转换契约，跟"符号是否已定义"
+  语义无关，是查错方向。真正相关的是 symbols_from_edit（已存在，但只在编辑后
+  记录，不是编辑前判断）。如果仍需要"编辑前"的符号存在性提示，需要新写，
+  不是在 edit_contract.py 里找。
+- "重试prompt携带结构化拒绝原因"：现有 STOP_HINT 已从纯计数升级为
+  reason分类（type_mismatch/exception/logic），基本满足原始诉求。
+
+## 已知技术债（未处理）
+- 全库47处裸 `except Exception:`（历史遗留为主），建议分批清理
+- `forge: tx=NN v=NN` 自动commit与人类feature commit混线，
+  可用 `git log --grep="^forge: tx=" --invert-grep` 过滤
+- veritas_kernel 侧：object_birth 收窄 pub(crate)、WAL截断恢复测试，完全未碰
 
 ## 生产路径不变

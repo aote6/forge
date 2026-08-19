@@ -225,41 +225,51 @@ class ToolExecutor:
         history = self.call_history.get(sig, [])
 
         consecutive_failures = 0
+        last_kind = ""
         for s in reversed(history):
-            if s == "fail":
+            if s.startswith("fail"):
                 consecutive_failures += 1
+                if not last_kind and ":" in s:
+                    last_kind = s.split(":", 1)[1]
             else:
                 break
 
+        _KIND_ADVICE = {
+            "type_mismatch": "参数结构反复不对，重新读一遍工具schema再改参数，不要靠猜。",
+            "exception": "运行时异常反复出现，问题可能不在参数上，检查前置状态(文件是否存在/veritasd是否在线)。",
+            "logic": "工具正常执行但业务上判定失败(如old_string未找到)，仔细核对返回里的HINT/NEAR_MISS。",
+        }
+
         if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            advice = _KIND_ADVICE.get(last_kind, "请换策略、read 核对，或直接问用户。")
             return ToolResult.fail(
                 display=(
-                    f"STOP_HINT: 同一调用已连续失败 {consecutive_failures} 次，已禁止再试。\n"
+                    f"STOP_HINT: 同一调用已连续失败 {consecutive_failures} 次(原因: {last_kind or '未知'})，已禁止再试。\n"
                     f"  {tool_call.name}({json.dumps(tool_call.arguments, ensure_ascii=False)})\n"
-                    f"请换策略、read 核对，或直接问用户。不要继续微调同一参数。"
+                    f"{advice} 不要继续微调同一参数。"
                 )
             )
 
         try:
             result = fn(**tool_call.arguments)
-            status = "success" if result.success else "fail"
+            status = "success" if result.success else "fail:logic"
             self.call_history.setdefault(sig, []).append(status)
             if not result.success and consecutive_failures >= 1:
                 # after 1 prior fail, this is 2nd+ failure in a row for same sig
                 prefix = (
-                    f"STOP_HINT: 该调用已连续失败 {consecutive_failures + 1} 次。"
+                    f"STOP_HINT: 该调用已连续失败 {consecutive_failures + 1} 次(原因: logic)。"
                     f"请换方向或问用户，勿重复同一操作。\n"
                 )
                 if result.display and "STOP_HINT" not in result.display:
                     result.display = prefix + result.display
             return result
         except TypeError as e:
-            self.call_history.setdefault(sig, []).append("fail")
+            self.call_history.setdefault(sig, []).append("fail:type_mismatch")
             return ToolResult.fail(
                 display=f"参数不匹配: {e}\n收到的参数: {tool_call.arguments}"
             )
         except Exception as e:
-            self.call_history.setdefault(sig, []).append("fail")
+            self.call_history.setdefault(sig, []).append("fail:exception")
             return ToolResult.fail(display=f"工具执行异常: {type(e).__name__}: {e}")
 
 
