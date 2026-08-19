@@ -185,6 +185,14 @@ READ_ONLY_TOOL_DECLARATIONS = [
                 "items": {
                     "type": "array",
                     "description": "[{id?, content, status}]",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "content": {"type": "string"},
+                            "status": {"type": "string"}
+                        }
+                    },
                 },
             },
             "required": ["items"],
@@ -289,7 +297,7 @@ MUTATION_TOOL_DECLARATIONS = [
             "properties": {
                 "path": {"type": "string"},
                 "object_id": {"type": "integer"},
-                "operations": {"type": "array"},
+                "operations": {"type": "array", "items": {"type": "object"}},
             },
             "required": ["path", "operations"],
         },
@@ -300,7 +308,7 @@ MUTATION_TOOL_DECLARATIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "edits": {"type": "array"},
+                "edits": {"type": "array", "items": {"type": "object"}},
             },
             "required": ["edits"],
         },
