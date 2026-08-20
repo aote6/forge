@@ -25,6 +25,9 @@ class FileProjection(Projection):
         self.patch_engine = PatchEngine()
         self.backup = BackupManager()
         self.object_path_map = object_path_map
+        # recovery 时若磁盘与 World 分叉，默认保留磁盘、不覆盖
+        self.recovery_preserve_disk: bool = False
+        self.last_skipped_diverged: list[str] = []
 
     @property
     def name(self) -> str:
@@ -198,6 +201,7 @@ class FileProjection(Projection):
         from forge.projections.base import ProjectionResult
 
         applied: list[str] = []
+        self.last_skipped_diverged = []
 
         try:
             for object_id, writes in self._group_writes_by_object(delta).items():
@@ -228,6 +232,21 @@ class FileProjection(Projection):
                 else:
                     continue
 
+                # recovery 分叉保护：磁盘已有且内容不同 → 跳过覆盖，保留用户手动修改
+                if (
+                    self.recovery_preserve_disk
+                    and self.fm.exists(path)
+                    and original != ""
+                    and original != new_content
+                ):
+                    self.last_skipped_diverged.append(path)
+                    import sys
+                    print(
+                        f"[recovery] preserve disk (diverged): {path}",
+                        file=sys.stderr,
+                    )
+                    continue
+
                 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
                 self.fm.write(path, new_content)
                 applied.append(path)
@@ -247,6 +266,14 @@ class FileProjection(Projection):
             for object_id in delta.objects_deleted:
                 path = self._path_for_object(object_id, delta)
                 if path and self.fm.exists(path):
+                    if self.recovery_preserve_disk:
+                        self.last_skipped_diverged.append(path)
+                        import sys
+                        print(
+                            f"[recovery] preserve disk (skip delete): {path}",
+                            file=sys.stderr,
+                        )
+                        continue
                     try:
                         self.backup.backup(path)
                     except Exception:
