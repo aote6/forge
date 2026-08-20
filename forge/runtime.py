@@ -50,8 +50,8 @@ def _append_conversation_log(project_root: str, role: str, content: str, **extra
         rec = {"ts": time.time(), "role": role, "content": (content or "")[:4000], **extra}
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[forge] _append_conversation_log failed: {e}", file=sys.stderr)
 
 
 

@@ -72,12 +72,6 @@ def parse_unified_diff(patch: str) -> list[dict[str, Any]]:
 
 def _apply_hunks_to_text(original: str, hunks: list[dict]) -> str:
     """Apply hunks to original text; raise ValueError on mismatch."""
-    src = original.splitlines(keepends=True)
-    # normalize to lines without keepends for matching, rejoin with \n
-    src_lines = original.splitlines(True)
-    if not src_lines and original == "":
-        src_lines = []
-
     # Work on list of lines without newlines for matching
     plain = original.splitlines()
     # Track if original ended with newline

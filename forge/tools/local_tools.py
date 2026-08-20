@@ -253,7 +253,6 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         import shutil
         import subprocess
         root = Path(workspace.project_root)
-        target = str((root / path).resolve()) if path != "." else str(root)
 
         def _run(cmd):
             return subprocess.run(cmd, cwd=workspace.project_root, capture_output=True, text=True, timeout=90)

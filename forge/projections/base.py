@@ -119,18 +119,6 @@ class ProjectionManager:
                     name=p.name, success=False, reason=str(e), retryable=True
                 ))
         return results
-        for p in self._projections:
-            try:
-                result = p.apply(receipt, delta)
-                results.append(result)
-            except Exception as e:
-                results.append(ProjectionResult(
-                    name=p.name,
-                    success=False,
-                    reason=f"{type(e).__name__}: {e}",
-                    retryable=True,
-                ))
-        return results
 
     # back-compat alias
     def apply_all(self, receipt: Receipt, delta: TransactionDelta) -> list[ProjectionResult]:

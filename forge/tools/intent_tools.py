@@ -44,7 +44,7 @@ def _format_projection_results(results) -> str:
     disk = "ok" if all_ok else ("FAIL" if not disk_ok else "partial")
     return f"world={world} disk={disk}\n" + "\n".join(lines)
 def _norm_path(path: str) -> str:
-    return path.replace("\\", "/").lstrip("./")
+    return path.replace("\\", "/").removeprefix("./")
 
 
 def _resolve_oid(world, path: str, object_id: int | None) -> int | None:
