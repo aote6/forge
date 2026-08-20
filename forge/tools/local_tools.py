@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from forge.adapters.base import ToolResult
-from forge.core.security import is_dangerous_command, needs_git_confirmation, is_allowed_command
+from forge.core.security import is_dangerous_command, needs_git_confirmation, is_allowed_command, is_blocked_path
 from forge.tools.display import format_block, error_slices
 from forge.tools.project_memory import load_memory, update_memory, format_for_prompt
 from forge.tools.read_cache import get as cache_get, put as cache_put
@@ -847,6 +847,12 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
     def read_file(path: str, start: int = 1, end: int = 0) -> ToolResult:
         """读取文件。大文件无行范围时返回符号大纲，避免撑爆上下文。"""
         try:
+            blocked = is_blocked_path(str(Path(workspace.project_root) / path))
+            if blocked:
+                return ToolResult.fail(
+                    display=format_block("read_file", "FAIL", {"path": path, "reason": f"blocked: {blocked}"}),
+                    hint="路径被安全策略拦截"
+                )
             full = Path(workspace.project_root) / path
             if not full.is_file():
                 return ToolResult.fail(
@@ -949,6 +955,15 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
 
     def search_code(pattern: str, path: str = ".") -> ToolResult:
         try:
+            search_path = Path(path).expanduser()
+            if not search_path.is_absolute():
+                search_path = workspace.project_root / search_path
+            blocked = is_blocked_path(str(search_path))
+            if blocked:
+                return ToolResult.fail(
+                    display=format_block("search_code", "FAIL", {"path": path, "reason": f"blocked: {blocked}"}),
+                    hint="路径被安全策略拦截"
+                )
             result = workspace.search_code(pattern, path)
             _log("search_code", {"pattern": pattern, "path": path}, True)
             return ToolResult.ok(

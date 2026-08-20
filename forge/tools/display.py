@@ -28,6 +28,7 @@ def format_block(
         st = "OK"
     elif st in ("FAIL", "FAILED", "ERROR", "FALSE"):
         st = "FAIL"
+    from forge.core.sanitizer import redact_secrets
     lines = [f"=== FORGE/{tool} ===", f"STATUS: {st}"]
     if kv:
         for k, v in kv.items():
@@ -49,7 +50,7 @@ def format_block(
                 continue
             lines.append(f"{k}: {str(v).replace(chr(10), ' ').strip()[:180]}")
     lines.append("--- END FORGE ---")
-    return "\n".join(lines)
+    return redact_secrets("\n".join(lines))
 
 
 def snippet_around(text: str, needle: str | None = None, max_lines: int = 6) -> str:

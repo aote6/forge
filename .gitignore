@@ -11,3 +11,8 @@ wal_*.log
 *.bak
 *.bak-*
 .claude/
+.env
+.env.*
+*.pem
+*.key
+*.token

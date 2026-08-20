@@ -16,6 +16,11 @@ class Workspace:
     def _resolve(self, path: str) -> str:
         p = Path(os.path.expanduser(path))
         resolved = p if p.is_absolute() else Path(self.project_root) / p
+        # 禁止访问 workspace 之外的任意路径（home、/etc、/data 等）
+        try:
+            resolved.relative_to(self.project_root)
+        except ValueError:
+            raise PermissionError(f"路径逃逸 workspace: {resolved} (root={self.project_root})")
         blocked = is_blocked_path(str(resolved))
         if blocked:
             raise PermissionError(f"路径被安全策略拦截（命中规则: {blocked}）: {resolved}")

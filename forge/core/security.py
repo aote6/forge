@@ -30,6 +30,15 @@ DANGEROUS_COMMAND_PATTERNS = [
     (r"\bchown\s+-R\s+\S+\s+/", "chown -R /"),
     (r"\bmkfs\.", "mkfs"),
     (r":\(\)\s*\{\s*:\|:&\s*\}\s*;", "fork bomb"),
+    # 环境变量和敏感信息读取
+    (r"\benv\b", "读取环境变量 env"),
+    (r"\bprintenv\b", "读取环境变量 printenv"),
+    (r"\$\{?[A-Z_]{3,}\}?", "读取环境变量 $VAR"),
+    (r"\bcat\s+.*\.(bashrc|zshrc|profile|env|netrc|git-credentials|npmrc|pypirc|docker)", "读取敏感配置文件"),
+    (r"\bgrep\s+-?[rni]*\s*['\"]?(API_KEY|SECRET|TOKEN|PASSWORD|DEEPSEEK|OPENAI|GEMINI)", "搜索敏感关键词"),
+    (r"\bhc\b.*\.(bashrc|zshrc|profile|env)", "读取敏感配置文件"),
+    (r"\bxxd\b|\bbase64\b.*\.(ssh|gnupg|pem|key)", "读取密钥文件"),
+    (r"\b(cat|head|tail|less|more|xxd|od|strings)\s+.*(\.ssh/|id_rsa|id_ed25519|authorized_keys|\.gnupg/|\.pem|\bkey\b|\.aws/|\.config/gcloud|\.docker|\.npmrc|\.pypirc|\.netrc|\.git-credentials)", "读取敏感文件"),
 ]
 
 GIT_CONFIRM_COMMANDS = [
