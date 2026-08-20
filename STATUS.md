@@ -1,5 +1,15 @@
 # Forge 状态
 
+## recovery 分叉问题（今天发现，已修复 120eee2）
+- 问题：启动 recovery 重放 receipt 时无条件用 World 内容覆盖磁盘，
+  会冲掉用户手动修改的文件（数据丢失风险）。
+- 修复：FileProjection 新增 `recovery_preserve_disk`，recovery 期间开启。
+  磁盘文件已存在且内容 ≠ World → 跳过覆盖、保留磁盘版本；缺失文件仍从
+  World 恢复；删除操作同样跳过；仍推进 checkpoint 避免反复重放。
+- 测试：tests/test_recovery_preserve_disk.py 4 用例（preserve/restore/idempotent/legacy），173 passed。
+- 遗留语义：分叉后 World 与磁盘持久不一致，需用户手动选择以哪边为准
+  （recovery 会打印分叉路径与指引）。
+
 ## 精修轮（第三轮：架构澄清 + P0清单复核）
 - system_prompt.py: write_file 覆盖已存在文件时加前置提示（不拦截，仅提示"若只改部分内容建议用str_replace"）
 - STOP_HINT 熔断消息加失败原因分类（type_mismatch/exception/logic），并附带针对性建议文案
