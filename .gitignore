@@ -7,3 +7,7 @@ wal_*.log
 *.bak
 *.bak-*
 .claude/
+.forge_autoloop/
+auto_loop.py
+.forge_autoloop/
+auto_loop.py

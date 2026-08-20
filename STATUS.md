@@ -24,5 +24,10 @@
 - `forge: tx=NN v=NN` 自动commit与人类feature commit混线，
   可用 `git log --grep="^forge: tx=" --invert-grep` 过滤
 - veritas_kernel 侧：object_birth 收窄 pub(crate)、WAL截断恢复测试，完全未碰
+- forge/intents/intent_tools.py:210 投影结果被静默丢弃：ProjectionManager.project()
+  内部对每个 projection 的 apply() 包 try/except（base.py:89-121），失败不抛异常、
+  返回 success=False 的 ProjectionResult；调用处未检查返回值，_register_path 照常执行，
+  可能返回"世界里存在但磁盘无文件"的 oid（2026-08 只读确认，未改）
+- forge/projections/base.py:122-133 永不执行的旧实现死代码（121 行已 return，未删）
 
 ## 生产路径不变
