@@ -21,8 +21,9 @@
 
 ## 已知技术债（未处理）
 - 全库47处裸 `except Exception:`（历史遗留为主），建议分批清理
-- `forge: tx=NN v=NN` 自动commit与人类feature commit混线，
-  可用 `git log --grep="^forge: tx=" --invert-grep` 过滤
+- ~~`forge: tx=NN v=NN` 自动commit与人类feature commit混线~~ 已解决：
+  自动事务提交已停用（git_projection.apply() 不再 commit），历史中的
+  `forge: tx=` 提交已通过 filter-branch 全部移除
 - veritas_kernel 侧：object_birth 收窄 pub(crate)、WAL截断恢复测试，完全未碰
 - forge/intents/intent_tools.py:210 投影结果被静默丢弃：ProjectionManager.project()
   内部对每个 projection 的 apply() 包 try/except（base.py:89-121），失败不抛异常、
