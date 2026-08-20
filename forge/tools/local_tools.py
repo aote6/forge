@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from forge.adapters.base import ToolResult
-from forge.core.security import is_dangerous_command, needs_git_confirmation, is_allowed_command, is_blocked_path, resolve_workspace_path, PathSecurityError
+from forge.core.security import is_dangerous_command, needs_git_confirmation, is_allowed_command
 from forge.tools.display import format_block, error_slices
 from forge.tools.project_memory import load_memory, update_memory, format_for_prompt
 from forge.tools.read_cache import get as cache_get, put as cache_put
@@ -847,14 +847,7 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
     def read_file(path: str, start: int = 1, end: int = 0) -> ToolResult:
         """读取文件。大文件无行范围时返回符号大纲，避免撑爆上下文。"""
         try:
-            try:
-                resolved = resolve_workspace_path(workspace.project_root, path)
-            except PathSecurityError as e:
-                return ToolResult.fail(
-                    display=format_block("read_file", "FAIL", {"path": path, "reason": str(e)}),
-                    hint="路径被安全策略拦截",
-                )
-            full = Path(resolved)
+            full = Path(workspace.project_root) / path
             if not full.is_file():
                 return ToolResult.fail(
                     display=format_block(
@@ -956,13 +949,6 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
 
     def search_code(pattern: str, path: str = ".") -> ToolResult:
         try:
-            try:
-                resolve_workspace_path(workspace.project_root, path)
-            except PathSecurityError as e:
-                return ToolResult.fail(
-                    display=format_block("search_code", "FAIL", {"path": path, "reason": str(e)}),
-                    hint="路径被安全策略拦截",
-                )
             result = workspace.search_code(pattern, path)
             _log("search_code", {"pattern": pattern, "path": path}, True)
             return ToolResult.ok(
@@ -1103,11 +1089,10 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
     def run_command(cmd: str, timeout: int = 60) -> ToolResult:
         """执行 shell；保留尾部输出，并提取 Error/Traceback 切片。"""
         try:
-            danger = is_dangerous_command(cmd)
-            if danger:
+            if is_dangerous_command(cmd):
                 return ToolResult.fail(
                     display=format_block(
-                        "run_command", "FAIL", {"cmd": cmd, "reason": danger},
+                        "run_command", "FAIL", {"cmd": cmd, "reason": "dangerous"},
                         hint="命令被安全策略拦截",
                     )
                 )
