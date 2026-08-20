@@ -242,6 +242,27 @@ READ_ONLY_TOOL_DECLARATIONS = [
             "required": ["url"],
         },
     },
+
+    {
+        "name": "post_toot",
+        "description": (
+            "发一条 Mastodon 嘟文（可选，非强制）。"
+            "需环境变量 MASTODON_BASE_URL + MASTODON_ACCESS_TOKEN。"
+            "visibility: public|unlisted|private|direct，默认 unlisted。"
+            "勿刷屏；勿在嘟文中包含密钥/token。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "嘟文正文"},
+                "visibility": {
+                    "type": "string",
+                    "description": "public|unlisted|private|direct，默认 unlisted",
+                },
+            },
+            "required": ["text"],
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
