@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from forge.adapters.base import ToolResult
-from forge.core.security import is_dangerous_command, needs_git_confirmation, is_allowed_command
+from forge.core.security import is_dangerous_command, needs_git_confirmation, is_allowed_command, is_blocked_path, resolve_workspace_path, PathSecurityError
 from forge.tools.display import format_block, error_slices
 from forge.tools.project_memory import load_memory, update_memory, format_for_prompt
 from forge.tools.read_cache import get as cache_get, put as cache_put
@@ -847,7 +847,14 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
     def read_file(path: str, start: int = 1, end: int = 0) -> ToolResult:
         """读取文件。大文件无行范围时返回符号大纲，避免撑爆上下文。"""
         try:
-            full = Path(workspace.project_root) / path
+            try:
+                resolved = resolve_workspace_path(workspace.project_root, path)
+            except PathSecurityError as e:
+                return ToolResult.fail(
+                    display=format_block("read_file", "FAIL", {"path": path, "reason": str(e)}),
+                    hint="路径被安全策略拦截",
+                )
+            full = Path(resolved)
             if not full.is_file():
                 return ToolResult.fail(
                     display=format_block(
@@ -949,6 +956,13 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
 
     def search_code(pattern: str, path: str = ".") -> ToolResult:
         try:
+            try:
+                resolve_workspace_path(workspace.project_root, path)
+            except PathSecurityError as e:
+                return ToolResult.fail(
+                    display=format_block("search_code", "FAIL", {"path": path, "reason": str(e)}),
+                    hint="路径被安全策略拦截",
+                )
             result = workspace.search_code(pattern, path)
             _log("search_code", {"pattern": pattern, "path": path}, True)
             return ToolResult.ok(
@@ -1089,10 +1103,11 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
     def run_command(cmd: str, timeout: int = 60) -> ToolResult:
         """执行 shell；保留尾部输出，并提取 Error/Traceback 切片。"""
         try:
-            if is_dangerous_command(cmd):
+            danger = is_dangerous_command(cmd)
+            if danger:
                 return ToolResult.fail(
                     display=format_block(
-                        "run_command", "FAIL", {"cmd": cmd, "reason": "dangerous"},
+                        "run_command", "FAIL", {"cmd": cmd, "reason": danger},
                         hint="命令被安全策略拦截",
                     )
                 )
@@ -1411,6 +1426,25 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         )
 
 
+    def post_toot(text: str, visibility: str = "unlisted") -> ToolResult:
+        """发一条 Mastodon 嘟文。非强制：想发就调。"""
+        try:
+            from forge.adapters.mastodon import MastodonClient, is_configured
+            if not is_configured():
+                return ToolResult.fail(
+                    display=format_block("post_toot", "FAIL", {"reason": "未配置 MASTODON_BASE_URL / MASTODON_ACCESS_TOKEN"}),
+                    hint="export 后重试；Token 勿写入源码",
+                )
+            client = MastodonClient()
+            data = client.post_status(text, visibility=visibility)
+            url = data.get("url") or data.get("uri") or ""
+            return ToolResult.ok(
+                display=format_block("post_toot", "OK", {"url": url, "id": data.get("id"), "visibility": visibility}),
+                payload={"mutation": True, "url": url, "id": data.get("id")},
+            )
+        except Exception as e:
+            return ToolResult.fail(display=format_block("post_toot", "FAIL", {"reason": str(e)}))
+
     return {
         "read_file_with_lines": read_file_with_lines,
         "preview_line_mutation": preview_line_mutation,
@@ -1445,6 +1479,7 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         "git_log": git_log,
         "run_single_test": run_single_test,
         "run_command": run_command,
+        "post_toot": post_toot,
         "world_info": world_info,
         "list_world_objects": list_world_objects,
         "get_world_object": get_world_object,
