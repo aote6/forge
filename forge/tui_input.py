@@ -12,18 +12,22 @@
 - 基本编辑：退格删除；Ctrl+C 抛 KeyboardInterrupt；Ctrl+D 空输入返回 None。
 - 非 tty / 非 POSIX / 测试注入 key_source 时回退为简单行为。
 
-重绘策略：
-- 写提示符前用 DECSC(\\x1b7) 记住「提示符行首」的绝对光标位置，
-  每次重绘用 DECRC(\\x1b8) 跳回该位置再 \\x1b[J 清到屏尾后整段重写。
-  这样不依赖「猜终端折行了几行」来算光标上移量，宽字符/emoji 折行、
-  以及终端把光标停在行尾「待折行」状态都不会让光标错位——彻底避免
-  之前「打一行字，结果冒出十多行一模一样的字」的问题。
+重绘策略（针对 Termux / 窄屏 / 软折行）：
+- 不再使用 DECSC/DECRC（\\x1b7/\\x1b8）。在 Termux 上，当输入靠近屏幕底部、
+  发生软折行或屏幕滚动后，绝对光标位置会失效，导致每次重绘从错误位置
+  开始写，刷出「打一行字冒出十几行一模一样内容」。
+- 改为基于实际显示宽度（east_asian_width）计算占用行数，用相对光标上移
+  + 逐行清行（\\x1b[2K）后整段重写。宽字符/emoji/中文折行都能正确处理。
 
 key_source / write 参数供测试注入，避免依赖真实终端。
 """
 
+from __future__ import annotations
+
 import os
+import shutil
 import sys
+import unicodedata
 
 try:
     import termios
@@ -39,21 +43,83 @@ _BP_START = "\x1b[200~"  # bracketed paste 开始
 _BP_END = "\x1b[201~"  # bracketed paste 结束
 _BP_ENABLE = "\x1b[?2004h"
 _BP_DISABLE = "\x1b[?2004l"
-_SAVE_CURSOR = "\x1b7"  # DECSC：保存光标位置（提示符行首）
-_RESTORE_CURSOR = "\x1b8"  # DECRC：恢复光标位置
+
+
+def _char_width(ch: str) -> int:
+    """终端列宽：组合符 0，东亚宽字符/emoji 2，其他 1。"""
+    if not ch or unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F", "A") else 1
+
+
+def _display_lines(text: str, width: int) -> int:
+    """计算 text 在给定终端宽度下会占多少物理行（含软折行）。"""
+    if width < 2:
+        width = 80
+    lines = 1
+    col = 0
+    for ch in text:
+        if ch == "\n":
+            lines += 1
+            col = 0
+            continue
+        w = _char_width(ch) or 1
+        if col + w > width:
+            lines += 1
+            col = w
+        else:
+            col += w
+    return max(1, lines)
+
+
+def _get_terminal_width() -> int:
+    try:
+        return shutil.get_terminal_size(fallback=(80, 24)).columns
+    except Exception:
+        try:
+            return int(os.environ.get("COLUMNS", "80")) or 80
+        except Exception:
+            return 80
 
 
 def _split_leading_newlines(prompt: str) -> tuple[str, str]:
-    """把 prompt 开头的 \\n 拆出来单独处理（避免干扰光标行数计算）。"""
+    """把 prompt 开头的 \\n 拆出来单独处理。"""
     i = 0
     while i < len(prompt) and prompt[i] == "\n":
         i += 1
     return prompt[:i], prompt[i:]
 
 
-def _render(write, prompt: str, buffer: str) -> None:
-    """整段重绘当前输入：跳回提示符行首、清到屏尾、再重写 prompt+buffer。"""
-    write(_RESTORE_CURSOR + "\x1b[J" + prompt + buffer.replace("\n", "\r\n"))
+def _render(write, prompt: str, buffer: str, prev_lines: int, width: int) -> int:
+    """整段重绘当前输入。返回新占用的物理行数。
+
+    用相对上移 + 逐行 \\x1b[2K 清行，再重写。不依赖 DECSC/DECRC。
+    """
+    logical = prompt + buffer
+    new_lines = _display_lines(logical, width)
+
+    parts: list[str] = []
+    # 回到上一轮内容的顶部
+    if prev_lines > 1:
+        parts.append(f"\x1b[{prev_lines - 1}A")
+    parts.append("\r")
+
+    # 清掉上一轮占用的所有行
+    for i in range(prev_lines):
+        parts.append("\x1b[2K")
+        if i < prev_lines - 1:
+            parts.append("\x1b[1B")
+    # 清完后回到顶部
+    if prev_lines > 1:
+        parts.append(f"\x1b[{prev_lines - 1}A")
+    parts.append("\r")
+
+    # 重写 prompt + buffer（raw 模式下换行用 \r\n）
+    parts.append(prompt)
+    parts.append(buffer.replace("\n", "\r\n"))
+
+    write("".join(parts))
+    return new_lines
 
 
 def _read_utf8_char(fd, b0: bytes) -> str:
@@ -118,14 +184,20 @@ def _read_key(fd) -> str | None:
     return bytes(seq).decode("utf-8", "replace")
 
 
-def _read_loop(prompt: str, key_source, write) -> tuple[str | None, bool]:
+def _read_loop(
+    prompt: str, key_source, write, width: int | None = None
+) -> tuple[str | None, bool]:
     """核心状态机。返回 (result, submitted)；submitted=False 表示异常中断。"""
+    if width is None:
+        width = _get_terminal_width()
+
     leading, clean = _split_leading_newlines(prompt)
-    # 先写出提示符，并在写提示符前用 DECSC 记住行首位置，
-    # 之后每次重绘都用 DECRC 回跳到这里（绝对定位，不受折行影响）。
-    write(leading.replace("\n", "\r\n") + _SAVE_CURSOR + clean)
+    # 先写出开头换行 + 提示符
+    write(leading.replace("\n", "\r\n") + clean)
     buffer = ""
     in_paste = False
+    prev_lines = _display_lines(clean, width)
+
     while True:
         ch = key_source()
         if ch is None:  # EOF
@@ -135,9 +207,8 @@ def _read_loop(prompt: str, key_source, write) -> tuple[str | None, bool]:
             continue
         if ch == _BP_END:
             # 粘贴结束：只退出粘贴模式，仍等待 Enter 提交
-            # （与 readline 一致，用户可在粘贴后继续补充内容）
             in_paste = False
-            _render(write, clean, buffer)
+            prev_lines = _render(write, clean, buffer, prev_lines, width)
             continue
         if in_paste:
             # 粘贴内容：换行按字面处理，Ctrl+C/Ctrl+D 也当字面内容
@@ -153,13 +224,13 @@ def _read_loop(prompt: str, key_source, write) -> tuple[str | None, bool]:
         if ch in ("\r", "\n"):
             if buffer.rstrip().endswith("\\"):
                 buffer = buffer.rstrip()[:-1] + "\n"
-                _render(write, clean, buffer)
+                prev_lines = _render(write, clean, buffer, prev_lines, width)
                 continue
             return buffer, True
         if ch in ("\x7f", "\x08"):  # 退格
             if buffer:
                 buffer = buffer[:-1]
-                _render(write, clean, buffer)
+                prev_lines = _render(write, clean, buffer, prev_lines, width)
             continue
         if ch == "\x03":
             raise KeyboardInterrupt
@@ -169,16 +240,20 @@ def _read_loop(prompt: str, key_source, write) -> tuple[str | None, bool]:
             continue  # 方向键等暂不支持，忽略
         if ch.isprintable() or ch == "\t":
             buffer += ch
-            _render(write, clean, buffer)
+            prev_lines = _render(write, clean, buffer, prev_lines, width)
 
 
-def read_multiline_input(prompt: str = "> ", key_source=None, write=None) -> str | None:
+def read_multiline_input(
+    prompt: str = "> ", key_source=None, write=None
+) -> str | None:
     """读取一条（可能多行）输入，返回 str；EOF / Ctrl+D 空输入返回 None。
 
     key_source / write 仅供测试注入；默认从终端读取。
     """
     if key_source is not None:
-        result, _submitted = _read_loop(prompt, key_source, write or (lambda s: None))
+        result, _submitted = _read_loop(
+            prompt, key_source, write or (lambda s: None)
+        )
         return result
 
     if not _POSIX:

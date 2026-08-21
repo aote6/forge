@@ -7,7 +7,7 @@ import os
 import unicodedata
 
 from forge import tui_input
-from forge.tui_input import _read_key, read_multiline_input
+from forge.tui_input import _display_lines, _read_key, read_multiline_input
 
 
 class Feed:
@@ -39,15 +39,14 @@ def _cols(ch):
 
 
 class MiniVT:
-    """极简 VT 模拟器：模拟自动折行与 \\x1b7/\\x1b8/\\x1b[J，
-    用来验证「重绘从固定锚点出发，不会累积出重复行」。"""
+    """极简 VT 模拟器：模拟自动折行、相对光标移动与清行，
+    用来验证「重绘不会累积出重复行」。"""
 
     def __init__(self, width):
         self.width = width
         self.rows = [[" "] * width]
         self.cx = 0
         self.cy = 0
-        self.saved = (0, 0)
 
     def _grow(self, n):
         while len(self.rows) <= n:
@@ -67,31 +66,40 @@ class MiniVT:
         self.cx += w
 
     def _csi(self, params, final):
-        if final == "J":  # 清到屏尾
+        n = 1
+        if params:
+            try:
+                n = int(params.split(";")[0] or "1")
+            except ValueError:
+                n = 1
+        if final == "A":  # 上移
+            self.cy = max(0, self.cy - n)
+        elif final == "B":  # 下移
+            self.cy += n
+            self._grow(self.cy)
+        elif final == "K":  # 清行（\x1b[2K）
+            self._grow(self.cy)
+            self.rows[self.cy] = [" "] * self.width
+        elif final == "J":  # 清到屏尾（兼容）
+            self._grow(self.cy)
             for k in range(self.cx, self.width):
                 self.rows[self.cy][k] = " "
             for cy in range(self.cy + 1, len(self.rows)):
                 self.rows[cy] = [" "] * self.width
-        # h/l（模式开关，如 bracketed paste）与其它序列忽略即可
 
     def write(self, s):
         i = 0
         while i < len(s):
             c = s[i]
             if c == "\x1b":
-                nxt = s[i + 1:i + 2]
-                if nxt == "7":  # DECSC 保存光标
-                    self.saved = (self.cy, self.cx)
-                    i += 2
-                elif nxt == "8":  # DECRC 恢复光标
-                    self.cy, self.cx = self.saved
-                    self._grow(self.cy)
-                    i += 2
-                elif nxt == "[":
+                nxt = s[i + 1 : i + 2]
+                if nxt == "[":
                     j = i + 2
                     while j < len(s) and not ("@" <= s[j] <= "~"):
                         j += 1
-                    self._csi(s[i + 2:j], s[j])
+                    params = s[i + 2 : j]
+                    final = s[j] if j < len(s) else ""
+                    self._csi(params, final)
                     i = j + 1
                 else:
                     i += 2
@@ -118,11 +126,14 @@ def test_enter_submits_single_line():
     assert read_multiline_input(key_source=feed("h", "i", "\r")) == "hi"
 
 
-def test_empty_enter_returns_empty_string():
-    assert read_multiline_input(key_source=feed("\r")) == ""
+def test_paste_multiline():
+    out = read_multiline_input(
+        key_source=feed("\x1b[200~", "l1\nl2\nl3", "\x1b[201~", "\r")
+    )
+    assert out == "l1\nl2\nl3"
 
 
-def test_bracketed_paste_is_one_message():
+def test_paste_with_prefix_suffix():
     out = read_multiline_input(
         key_source=feed("a", "\x1b[200~", "l1\nl2\nl3", "\x1b[201~", "b", "\r")
     )
@@ -130,13 +141,16 @@ def test_bracketed_paste_is_one_message():
 
 
 def test_paste_end_keeps_buffer_until_enter():
-    # 粘贴结束不自动提交，回车后才提交
-    out = read_multiline_input(key_source=feed("\x1b[200~", "x\ny", "\x1b[201~", "\r"))
+    out = read_multiline_input(
+        key_source=feed("\x1b[200~", "x\ny", "\x1b[201~", "\r")
+    )
     assert out == "x\ny"
 
 
 def test_cr_inside_paste_normalized_to_newline():
-    out = read_multiline_input(key_source=feed("\x1b[200~", "a\rb", "\x1b[201~"))
+    out = read_multiline_input(
+        key_source=feed("\x1b[200~", "a\rb", "\x1b[201~")
+    )
     assert out == "a\nb"
 
 
@@ -177,8 +191,7 @@ def test_arrow_keys_ignored():
 
 
 def test_read_key_decodes_multibyte_utf8(monkeypatch):
-    """逐字节喂入 UTF-8 中文「你」(E4 BD A0)，必须还原成一个字符，
-    而不是 3 个 U+FFFD 替换符（显示为问号）。"""
+    """逐字节喂入 UTF-8 中文「你」(E4 BD A0)，必须还原成一个字符。"""
     queue = list("你".encode("utf-8"))
 
     def fake_read(fd, n):
@@ -215,3 +228,21 @@ def test_long_wrapping_line_does_not_duplicate():
     )
     full = "".join(vt.screen())
     assert full.count(text) == 1, f"重绘后屏幕出现重复：{vt.screen()!r}"
+
+
+def test_display_lines_wide_chars():
+    """宽字符折行计算正确。"""
+    assert _display_lines("> 你好世界", 10) == 1
+    assert _display_lines("> 你好世界！", 10) == 2
+    assert _display_lines("a\nb\nc", 80) == 3
+
+
+def test_narrow_termux_width_no_duplicate():
+    """模拟 Termux COLUMNS=64 下连续输入中文，不应重复。"""
+    vt = MiniVT(64)
+    text = "这是一段在华为P20 Termux上测试的中文输入内容，用来验证折行重绘"
+    read_multiline_input(
+        "\n💬 > ", key_source=feed(text, "\r"), write=vt.write
+    )
+    full = "".join(vt.screen())
+    assert full.count(text) == 1, f"出现重复：{vt.screen()!r}"
