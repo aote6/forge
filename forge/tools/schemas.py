@@ -270,6 +270,21 @@ READ_ONLY_TOOL_DECLARATIONS = [
 # ---------------------------------------------------------------------------
 MUTATION_TOOL_DECLARATIONS = [
     {
+        "name": "delete_toot",
+        "description": (
+            "删除指定 Mastodon 嘟文。"
+            "需环境变量 MASTODON_BASE_URL + MASTODON_ACCESS_TOKEN。"
+            "status_id 是要删除的嘟文 ID。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status_id": {"type": "string", "description": "要删除的嘟文 ID"},
+            },
+            "required": ["status_id"],
+        },
+    },
+    {
         "name": "undo_last_tx",
         "description": "撤销最近一次成功的文件修改（shadow/事务）。改错了优先调用，不要盲猜第二次 str_replace。",
         "parameters": {"type": "object", "properties": {}, "required": []},
