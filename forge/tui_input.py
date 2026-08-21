@@ -57,13 +57,39 @@ def _render(write, prompt: str, buffer: str, prev_lines: int) -> int:
     return new_lines
 
 
+def _read_utf8_char(fd, b0: bytes) -> str:
+    """把 UTF-8 首字节 b0 连同续字节读完整，解码为一个字符。
+
+    中文等非 ASCII 字符是多字节序列（如「你」= E4 BD A0）。
+    若逐字节单独 decode，每个字节都会变成 U+FFFD 替换符，
+    终端上显示成问号/方框。因此必须先按首字节确定长度，
+    把整段读齐再一次性 decode。
+    """
+    first = b0[0]
+    if first & 0xF8 == 0xF0:
+        need = 4
+    elif first & 0xF0 == 0xE0:
+        need = 3
+    elif first & 0xE0 == 0xC0:
+        need = 2
+    else:
+        need = 1
+    seq = bytearray(b0)
+    while len(seq) < need:
+        b = os.read(fd, 1)
+        if not b:
+            break
+        seq.append(b[0])
+    return bytes(seq).decode("utf-8", "replace")
+
+
 def _read_key(fd) -> str | None:
     """读一个按键/转义序列，返回 str；EOF 返回 None。"""
     b0 = os.read(fd, 1)
     if not b0:
         return None
     if b0 != b"\x1b":
-        return b0.decode("utf-8", "replace")
+        return _read_utf8_char(fd, b0)
     seq = bytearray(b0)
     b1 = os.read(fd, 1)
     if not b1:

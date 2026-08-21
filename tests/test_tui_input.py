@@ -3,7 +3,10 @@
 用注入的 key_source 模拟按键流，不依赖真实终端。
 """
 
-from forge.tui_input import read_multiline_input
+import os
+
+from forge import tui_input
+from forge.tui_input import _read_key, read_multiline_input
 
 
 class Feed:
@@ -87,3 +90,33 @@ def test_arrow_keys_ignored():
         key_source=feed("x", "\x1b[A", "\x1b[D", "y", "\r")
     )
     assert out == "xy"
+
+
+def test_read_key_decodes_multibyte_utf8(monkeypatch):
+    """逐字节喂入 UTF-8 中文「你」(E4 BD A0)，必须还原成一个字符，
+    而不是 3 个 U+FFFD 替换符（显示为问号）。"""
+    queue = list("你".encode("utf-8"))
+
+    def fake_read(fd, n):
+        return bytes([queue.pop(0)]) if queue else b""
+
+    monkeypatch.setattr(tui_input.os, "read", fake_read)
+    assert _read_key(0) == "你"
+
+
+def test_read_key_multibyte_across_many_chars(monkeypatch):
+    """连续多个中文 + ASCII 混合，逐字节流式读取仍完整还原。"""
+    text = "你好，Forge！abc"
+    queue = list(text.encode("utf-8"))
+
+    def fake_read(fd, n):
+        return bytes([queue.pop(0)]) if queue else b""
+
+    monkeypatch.setattr(tui_input.os, "read", fake_read)
+    out = []
+    while True:
+        ch = _read_key(0)
+        if ch is None:
+            break
+        out.append(ch)
+    assert "".join(out) == text
