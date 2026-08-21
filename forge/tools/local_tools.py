@@ -1445,6 +1445,23 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         except Exception as e:
             return ToolResult.fail(display=format_block("post_toot", "FAIL", {"reason": str(e)}))
 
+    def delete_toot(status_id: str) -> ToolResult:
+        """删除指定 Mastodon 嘟文。"""
+        try:
+            from forge.adapters.mastodon import MastodonClient, is_configured
+            if not is_configured():
+                return ToolResult.fail(
+                    display=format_block("delete_toot", "FAIL", {"reason": "未配置 MASTODON_BASE_URL / MASTODON_ACCESS_TOKEN"}),
+                )
+            client = MastodonClient()
+            client.delete_status(status_id)
+            return ToolResult.ok(
+                display=format_block("delete_toot", "OK", {"id": status_id}),
+                payload={"mutation": True, "id": status_id},
+            )
+        except Exception as e:
+            return ToolResult.fail(display=format_block("delete_toot", "FAIL", {"reason": str(e)}))
+
     return {
         "read_file_with_lines": read_file_with_lines,
         "preview_line_mutation": preview_line_mutation,
@@ -1480,6 +1497,7 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
         "run_single_test": run_single_test,
         "run_command": run_command,
         "post_toot": post_toot,
+        "delete_toot": delete_toot,
         "world_info": world_info,
         "list_world_objects": list_world_objects,
         "get_world_object": get_world_object,

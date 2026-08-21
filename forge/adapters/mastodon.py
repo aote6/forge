@@ -57,6 +57,10 @@ class MastodonClient:
     def verify(self) -> dict[str, Any]:
         return self._request("GET", "/api/v1/accounts/verify_credentials")
 
+    def delete_status(self, status_id: str) -> dict[str, Any]:
+        """删除指定嘟文。"""
+        return self._request("DELETE", f"/api/v1/statuses/{status_id}")
+
     def post_status(
         self,
         text: str,
