@@ -415,6 +415,8 @@ class Runtime:
         """运行期间外部变更守卫：变更工具执行前检测外部磁盘/Git 变化。
 
         契约 §7：持锁写入期间发现外部磁盘变化 → 立即停止继续写入，重新对账。
+        World 不可达时同样 STOP：Forge 写盘不会产生 World receipt，
+        会产生无痕分叉，必须先恢复 veritasd。
         """
         if tool_name not in MUTATION_TOOL_NAMES:
             return None
@@ -422,18 +424,28 @@ class Runtime:
         if tool_name == "forge_sync":
             return None
         try:
-            if self.sync_layer is not None and self.sync_layer.external_change_detected():
-                from forge.adapters.base import ToolResult
-                return ToolResult.fail(
-                    display=(
-                        "⛔ 检测到外部磁盘/Git 变化：已停止继续写入。\n"
-                        "请先运行 forge_sync 重新对账，确认同步状态后再继续编辑。"
+            if self.sync_layer is not None:
+                if not self.sync_layer.world_available():
+                    from forge.adapters.base import ToolResult
+                    return ToolResult.fail(
+                        display=(
+                            "⛔ 无法访问 World（veritasd）：已停止继续写入。\n"
+                            "Forge 写盘会产生 World 无法记录的变化，禁止在不可达时继续。\n"
+                            "请先恢复 veritasd 后重试。"
+                        )
                     )
-                )
-        except Exception:
-            pass
+                if self.sync_layer.external_change_detected():
+                    from forge.adapters.base import ToolResult
+                    return ToolResult.fail(
+                        display=(
+                            "⛔ 检测到外部磁盘/Git 变化：已停止继续写入。\n"
+                            "请先运行 forge_sync 重新对账，确认同步状态后再继续编辑。"
+                        )
+                    )
+        except Exception as e:
+            import sys
+            print(f"[sync] external-change guard failed: {e}", file=sys.stderr)
         return None
-
     def on(self, event_type: EventType, handler):
         self._handlers[event_type].append(handler)
 

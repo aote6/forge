@@ -377,12 +377,26 @@ class SyncLayer:
 
     # ── runtime external-change guard ──────────────────────────
 
-    def external_change_detected(self) -> bool:
-        """运行期间：磁盘/Git 是否相对已知状态发生了变化。
+    def world_available(self) -> bool:
+        """World（veritasd）是否可访问。"""
+        try:
+            self._world.get_version()
+            return True
+        except Exception:
+            return False
 
-        用于 Runtime 在持锁写入前检测外部修改；一旦变化即应停止写入并重新对账
-        （契约 §7：发现外部磁盘变化立即停止当前写操作，进入重新对账）。
+    def external_change_detected(self) -> bool:
+        """运行期间：World 不可达，或磁盘/Git 相对已知状态发生了变化。
+
+        World 不可达时同样视为“需要停止写入”——不是磁盘冲突，
+        而是此时任何 Forge 写盘都不会被 World 记录，会产生无痕分叉。
         """
+        if not self.world_available():
+            return True
+        if not is_git_repo(self.project_root):
+            return False
+        disk_advanced, _ = self._disk_advanced()
+        return disk_advanced
         if not is_git_repo(self.project_root):
             return False
         disk_advanced, _ = self._disk_advanced()
