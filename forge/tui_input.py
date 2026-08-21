@@ -12,6 +12,13 @@
 - 基本编辑：退格删除；Ctrl+C 抛 KeyboardInterrupt；Ctrl+D 空输入返回 None。
 - 非 tty / 非 POSIX / 测试注入 key_source 时回退为简单行为。
 
+重绘策略：
+- 写提示符前用 DECSC(\\x1b7) 记住「提示符行首」的绝对光标位置，
+  每次重绘用 DECRC(\\x1b8) 跳回该位置再 \\x1b[J 清到屏尾后整段重写。
+  这样不依赖「猜终端折行了几行」来算光标上移量，宽字符/emoji 折行、
+  以及终端把光标停在行尾「待折行」状态都不会让光标错位——彻底避免
+  之前「打一行字，结果冒出十多行一模一样的字」的问题。
+
 key_source / write 参数供测试注入，避免依赖真实终端。
 """
 
@@ -32,6 +39,8 @@ _BP_START = "\x1b[200~"  # bracketed paste 开始
 _BP_END = "\x1b[201~"  # bracketed paste 结束
 _BP_ENABLE = "\x1b[?2004h"
 _BP_DISABLE = "\x1b[?2004l"
+_SAVE_CURSOR = "\x1b7"  # DECSC：保存光标位置（提示符行首）
+_RESTORE_CURSOR = "\x1b8"  # DECRC：恢复光标位置
 
 
 def _split_leading_newlines(prompt: str) -> tuple[str, str]:
@@ -42,19 +51,9 @@ def _split_leading_newlines(prompt: str) -> tuple[str, str]:
     return prompt[:i], prompt[i:]
 
 
-def _render(write, prompt: str, buffer: str, prev_lines: int) -> int:
-    """整段重绘当前输入。返回新占用的终端行数。"""
-    new_lines = 1 + buffer.count("\n")
-    parts = []
-    up = prev_lines - 1
-    if up > 0:
-        parts.append(f"\x1b[{up}A")  # 光标上移回顶部
-    parts.append("\r\x1b[2K")  # 行首 + 清当前行
-    parts.append(prompt)
-    parts.append(buffer.replace("\n", "\r\n"))  # raw mode 下手动回车
-    parts.append("\x1b[J")  # 清到屏尾（处理内容变短的情况）
-    write("".join(parts))
-    return new_lines
+def _render(write, prompt: str, buffer: str) -> None:
+    """整段重绘当前输入：跳回提示符行首、清到屏尾、再重写 prompt+buffer。"""
+    write(_RESTORE_CURSOR + "\x1b[J" + prompt + buffer.replace("\n", "\r\n"))
 
 
 def _read_utf8_char(fd, b0: bytes) -> str:
@@ -121,10 +120,12 @@ def _read_key(fd) -> str | None:
 
 def _read_loop(prompt: str, key_source, write) -> tuple[str | None, bool]:
     """核心状态机。返回 (result, submitted)；submitted=False 表示异常中断。"""
-    _leading, clean = _split_leading_newlines(prompt)
+    leading, clean = _split_leading_newlines(prompt)
+    # 先写出提示符，并在写提示符前用 DECSC 记住行首位置，
+    # 之后每次重绘都用 DECRC 回跳到这里（绝对定位，不受折行影响）。
+    write(leading.replace("\n", "\r\n") + _SAVE_CURSOR + clean)
     buffer = ""
     in_paste = False
-    prev_lines = 1
     while True:
         ch = key_source()
         if ch is None:  # EOF
@@ -136,7 +137,7 @@ def _read_loop(prompt: str, key_source, write) -> tuple[str | None, bool]:
             # 粘贴结束：只退出粘贴模式，仍等待 Enter 提交
             # （与 readline 一致，用户可在粘贴后继续补充内容）
             in_paste = False
-            prev_lines = _render(write, clean, buffer, prev_lines)
+            _render(write, clean, buffer)
             continue
         if in_paste:
             # 粘贴内容：换行按字面处理，Ctrl+C/Ctrl+D 也当字面内容
@@ -152,13 +153,13 @@ def _read_loop(prompt: str, key_source, write) -> tuple[str | None, bool]:
         if ch in ("\r", "\n"):
             if buffer.rstrip().endswith("\\"):
                 buffer = buffer.rstrip()[:-1] + "\n"
-                prev_lines = _render(write, clean, buffer, prev_lines)
+                _render(write, clean, buffer)
                 continue
             return buffer, True
         if ch in ("\x7f", "\x08"):  # 退格
             if buffer:
                 buffer = buffer[:-1]
-                prev_lines = _render(write, clean, buffer, prev_lines)
+                _render(write, clean, buffer)
             continue
         if ch == "\x03":
             raise KeyboardInterrupt
@@ -168,7 +169,7 @@ def _read_loop(prompt: str, key_source, write) -> tuple[str | None, bool]:
             continue  # 方向键等暂不支持，忽略
         if ch.isprintable() or ch == "\t":
             buffer += ch
-            prev_lines = _render(write, clean, buffer, prev_lines)
+            _render(write, clean, buffer)
 
 
 def read_multiline_input(prompt: str = "> ", key_source=None, write=None) -> str | None:
@@ -201,9 +202,7 @@ def read_multiline_input(prompt: str = "> ", key_source=None, write=None) -> str
         sys.stdout.write(s)
         sys.stdout.flush()
 
-    leading, clean = _split_leading_newlines(prompt)
     _wr(_BP_ENABLE)
-    _wr(leading.replace("\n", "\r\n") + clean)
     try:
         result, submitted = _read_loop(prompt, _ks, _wr)
         if submitted:

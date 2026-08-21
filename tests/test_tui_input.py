@@ -4,6 +4,7 @@
 """
 
 import os
+import unicodedata
 
 from forge import tui_input
 from forge.tui_input import _read_key, read_multiline_input
@@ -28,6 +29,89 @@ def feed(*chunks):
         else:
             keys.extend(c)
     return Feed(keys)
+
+
+def _cols(ch):
+    """终端列宽：组合符 0，东亚宽字符/emoji 2，其他 1（与实现一致）。"""
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in "WFA" else 1
+
+
+class MiniVT:
+    """极简 VT 模拟器：模拟自动折行与 \\x1b7/\\x1b8/\\x1b[J，
+    用来验证「重绘从固定锚点出发，不会累积出重复行」。"""
+
+    def __init__(self, width):
+        self.width = width
+        self.rows = [[" "] * width]
+        self.cx = 0
+        self.cy = 0
+        self.saved = (0, 0)
+
+    def _grow(self, n):
+        while len(self.rows) <= n:
+            self.rows.append([" "] * self.width)
+
+    def put(self, ch):
+        w = _cols(ch) or 1
+        self._grow(self.cy)
+        if self.cx + w > self.width:  # 放不下 → 先折行再写
+            self.cx = 0
+            self.cy += 1
+            self._grow(self.cy)
+        self.rows[self.cy][self.cx] = ch
+        for k in range(1, w):
+            if self.cx + k < self.width:
+                self.rows[self.cy][self.cx + k] = ""
+        self.cx += w
+
+    def _csi(self, params, final):
+        if final == "J":  # 清到屏尾
+            for k in range(self.cx, self.width):
+                self.rows[self.cy][k] = " "
+            for cy in range(self.cy + 1, len(self.rows)):
+                self.rows[cy] = [" "] * self.width
+        # h/l（模式开关，如 bracketed paste）与其它序列忽略即可
+
+    def write(self, s):
+        i = 0
+        while i < len(s):
+            c = s[i]
+            if c == "\x1b":
+                nxt = s[i + 1:i + 2]
+                if nxt == "7":  # DECSC 保存光标
+                    self.saved = (self.cy, self.cx)
+                    i += 2
+                elif nxt == "8":  # DECRC 恢复光标
+                    self.cy, self.cx = self.saved
+                    self._grow(self.cy)
+                    i += 2
+                elif nxt == "[":
+                    j = i + 2
+                    while j < len(s) and not ("@" <= s[j] <= "~"):
+                        j += 1
+                    self._csi(s[i + 2:j], s[j])
+                    i = j + 1
+                else:
+                    i += 2
+            elif c == "\r":
+                self.cx = 0
+                i += 1
+            elif c == "\n":
+                self.cx = 0
+                self.cy += 1
+                self._grow(self.cy)
+                i += 1
+            else:
+                self.put(c)
+                i += 1
+
+    def screen(self):
+        last = len(self.rows) - 1
+        while last >= 0 and all(x in (" ", "") for x in self.rows[last]):
+            last -= 1
+        return ["".join(r).rstrip() for r in self.rows[: last + 1]]
 
 
 def test_enter_submits_single_line():
@@ -120,3 +204,14 @@ def test_read_key_multibyte_across_many_chars(monkeypatch):
             break
         out.append(ch)
     assert "".join(out) == text
+
+
+def test_long_wrapping_line_does_not_duplicate():
+    """回归：打一行含中文的长字触发折行时，屏幕不应冒出重复行。"""
+    vt = MiniVT(10)
+    text = "你好世界，测试"  # 7 个宽字符 = 14 列，必然折行
+    read_multiline_input(
+        "> ", key_source=feed(text, "\r"), write=vt.write
+    )
+    full = "".join(vt.screen())
+    assert full.count(text) == 1, f"重绘后屏幕出现重复：{vt.screen()!r}"
