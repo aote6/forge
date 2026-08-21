@@ -256,7 +256,15 @@ def main():
             print("\n👋")
             break
         except Exception as e:
-            print(f"\n❌ {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"\n❌ 会话异常，为避免继续损坏状态已终止本次会话：{e}")
+            try:
+                runtime.save_session_summary()
+                _save_conversation_history(runtime)
+            except Exception:
+                pass
+            break
 
 
 if __name__ == "__main__":
