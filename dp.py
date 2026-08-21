@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Forge 入口 - 强制 DeepSeek；生产路径 = Runtime 工具循环。"""
+"""Forge 入口 - DeepSeek（付费主力）
+
+支持环境变量：
+  DEEPSEEK_API_KEY   必填
+  DEEPSEEK_MODEL     可选，默认 deepseek-v4-flash
+"""
 import json
 import os
 import sys
@@ -13,24 +18,28 @@ from forge.events import EventType
 from forge.adapters.deepseek import DeepSeekAdapter
 
 project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
-adapter = DeepSeekAdapter(model_name="deepseek-v4-flash")
+adapter = DeepSeekAdapter(
+    model_name=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+)
 tag = "DeepSeek"
 
 
 def _collect_health_notes(runtime: Runtime) -> list[str]:
     """检查工具失败率和最近测试状态，返回主动提醒列表。零 Token。"""
     notes = []
-    # 工具失败率检查
     try:
         history = runtime.executor.call_history if hasattr(runtime, "executor") else {}
         if history:
             total_entries = sum(len(v) for v in history.values())
-            fail_entries = sum(1 for v in history.values() for s in v if s.startswith("fail"))
+            fail_entries = sum(
+                1 for v in history.values() for s in v if s.startswith("fail")
+            )
             if total_entries >= 3 and fail_entries / total_entries >= 0.35:
-                notes.append(f"我的工具最近失败率偏高（{fail_entries}/{total_entries}），可能有些工具接口需要修。")
+                notes.append(
+                    f"我的工具最近失败率偏高（{fail_entries}/{total_entries}），可能有些工具接口需要修。"
+                )
     except Exception:
         pass
-    # 健康文件检查
     try:
         health_file = Path(runtime.workspace.project_root) / ".forge" / "health.json"
         if health_file.exists():
@@ -38,7 +47,9 @@ def _collect_health_notes(runtime: Runtime) -> list[str]:
             failed_tests = health.get("failed_tests", [])
             if failed_tests:
                 first = failed_tests[0]
-                notes.append(f"刚才后台检查发现 {len(failed_tests)} 处测试失败，例如：{first}")
+                notes.append(
+                    f"刚才后台检查发现 {len(failed_tests)} 处测试失败，例如：{first}"
+                )
     except Exception:
         pass
     return notes
@@ -57,7 +68,6 @@ def _check_veritas(runtime: Runtime) -> None:
         elif isinstance(online, bool):
             ok = online
         else:
-            # try a cheap world_info tool
             tools = runtime.executor.tools
             if "world_info" in tools:
                 r = tools["world_info"]()
@@ -100,7 +110,6 @@ def _save_conversation_history(runtime: Runtime) -> None:
         content = getattr(m, "content", None) or ""
         if role in ("user", "assistant") and content:
             msgs.append({"role": role, "content": content[:2000]})
-    # keep last 20 turns
     msgs = msgs[-20:]
     replies = [m["content"] for m in msgs if m["role"] == "assistant"][-5:]
     history = {
@@ -114,7 +123,6 @@ def _save_conversation_history(runtime: Runtime) -> None:
     (root / "conversation_history.json").write_text(
         json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    # also write session_summary for runtime injection
     (root / "session_summary.json").write_text(
         json.dumps({"notes": replies}, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -129,12 +137,16 @@ def _background_health_check(project_root: str) -> None:
         return
     import threading
     import subprocess
+
     def _run():
         result = {"failed_tests": [], "todo_count": 0, "checked_at": time.time()}
         try:
             r = subprocess.run(
                 ["python3", "-m", "pytest", "tests/", "-q", "--maxfail=3"],
-                cwd=project_root, capture_output=True, text=True, timeout=180
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                timeout=180,
             )
             if r.returncode != 0:
                 lines = (r.stdout or "").strip().splitlines()
@@ -153,19 +165,21 @@ def _background_health_check(project_root: str) -> None:
         try:
             health_dir = Path(project_root) / ".forge"
             health_dir.mkdir(parents=True, exist_ok=True)
-            (health_dir / "health.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            (health_dir / "health.json").write_text(
+                json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         except Exception:
             pass
+
     t = threading.Thread(target=_run, daemon=True)
     t.start()
 
 
 def main():
-    # 无 REPL 的同步子命令：`dp.py sync <project>` / `dp.py status <project>`
     if len(sys.argv) >= 3 and sys.argv[1] in ("sync", "status"):
         action = sys.argv[1]
         root = sys.argv[2]
-        print(f"🔌 使用 {tag}")
+        print(f"🔌 使用 {tag} ({adapter.model_name})")
         print(f"📁 项目: {os.path.abspath(os.path.expanduser(root))}")
         workspace = Workspace(project_root=root)
         memory = MemoryStore()
@@ -180,7 +194,7 @@ def main():
                 pass
         return
 
-    print(f"🔌 使用 {tag}")
+    print(f"🔌 使用 {tag} ({adapter.model_name})")
     print(f"📁 项目: {os.path.abspath(os.path.expanduser(project_root))}")
     workspace = Workspace(project_root=project_root)
     memory = MemoryStore()
@@ -197,7 +211,6 @@ def main():
         disp = (e.data.get("display") or "").strip()
         if not disp:
             return
-        # 手机屏友好：最多展示前 18 行 / 1200 字符，保留 FORGE/DIFF 观感
         lines = disp.splitlines()
         max_lines, max_chars = 18, 1200
         shown = lines[:max_lines]
@@ -243,7 +256,6 @@ def main():
                     print(f"💾 保存失败: {e}")
                 print("👋")
                 break
-            # 主动健康提醒：每次对话前静默检查
             try:
                 notes = _collect_health_notes(runtime)
                 for note in notes:
