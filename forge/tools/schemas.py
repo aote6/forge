@@ -433,3 +433,27 @@ MUTATION_TOOL_DECLARATIONS = [
 TOOL_DECLARATIONS = list(READ_ONLY_TOOL_DECLARATIONS)
 
 MUTATION_TOOL_NAMES = frozenset(d["name"] for d in MUTATION_TOOL_DECLARATIONS)
+
+# ---------------------------------------------------------------------------
+# 规划阶段专用 —— 模型探索后提交计划，触发运行时回到「待用户确认」。
+# 只出现在规划阶段；执行阶段不提供，模型直接动手即可。
+# ---------------------------------------------------------------------------
+SUBMIT_PLAN_TOOL_NAME = "submit_plan"
+SUBMIT_PLAN_DECLARATION = {
+    "name": SUBMIT_PLAN_TOOL_NAME,
+    "description": (
+        "【规划阶段专用】当任务需要修改代码/文件时，先只读探索，"
+        "然后用本工具提交你的执行计划，等待用户确认后再动手。"
+        "不要直接调用编辑工具（str_replace/write_file 等）。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "plan": {
+                "type": "string",
+                "description": "执行计划：要改哪些文件、怎么改、为什么，以及如何验证。",
+            },
+        },
+        "required": ["plan"],
+    },
+}

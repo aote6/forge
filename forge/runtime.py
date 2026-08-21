@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from typing import Optional
 
@@ -29,13 +30,46 @@ from forge.tools import make_tools
 from forge.tools.schemas import (
     TOOL_DECLARATIONS,
     READ_ONLY_TOOL_DECLARATIONS,
+    MUTATION_TOOL_DECLARATIONS,
     MUTATION_TOOL_NAMES,
+    SUBMIT_PLAN_TOOL_NAME,
+    SUBMIT_PLAN_DECLARATION,
 )
 from forge.workspace import Workspace
 from forge.world import WorldRuntime
 
 MAX_AGENT_STEPS = 40
 MAX_CONSECUTIVE_FAILURES = 3
+
+# 规划/执行阶段注入到 system 的额外指令
+_PLANNING_INSTRUCTION = """
+## 当前阶段：规划（只读）
+你现在只有只读/查询工具，无法修改代码。需要改动时：先只读探索定位，
+然后调用 submit_plan 提交计划并停下等待确认。纯问答直接回答即可。
+"""
+_EXECUTION_INSTRUCTION = """
+## 当前阶段：执行
+用户已确认以下计划，请按计划执行修改：
+{plan}
+
+执行中若发现计划需要偏离或推翻，先停下说明，不要擅自大改。
+"""
+_PLAN_CONFIRM_PROMPT = (
+    "\n\n── 以上是计划 ──\n"
+    "回复「确认」开始执行；「取消」放弃；或直接说出你的修改意见。"
+)
+
+# 确认词 + 后续分隔符：用于把「确认，另外改下 b.py」拆成「确认」+「补充意见」，
+# 避免把用户确认时顺带说的补充意见丢掉。
+_CONFIRM_PREFIX_RE = re.compile(
+    r"^(?:确认|confirm|commit|ok|yes|y|执行|go)\b\s*[，,。.、:：\s]*",
+    re.IGNORECASE,
+)
+
+
+def _strip_confirm_prefix(text: str) -> str:
+    """去掉开头的确认词，返回剩余补充意见（裸确认返回空串）。"""
+    return _CONFIRM_PREFIX_RE.sub("", (text or "").strip(), count=1).strip()
 
 
 
@@ -361,6 +395,10 @@ class Runtime:
         self.conversation.append(Message(role="system", content=SYSTEM_INSTRUCTION))
         self.phase = AgentPhase.IDLE
         self._handlers: dict = {t: [] for t in EventType}
+        # 规划→确认→执行 状态：待用户确认的计划与原任务
+        self._pending_plan: str | None = None
+        self._pending_task: str | None = None
+        self._submitted_plan: str | None = None
 
     def _startup_sync_check(self):
         """启动时只做同步状态检测，不自动 replay receipt 写磁盘（决策 3/8）。
@@ -457,15 +495,72 @@ class Runtime:
         return event
 
     def run(self, task: str, task_id: str | None = None) -> str:
-        """Single path: tool-calling loop with all tools."""
+        """Single path: 规划(只读) → 用户确认 → 执行(mutation)。
+
+        默认先进入规划阶段：只读工具 + submit_plan。模型要改代码时必须
+        先 submit_plan，运行时把计划交还用户确认；确认后下一轮才放行
+        mutation 工具执行。纯问答直接返回，不需要确认。
+        """
         self._last_tool_calls = 0
         self._last_assistant_replies = []
-        result = self._run_conversation(task)
+
+        # 有待确认的计划：先处理用户对计划的回复
+        if self._pending_plan is not None:
+            result = self._handle_plan_reply(task)
+        else:
+            result = self._run_planning(task)
+
         n = getattr(self, "_last_tool_calls", 0)
         print(f"[stats] tools={n}", file=sys.stderr)
         if result is None:
             return "(no response)"
         return result if isinstance(result, str) else str(result)
+
+    def _handle_plan_reply(self, reply: str) -> str:
+        """用户对计划回复：确认→执行；取消→放弃；其它→当作补充意见重新规划。"""
+        if is_confirm(reply):
+            plan = self._pending_plan
+            task = self._pending_task
+            self._pending_plan = None
+            self._pending_task = None
+            extra = _strip_confirm_prefix(reply)
+            if extra:
+                task = (task or "") + "\n（用户确认时的补充）" + extra
+            return self._run_execution(task, plan)
+        if is_cancel(reply):
+            self._pending_plan = None
+            self._pending_task = None
+            return "已取消，未做任何改动。"
+        # 其余内容：用户对计划有意见/新指令，并入原任务重新规划
+        original = self._pending_task or ""
+        self._pending_plan = None
+        self._pending_task = None
+        combined = original + "\n（用户对计划的补充/修正）" + reply
+        return self._run_planning(combined)
+
+    def _run_planning(self, task: str) -> str:
+        """规划阶段：只读工具 + submit_plan。返回计划（待确认）或直接答案。"""
+        self._submitted_plan = None
+        result = self._run_conversation(
+            task,
+            schemas=list(READ_ONLY_TOOL_DECLARATIONS) + [SUBMIT_PLAN_DECLARATION],
+            extra_system=_PLANNING_INSTRUCTION,
+        )
+        if self._submitted_plan:
+            self._pending_plan = self._submitted_plan
+            self._pending_task = task
+            return result + _PLAN_CONFIRM_PROMPT
+        return result
+
+    def _run_execution(self, task: str, plan: str) -> str:
+        """执行阶段：用户已确认计划，放行 mutation 工具按计划执行。"""
+        self._submitted_plan = None
+        return self._run_conversation(
+            task,
+            schemas=list(READ_ONLY_TOOL_DECLARATIONS)
+            + list(MUTATION_TOOL_DECLARATIONS),
+            extra_system=_EXECUTION_INSTRUCTION.format(plan=plan),
+        )
 
     def save_session_summary(self) -> None:
         """Persist last assistant replies for next process start."""
@@ -476,10 +571,9 @@ class Runtime:
                 replies.append(m.content)
         _save_session_summary(self.workspace.project_root, replies)
 
-    def _run_conversation(self, task: str) -> str:
-        """Tool-calling loop with all tools (read + mutation)."""
+    def _run_conversation(self, task: str, schemas: list, extra_system: str = "") -> str:
+        """Tool-calling loop；schemas 决定本轮可见工具（规划=只读，执行=只读+mutation）。"""
         from forge.adapters.base import Message as ForgeMessage
-        from forge.tools.schemas import MUTATION_TOOL_DECLARATIONS
 
         prior = _load_session_summary(self.workspace.project_root)
         try:
@@ -487,7 +581,7 @@ class Runtime:
             mem = format_for_prompt(self.workspace.project_root)
         except Exception:
             mem = ""
-        system = SYSTEM_INSTRUCTION + (prior or "") + (mem or "")
+        system = SYSTEM_INSTRUCTION + (extra_system or "") + (prior or "") + (mem or "")
         messages = [ForgeMessage(role="system", content=system)]
         history = self.conversation.get_messages()
         if history:
@@ -510,7 +604,6 @@ class Runtime:
             import sys
             print(f"[forge] goal_clarify unavailable: {e}", file=sys.stderr)
 
-        all_schemas = READ_ONLY_TOOL_DECLARATIONS + MUTATION_TOOL_DECLARATIONS
         tool_calls_n = 0
         assistant_replies: list[str] = []
         half = max(5, MAX_AGENT_STEPS // 2)
@@ -522,7 +615,7 @@ class Runtime:
                 if nudge:
                     messages.append(ForgeMessage(role="user", content=nudge))
                     nudged = True
-            resp = self.adapter.send(messages, all_schemas)
+            resp = self.adapter.send(messages, schemas)
             if not resp.tool_calls:
                 if resp.content:
                     self.conversation.append(ForgeMessage(role="user", content=task))
@@ -542,6 +635,19 @@ class Runtime:
             if resp.content:
                 assistant_replies.append(resp.content)
             for tc in resp.tool_calls:
+                if tc.name == SUBMIT_PLAN_TOOL_NAME:
+                    # 模型提交计划 → 中断本轮，交还用户确认，不放行 mutation。
+                    plan = (tc.arguments or {}).get("plan") or (resp.content or "")
+                    self._submitted_plan = plan
+                    self.conversation.append(ForgeMessage(role="user", content=task))
+                    self.conversation.append(ForgeMessage(role="assistant", content=plan))
+                    _append_conversation_log(
+                        self.workspace.project_root, "assistant", plan or ""
+                    )
+                    assistant_replies.append(plan)
+                    self._last_tool_calls = tool_calls_n
+                    self._last_assistant_replies = assistant_replies
+                    return plan or "(no plan)"
                 self.emit(
                     Event(EventType.TOOL_CALL_START, {"name": tc.name, "args": tc.arguments})
                 )
