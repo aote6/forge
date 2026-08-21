@@ -37,6 +37,7 @@ FAST_FORWARD_DISK_TO_WORLD = "FAST_FORWARD_DISK_TO_WORLD"
 FAST_FORWARD_WORLD_TO_DISK = "FAST_FORWARD_WORLD_TO_DISK"
 CONFLICT = "CONFLICT"
 NOT_A_GIT_REPO = "NOT_A_GIT_REPO"
+WORLD_UNAVAILABLE = "WORLD_UNAVAILABLE"
 
 
 @dataclass
@@ -123,11 +124,12 @@ class SyncLayer:
     # ── world / disk observation ───────────────────────────────
 
     def _world_file_receipts_beyond(self, version: int) -> list:
-        """source=forge_tool 且涉及文件的 receipt（version > `version`），升序。"""
-        try:
-            receipts = self._world.get_receipts_since(version)
-        except Exception:
-            return []
+        """source=forge_tool 且涉及文件的 receipt（version > `version`），升序。
+
+        World 查询失败时异常向上抛，由 detect() 统一转 WORLD_UNAVAILABLE。
+        不得在此处吞异常变 []——那会把“看不见”伪装成“没有”。
+        """
+        receipts = self._world.get_receipts_since(version)
         out = [
             r
             for r in receipts
@@ -138,10 +140,8 @@ class SyncLayer:
         return out
 
     def _world_version(self) -> Optional[int]:
-        try:
-            return self._world.get_version()
-        except Exception:
-            return None
+        """获取 World 当前版本；失败时向上抛，不在此处吞成 None。"""
+        return self._world.get_version()
 
     def _current_hashes(self) -> dict[str, str | None]:
         known = self._state.last_known_file_hashes
@@ -168,6 +168,23 @@ class SyncLayer:
     def detect(self) -> SyncReport:
         if not is_git_repo(self.project_root):
             return SyncReport(status=NOT_A_GIT_REPO, detail="workspace is not a git repository")
+
+        # World 不可达必须最先短路：不能把“看不见”伪装成“没有新变化”。
+        try:
+            self._world.get_version()
+        except Exception as e:
+            return SyncReport(
+                status=WORLD_UNAVAILABLE,
+                world_version=None,
+                disk_commit=git_head_commit(self.project_root),
+                known_commit=self._state.last_known_commit,
+                disk_synced_version=self._state.disk_synced_version,
+                detail=(
+                    f"无法访问 World（veritasd）：{e}。"
+                    "请先恢复 veritasd 后重试 forge_sync；"
+                    "当前不推进任何同步水位。"
+                ),
+            )
 
         s = self._state.disk_synced_version
         world_file_receipts = self._world_file_receipts_beyond(s)
@@ -251,6 +268,10 @@ class SyncLayer:
             return report
 
         if report.status == NOT_A_GIT_REPO:
+            return report
+
+        if report.status == WORLD_UNAVAILABLE:
+            # 无法访问 World 时禁止任何推进。
             return report
 
         if report.status == CONFLICT:

@@ -20,6 +20,7 @@ from forge.sync.sync_layer import (
     FAST_FORWARD_DISK_TO_WORLD,
     FAST_FORWARD_WORLD_TO_DISK,
     IN_SYNC,
+    WORLD_UNAVAILABLE,
     SyncLayer,
 )
 from forge.projections.file_projection import FileProjection
@@ -215,4 +216,67 @@ def test_external_sync_receipt_is_not_forge_tool(tmp_path):
     # source=external_sync 的 receipt 不算 forge_tool 写盘推进
     report = layer.detect()
     assert report.status == IN_SYNC, report.format()
+    assert state.disk_synced_version == 0
+
+
+class MockUnavailableWorld:
+    """模拟 veritasd 离线：所有 World 查询都抛异常。"""
+
+    def get_receipts_since(self, version):
+        raise RuntimeError("veritasd unavailable")
+
+    def get_version(self):
+        raise RuntimeError("veritasd unavailable")
+
+
+def test_world_unavailable_is_not_in_sync(tmp_path):
+    """veritasd 离线时，detect() 不得返回 IN_SYNC。
+
+    World 不可用 ≠ World 没有新变化。当前实现可能把异常吞成
+    空列表，误判为 IN_SYNC。此测试先钉死这个 bug。
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.email", "t@t"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.name", "t"],
+        check=True,
+    )
+    (tmp_path / "README.md").write_text("init\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-q", "-m", "init"], check=True)
+
+    state = SyncState(tmp_path)
+    fp = FileProjection(project_root=str(tmp_path), sync_state=state)
+    layer = SyncLayer(str(tmp_path), MockUnavailableWorld(), state, fp)
+
+    report = layer.detect()
+    assert report.status != IN_SYNC, (
+        f"veritasd 离线时不得返回 IN_SYNC，实际返回 {report.status}"
+    )
+
+
+def test_world_unavailable_forge_sync_does_not_advance(tmp_path):
+    """veritasd 离线时 forge_sync 不得推进 disk_synced_version。"""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.email", "t@t"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.name", "t"],
+        check=True,
+    )
+    (tmp_path / "README.md").write_text("init\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-q", "-m", "init"], check=True)
+
+    state = SyncState(tmp_path)
+    fp = FileProjection(project_root=str(tmp_path), sync_state=state)
+    layer = SyncLayer(str(tmp_path), MockUnavailableWorld(), state, fp)
+
+    report = layer.sync()
+    assert report.status == WORLD_UNAVAILABLE
     assert state.disk_synced_version == 0
