@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-"""Forge 入口 - 默认 Gemini"""
-import sys, os
+"""Forge 入口 - Gemini（简单对话 / 轻量任务）
+
+多步骤工具循环仍推荐用 zp（智谱）或 or（OpenRouter）。
+Gemini 更适合解释、聊天、单轮问答。
+"""
+import os
+import sys
+
 from forge.workspace import Workspace
 from forge.memory import MemoryStore
 from forge.runtime import Runtime
@@ -8,11 +14,17 @@ from forge.events import EventType
 from forge.adapters.gemini import GeminiAdapter
 
 project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
-adapter = GeminiAdapter(model_name="gemini-3.5-flash")
+
+# 默认最新 3.7-flash，可用环境变量覆盖
+# 例如：GEMINI_MODEL=gemini-3.5-flash-lite python3 gg.py
+adapter = GeminiAdapter(
+    model_name=os.environ.get("GEMINI_MODEL", "gemini-3.7-flash")
+)
 tag = "Gemini"
 
+
 def main():
-    print(f"🔌 使用 {tag}")
+    print(f"🔌 使用 {tag} ({adapter.model_name})")
     print(f"📁 项目: {os.path.abspath(os.path.expanduser(project_root))}")
     workspace = Workspace(project_root=project_root)
     memory = MemoryStore()
@@ -41,8 +53,8 @@ def main():
     runtime.on(EventType.TOOL_CALL_START, _on_tool_start)
     runtime.on(EventType.TOOL_CALL_END, _on_tool_end)
 
-    print("⚒️ Forge Engineering Orchestrator | 输入 q 退出")
-    print("  工具循环 | 输出即时显示（与 dp 一致）")
+    print("⚒️ Forge | 工具循环 | 输入 q 退出")
+    print("  提示：多步骤复杂任务建议用 zp / or，Gemini 更适合简单对话")
     print("=" * 40)
 
     while True:
@@ -53,8 +65,9 @@ def main():
             if user_input.strip().lower() in ("exit", "quit", "q"):
                 print("👋")
                 break
-            # Production path: unique Engineering Orchestrator
             response = runtime.run(user_input)
+            n = getattr(runtime, "_last_tool_calls", 0)
+            print(f"\n📊 本次工具调用: {n}")
             if response:
                 print(f"\n🤖 {response}")
         except KeyboardInterrupt:
@@ -62,6 +75,7 @@ def main():
             break
         except Exception as e:
             print(f"\n❌ {e}")
+
 
 if __name__ == "__main__":
     main()
