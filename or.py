@@ -15,7 +15,7 @@ from forge.adapters.openrouter import OpenRouterAdapter
 project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 # 默认用目前较强的免费模型，可通过环境变量覆盖
 adapter = OpenRouterAdapter(
-    model_name=os.environ.get("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra:free")
+    model_name=os.environ.get("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
 )
 tag = "OpenRouter"
 

@@ -3,7 +3,7 @@ from forge.adapters.openai_compat import OpenAICompatAdapter
 
 
 class OpenRouterAdapter(OpenAICompatAdapter):
-    def __init__(self, model_name: str = "nvidia/nemotron-3-ultra:free"):
+    def __init__(self, model_name: str = "nvidia/nemotron-3-ultra-550b-a55b:free"):
         # OpenRouter 建议带 HTTP-Referer 和 X-Title，方便统计
         super().__init__(
             model_name=model_name,
