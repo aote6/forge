@@ -78,6 +78,14 @@ class OpenAICompatAdapter(BaseAdapter):
             kwargs["tools"] = api_tools
 
         response = self.client.chat.completions.create(**kwargs)
+
+        if not response.choices:
+            err_info = getattr(response, "error", None) or getattr(response, "model_extra", {}).get("error", None)
+            raise RuntimeError(
+                f"模型网关返回了空响应（choices 为空），可能是路由失败/限流/模型不可用。"
+                f"原始错误信息: {err_info}"
+            )
+
         choice = response.choices[0]
 
         tool_calls = None
