@@ -18,15 +18,31 @@ def main():
     memory = MemoryStore()
     runtime = Runtime(adapter, workspace, memory)
 
-    runtime.on(EventType.TOOL_CALL_START, lambda e: print(
-        f"\n🔧 [{e.data['name']}] ...", end="", flush=True
-    ))
-    runtime.on(EventType.TOOL_CALL_END, lambda e: print(
-        f" {'✅' if e.data['success'] else '❌'}"
-    ))
+    def _on_tool_start(e):
+        print(f"\n🔧 [{e.data.get('name')}] ...", end="", flush=True)
+
+    def _on_tool_end(e):
+        ok = e.data.get("success")
+        mark = "✅" if ok else "❌"
+        print(f" {mark}", flush=True)
+        disp = (e.data.get("display") or "").strip()
+        if not disp:
+            return
+        lines = disp.splitlines()
+        max_lines, max_chars = 18, 1200
+        shown = lines[:max_lines]
+        body = "\n".join(shown)
+        if len(body) > max_chars:
+            body = body[:max_chars] + "\n..."
+        elif len(lines) > max_lines:
+            body = body + f"\n...(+{len(lines) - max_lines} lines, 输入 last 看全文)"
+        print(body, flush=True)
+
+    runtime.on(EventType.TOOL_CALL_START, _on_tool_start)
+    runtime.on(EventType.TOOL_CALL_END, _on_tool_end)
 
     print("⚒️ Forge Engineering Orchestrator | 输入 q 退出")
-    print("  工程任务走 Runtime.run → EngineeringOrchestrator（六 Phase 闭环）")
+    print("  工具循环 | 输出即时显示（与 dp 一致）")
     print("=" * 40)
 
     while True:

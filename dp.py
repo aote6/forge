@@ -121,7 +121,12 @@ def _save_conversation_history(runtime: Runtime) -> None:
 
 
 def _background_health_check(project_root: str) -> None:
-    """后台跑 pytest 和 TODO 扫描，结果写入 .forge/health.json。不阻塞 REPL。"""
+    """后台跑 pytest 和 TODO 扫描，结果写入 .forge/health.json。不阻塞 REPL。
+
+    默认关闭（手机端费电/费时）。需要时：export FORGE_HEALTH_CHECK=1
+    """
+    if os.environ.get("FORGE_HEALTH_CHECK", "").strip() not in ("1", "true", "yes", "on"):
+        return
     import threading
     import subprocess
     def _run():
@@ -163,17 +168,35 @@ def main():
     runtime = Runtime(adapter, workspace, memory)
     _background_health_check(project_root)
 
-    runtime.on(EventType.TOOL_CALL_START, lambda e: print(
-        f"\n🔧 [{e.data['name']}] ...", end="", flush=True
-    ))
-    runtime.on(EventType.TOOL_CALL_END, lambda e: print(
-        f" {'✅' if e.data['success'] else '❌'}"
-    ))
+    def _on_tool_start(e):
+        print(f"\n🔧 [{e.data.get('name')}] ...", end="", flush=True)
+
+    def _on_tool_end(e):
+        ok = e.data.get("success")
+        mark = "✅" if ok else "❌"
+        print(f" {mark}", flush=True)
+        disp = (e.data.get("display") or "").strip()
+        if not disp:
+            return
+        # 手机屏友好：最多展示前 18 行 / 1200 字符，保留 FORGE/DIFF 观感
+        lines = disp.splitlines()
+        max_lines, max_chars = 18, 1200
+        shown = lines[:max_lines]
+        body = "\n".join(shown)
+        if len(body) > max_chars:
+            body = body[:max_chars] + "\n..."
+        elif len(lines) > max_lines:
+            body = body + f"\n...(+{len(lines) - max_lines} lines, 输入 last 看全文)"
+        print(body, flush=True)
+
+    runtime.on(EventType.TOOL_CALL_START, _on_tool_start)
+    runtime.on(EventType.TOOL_CALL_END, _on_tool_end)
 
     _check_veritas(runtime)
     _print_world_summary(runtime)
 
     print("⚒️ Forge | 工具循环 | 输入 q 退出")
+    print("  工具输出会即时显示（last 看全文）；后台自检默认关 (FORGE_HEALTH_CHECK=1 开启)")
     print("=" * 40)
 
     while True:

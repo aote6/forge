@@ -448,10 +448,23 @@ class Runtime:
             if resp.content:
                 assistant_replies.append(resp.content)
             for tc in resp.tool_calls:
+                self.emit(
+                    Event(EventType.TOOL_CALL_START, {"name": tc.name, "args": tc.arguments})
+                )
                 result = self.executor.execute(tc)
                 tool_calls_n += 1
                 self._last_tool_display = result.display or ""
                 self._last_tool_name = tc.name
+                self.emit(
+                    Event(
+                        EventType.TOOL_CALL_END,
+                        {
+                            "name": tc.name,
+                            "success": result.success,
+                            "display": result.display,
+                        },
+                    )
+                )
 
                 messages.append(ForgeMessage(
                     role="tool",
