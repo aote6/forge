@@ -20,6 +20,7 @@ def make_tools(
     projections=None,
     *,
     allow_mutation: bool = False,
+    sync_layer=None,
 ):
     """Assemble tool callables for Runtime tool-loops.
 
@@ -41,7 +42,7 @@ def make_tools(
 
             Veritas commit is not rolled back on projection failure (world is
             authoritative). Caller must treat failure as divergence and recover
-            via ProjectionRecovery using receipt evidence in the payload.
+            via forge_sync (Sync Layer) using receipt evidence in the payload.
             """
             try:
                 if world_runtime.current_session is None:
@@ -82,7 +83,7 @@ def make_tools(
                             f"after_root={receipt.after_root}"
                             f"{proj_lines}\n"
                             f"projection_failed: {reasons}\n"
-                            f"世界状态已变更；请依赖 ProjectionRecovery 修复主机投影。"
+                            f"世界状态已变更；请依赖 forge_sync 重新对账修复主机投影。"
                         ),
                         payload=evidence,
                     )
@@ -104,5 +105,31 @@ def make_tools(
                 return ToolResult.ok(display="事务已取消。", payload={"mutation": False})
             except Exception as e:
                 return ToolResult.fail(display=f"取消失败: {e}")
+
+    if sync_layer is not None:
+        from forge.sync.sync_layer import IN_SYNC
+
+        def forge_sync() -> ToolResult:
+            """显式同步：IN_SYNC 无操作 / FAST_FORWARD 安全推进 / CONFLICT 停止并出 diff。
+
+            报告同时承载同步状态；只读状态查询可用 Runtime.sync_status() 或 CLI `status`。
+            """
+            try:
+                report = sync_layer.sync()
+                ok = report.status == IN_SYNC
+                payload = {"mutation": True, **report.to_dict()}
+                if ok:
+                    return ToolResult.ok(display=report.format(), payload=payload)
+                return ToolResult.fail(
+                    display=(
+                        report.format()
+                        + "\n建议: CONFLICT 时请明确决定以 World 还是 Disk/Git 为准，勿自动覆盖。"
+                    ),
+                    payload=payload,
+                )
+            except Exception as e:
+                return ToolResult.fail(display=f"forge_sync failed: {e}")
+
+        tools["forge_sync"] = forge_sync
 
     return tools, confirm_fn, abort_fn

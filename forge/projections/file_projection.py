@@ -19,15 +19,15 @@ from forge.world.types import Receipt
 
 
 class FileProjection(Projection):
-    def __init__(self, project_root: str = ".", object_path_map=None):
+    def __init__(self, project_root: str = ".", object_path_map=None, sync_state=None):
         self.project_root = os.path.abspath(os.path.expanduser(project_root))
         self.fm = FileManager()
         self.patch_engine = PatchEngine()
         self.backup = BackupManager()
         self.object_path_map = object_path_map
-        # recovery 时若磁盘与 World 分叉，默认保留磁盘、不覆盖
-        self.recovery_preserve_disk: bool = False
-        self.last_skipped_diverged: list[str] = []
+        # 可选 SyncState：磁盘真正写盘成功后推进 disk_synced_version（规则 A）。
+        # None 表示不跟踪同步水位（单测 / 无同步场景）。
+        self.sync_state = sync_state
 
     @property
     def name(self) -> str:
@@ -194,14 +194,17 @@ class FileProjection(Projection):
     def apply(self, receipt: Receipt, delta: TransactionDelta):
         """Materialize delta onto the host filesystem.
 
-        On failure: do NOT pretend the world rolled back. Raise so the caller
-        can mark projection_failed and enter recovery. Optional local restore
-        is best-effort only and never claims success after a partial apply.
+        这是**用户明确授权后的正常投影**：把已提交事务的 delta 物化到磁盘。
+
+        契约 §4：任何分叉 / 部分失败都不得标为成功、不得推进同步水位。
+        因此本方法要么完整写盘并返回 success=True，要么返回 success=False。
+
+        磁盘真正写盘成功后，才推进 sync_state.disk_synced_version（规则 A）。
         """
         from forge.projections.base import ProjectionResult
 
         applied: list[str] = []
-        self.last_skipped_diverged = []
+        deleted: list[str] = []
 
         try:
             for object_id, writes in self._group_writes_by_object(delta).items():
@@ -232,21 +235,6 @@ class FileProjection(Projection):
                 else:
                     continue
 
-                # recovery 分叉保护：磁盘已有且内容不同 → 跳过覆盖，保留用户手动修改
-                if (
-                    self.recovery_preserve_disk
-                    and self.fm.exists(path)
-                    and original != ""
-                    and original != new_content
-                ):
-                    self.last_skipped_diverged.append(path)
-                    import sys
-                    print(
-                        f"[recovery] preserve disk (diverged): {path}",
-                        file=sys.stderr,
-                    )
-                    continue
-
                 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
                 self.fm.write(path, new_content)
                 applied.append(path)
@@ -266,20 +254,30 @@ class FileProjection(Projection):
             for object_id in delta.objects_deleted:
                 path = self._path_for_object(object_id, delta)
                 if path and self.fm.exists(path):
-                    if self.recovery_preserve_disk:
-                        self.last_skipped_diverged.append(path)
-                        import sys
-                        print(
-                            f"[recovery] preserve disk (skip delete): {path}",
-                            file=sys.stderr,
-                        )
-                        continue
                     try:
                         self.backup.backup(path)
                     except Exception:
                         pass
                     os.remove(path)
-                    applied.append(path)
+                    deleted.append(path)
+
+            # 磁盘已实际同步到 receipt.version：现在才推进 disk_synced_version。
+            if self.sync_state is not None:
+                try:
+                    self.sync_state.mark_disk_synced(
+                        version=receipt.version,
+                        written_paths=applied,
+                        deleted_paths=deleted,
+                        source=getattr(receipt, "source", "forge_tool"),
+                    )
+                except Exception:
+                    # 写盘已成功；sync_state 持久化失败不应伪装写盘失败，
+                    # 但必须暴露出来以便上层知晓同步元数据可能滞后。
+                    import sys
+                    print(
+                        f"[sync] mark_disk_synced failed after write (version={receipt.version})",
+                        file=sys.stderr,
+                    )
 
             return ProjectionResult(name=self.name, success=True)
         except Exception as e:

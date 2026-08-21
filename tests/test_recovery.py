@@ -1,147 +1,141 @@
-"""P10.4: 崩溃恢复端到端测试。
+"""契约测试：Recovery 只做启动同步状态检测，不 replay receipt 写磁盘。
 
-验证场景:
-1. 正常恢复: 所有 receipt 消费后 checkpoint 推进
-2. 重复启动: 第二次 recovery 不重复消费
-3. 中途崩溃: checkpoint 只保存到部分 receipt，重启后只消费未完成的
+验证 docs/WORLD_DISK_SYNC.md §1 / §3 / §4 / §6：
+- RecoveryCheck 不把 World receipt 当磁盘恢复指令（不写盘、不恢复缺失文件）
+- 分叉 → CONFLICT / STOP，绝不 skip → success → 推进水位
+- checkpoint 水位拆分：receipt_consumed_version vs disk_synced_version
+- Receipt.source 默认 forge_tool
+
+不依赖 veritasd；用 MockWorld + 临时 git 仓库。
 """
+from __future__ import annotations
 
-import sys, os, json
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import binascii
+import subprocess
 
+from forge.projections.base import Projection, ProjectionManager, ProjectionResult
+from forge.projections.file_projection import FileProjection
+from forge.recovery import RecoveryCheck
+from forge.sync.state import SyncState
+from forge.sync.sync_layer import (
+    CONFLICT,
+    FAST_FORWARD_WORLD_TO_DISK,
+    SyncLayer,
+)
 from forge.world.types import Receipt, TransactionDelta
-from forge.projections.base import ProjectionManager, Projection, ProjectionResult
-from forge.recovery.replay import ProjectionRecovery
+
+
+class MockWorld:
+    def __init__(self, receipts=None):
+        self._receipts = list(receipts or [])
+
+    def get_receipts_since(self, version):
+        return [r for r in self._receipts if r.version > version]
+
+    def get_version(self):
+        return max((r.version for r in self._receipts), default=0)
 
 
 class _RecordingProjection(Projection):
-    """记录每次 apply 的 receipt version。"""
-
-    def __init__(self, name="test"):
+    def __init__(self, name="rec"):
         self._name = name
-        self.applied_versions: list[int] = []
 
     @property
-    def name(self) -> str:
+    def name(self):
         return self._name
 
     def prepare(self, delta):
         return None
 
     def apply(self, receipt, delta):
-        self.applied_versions.append(receipt.version)
         return ProjectionResult(name=self.name, success=True)
 
 
-class MockWorld:
-    """模拟 WorldRuntime，返回可控的历史 receipt 列表。"""
-
-    def __init__(self):
-        self._receipts = []
-
-    def set_receipts(self, receipts):
-        self._receipts = receipts
-
-    def get_receipts_since(self, since_version):
-        return [r for r in self._receipts if r.version > since_version]
-
-
-def _make_receipt(tx_id: int, version: int) -> Receipt:
+def _file_receipt(version, abs_path, content, source="forge_tool"):
+    path_hex = binascii.hexlify(str(abs_path).encode("utf-8")).decode("ascii")
+    content_hex = binascii.hexlify(content.encode("utf-8")).decode("ascii")
+    delta = TransactionDelta(
+        memory_written=[
+            {"object_id": 1, "state_id": 0, "value_hex": path_hex},
+            {"object_id": 1, "state_id": 1, "value_hex": content_hex},
+        ],
+    )
     return Receipt(
-        tx_id=tx_id, before_root=0, after_root=version * 100,
-        version=version, delta=TransactionDelta()
+        tx_id=version, before_root=0, after_root=version,
+        version=version, delta=delta, source=source,
     )
 
 
-def test_normal_recovery():
-    """场景 1: 正常恢复 → checkpoint 推进 → 第二次启动不重复。"""
-    ckpt_file = ".forge/projection_checkpoint.json"
-    for f in [ckpt_file, ckpt_file + ".tmp"]:
-        if os.path.exists(f):
-            os.remove(f)
-
-    world = MockWorld()
-    world.set_receipts([
-        _make_receipt(1, 1),
-        _make_receipt(2, 2),
-        _make_receipt(3, 3),
-    ])
-
-    # 第一次启动
-    pm1 = ProjectionManager()
-    proj1 = _RecordingProjection("file")
-    pm1.register(proj1)
-
-    recovery1 = ProjectionRecovery(world, pm1)
-    recovered1 = recovery1.recover()
-
-    assert recovered1 == {"file": 3}, f"expected 3, got {recovered1}"
-    assert proj1.applied_versions == [1, 2, 3]
-    assert pm1.checkpoint.checkpoints == {"file": 3}
-
-    # 第二次启动：不应再消费
-    pm2 = ProjectionManager()
-    proj2 = _RecordingProjection("file")
-    pm2.register(proj2)
-
-    recovery2 = ProjectionRecovery(world, pm2)
-    recovered2 = recovery2.recover()
-
-    assert recovered2 == {"file": 0}, f"expected 0, got {recovered2}"
-    assert proj2.applied_versions == [], f"should be empty, got {proj2.applied_versions}"
-
-    os.remove(ckpt_file)
-    print("PASS: 正常恢复 + 重复启动不重复消费")
+def _init_git_repo(root):
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "t"], check=True)
+    (root / "README.md").write_text("init\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "init"], check=True)
 
 
-def test_crash_recovery():
-    """场景 2: 中途崩溃 — checkpoint 只到 v2，重启后消费 v3。"""
-    ckpt_file = ".forge/projection_checkpoint.json"
-    for f in [ckpt_file, ckpt_file + ".tmp"]:
-        if os.path.exists(f):
-            os.remove(f)
+def test_recovery_check_is_detection_only(tmp_path):
+    """启动检测不写磁盘、不推进任何水位。"""
+    _init_git_repo(tmp_path)
+    target = tmp_path / "file.txt"
+    receipt = _file_receipt(1, str(target.resolve()), "v1\n")
 
-    world = MockWorld()
-    world.set_receipts([
-        _make_receipt(1, 1),
-        _make_receipt(2, 2),
-        _make_receipt(3, 3),
-    ])
+    state = SyncState(tmp_path)
+    fp = FileProjection(project_root=str(tmp_path), sync_state=state)
+    layer = SyncLayer(str(tmp_path), MockWorld([receipt]), state, fp)
 
-    # 模拟: v1 和 v2 成功，但 v3 的 checkpoint 写入失败（手动删除 checkpoint 模拟）
-    pm1 = ProjectionManager()
-    proj1 = _RecordingProjection("file")
-    pm1.register(proj1)
+    report = RecoveryCheck(layer).check()
+    assert report.status == FAST_FORWARD_WORLD_TO_DISK, report.format()
+    # 检测只读：未物化文件，未推进 disk_synced_version
+    assert not target.exists()
+    assert state.disk_synced_version == 0
 
-    recovery1 = ProjectionRecovery(world, pm1)
-    recovery1.recover()
 
-    # 此时 checkpoint=3
-    assert pm1.checkpoint.checkpoints == {"file": 3}
-    assert proj1.applied_versions == [1, 2, 3]
+def test_recovery_check_conflict_does_not_advance(tmp_path):
+    """分叉时启动检测报告 CONFLICT，且不推进水位。"""
+    _init_git_repo(tmp_path)
+    target = tmp_path / "file.txt"
+    v1 = _file_receipt(1, str(target.resolve()), "v1\n")
+    v2 = _file_receipt(2, str(target.resolve()), "WORLD v2\n")
 
-    # 模拟崩溃：把 checkpoint 回退到 v2
-    pm1.checkpoint._checkpoints["file"] = 2
-    pm1.checkpoint._save()
+    state = SyncState(tmp_path)
+    fp = FileProjection(project_root=str(tmp_path), sync_state=state)
+    fp.apply(v1, v1.delta)  # 到 IN_SYNC, S=1
+    layer = SyncLayer(str(tmp_path), MockWorld([v1, v2]), state, fp)
 
-    # "重启"：checkpoint 从文件加载
-    pm2 = ProjectionManager()
-    proj2 = _RecordingProjection("file")
-    pm2.register(proj2)
+    target.write_text("USER EDIT\n", encoding="utf-8")  # 外部改盘
+    report = RecoveryCheck(layer).check()
+    assert report.status == CONFLICT, report.format()
+    assert state.disk_synced_version == 1  # 不推进
 
-    recovery2 = ProjectionRecovery(world, pm2)
-    recovered2 = recovery2.recover()
 
-    # 应该只恢复 v3
-    assert recovered2 == {"file": 1}, f"expected 1, got {recovered2}"
-    assert proj2.applied_versions == [3], f"expected [3], got {proj2.applied_versions}"
-    assert pm2.checkpoint.checkpoints == {"file": 3}
+def test_checkpoint_split_receipt_consumed_vs_disk_synced(tmp_path):
+    """receipt_consumed_version（checkpoint）与 disk_synced_version 是两套水位。"""
+    ckpt_dir = tmp_path / ".forge"
+    pm = ProjectionManager(checkpoint_dir=str(ckpt_dir))
+    fp = FileProjection(project_root=str(tmp_path))  # 无 sync_state
+    pm.register(fp)
+    pm.register(_RecordingProjection("rec"))
 
-    os.remove(ckpt_file)
-    print("PASS: 崩溃恢复 — 只重放未完成的事务")
+    target = tmp_path / "f.txt"
+    receipt = _file_receipt(1, str(target.resolve()), "x\n")
+    results = pm.project(receipt, receipt.delta)
+    assert all(r.success for r in results)
+
+    # receipt_consumed_version 推进（projection bookkeeping）
+    assert pm.checkpoint.checkpoints["file"] == 1
+    assert pm.checkpoint.checkpoints["rec"] == 1
+    # disk_synced_version 是独立 store，未在这里推进（FileProjection 无 sync_state）
+    assert not (ckpt_dir / "sync_state.json").exists()
+
+
+def test_receipt_source_defaults_forge_tool():
+    """Receipt.source 默认 forge_tool（契约 §6）。"""
+    r = Receipt(tx_id=1, before_root=0, after_root=0, version=1)
+    assert r.source == "forge_tool"
 
 
 if __name__ == "__main__":
-    test_normal_recovery()
-    test_crash_recovery()
-    print("\nP10.4 崩溃恢复测试全部通过")
+    import sys
+    sys.exit("run with pytest")

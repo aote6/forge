@@ -1,4 +1,13 @@
-"""ProjectionCheckpoint — 持久化投影消费进度，实现进程重启后幂等恢复。
+"""ProjectionCheckpoint — 持久化投影消费进度（receipt_consumed_version）。
+
+契约 §4 / §5：checkpoint 水位拆分为两套——
+- `receipt_consumed_version`（本文件）：projection bookkeeping，供幂等重放与
+  只读投影（如 Index）使用；表示"该 projection 已观察/消费到该 version"。
+- `disk_synced_version`（forge/sync/state.py 的 SyncState）：只有磁盘**实际**
+  同步成功后才会推进，是"磁盘已与该 version 同步"的权威水位。
+
+任何 skip / conflict / 部分失败都不得推进 disk_synced_version（规则 A）。
+本文件只负责 receipt_consumed_version；它不声称磁盘已同步。
 
 特性：
 - 基于 Veritas Receipt.version（global_version，单调递增）
@@ -63,11 +72,24 @@ class ProjectionCheckpoint:
         return receipt_version > last
 
     def mark_applied(self, projection_name: str, receipt_version: int) -> None:
+        """推进 receipt_consumed_version（projection bookkeeping）。
+
+        与 disk_synced_version（SyncState）解耦：这里只记录"已消费 receipt"，
+        不代表磁盘已同步。
+        """
         current = self._checkpoints.get(projection_name, 0)
         if receipt_version > current:
             self._checkpoints[projection_name] = receipt_version
             self._save()
 
+    # 语义更清晰的名字：receipt 已消费水位
+    mark_consumed = mark_applied
+
     @property
     def checkpoints(self) -> dict[str, int]:
+        """per-projection receipt_consumed_version。"""
+        return dict(self._checkpoints)
+
+    @property
+    def receipt_consumed_versions(self) -> dict[str, int]:
         return dict(self._checkpoints)

@@ -405,6 +405,14 @@ MUTATION_TOOL_DECLARATIONS = [
             "required": ["from_id", "to_id"],
         },
     },
+    {
+        "name": "forge_sync",
+        "description": (
+            "显式同步 World ↔ Disk/Git：IN_SYNC 无操作；FAST_FORWARD 沿明确方向安全推进；"
+            "CONFLICT 停止并展示 diff 等待用户决定。检测到外部修改后应优先调用本工具对账。"
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
 ]
 
 TOOL_DECLARATIONS = list(READ_ONLY_TOOL_DECLARATIONS)

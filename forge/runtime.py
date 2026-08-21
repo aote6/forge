@@ -10,6 +10,7 @@ run_legacy / AgentPhase 确认流已 DEPRECATED；生产只用 _run_conversation
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import Optional
 
@@ -284,18 +285,35 @@ class Runtime:
         except Exception:
             pass
 
-        self.projections = ProjectionManager()
+        from forge.sync.state import SyncState
+        from forge.sync.sync_layer import SyncLayer
+
+        # Sync metadata 权威状态（决策 1：.forge/sync_state.json，不放入 Veritas）。
+        self.sync_state = SyncState(project_root=workspace.project_root)
         path_map = getattr(self.world, "_path_map", None)
-        self.projections.register(
-            FileProjection(project_root=workspace.project_root, object_path_map=path_map)
+        file_projection = FileProjection(
+            project_root=workspace.project_root,
+            object_path_map=path_map,
+            sync_state=self.sync_state,
         )
+        self.projections = ProjectionManager(
+            checkpoint_dir=os.path.join(workspace.project_root, ".forge")
+        )
+        self.projections.register(file_projection)
         self.projections.register(GitProjection(project_root=workspace.project_root))
         self.projections.register(IndexProjection(project_root=workspace.project_root))
 
+        self.sync_layer = SyncLayer(
+            project_root=workspace.project_root,
+            world_runtime=self.world,
+            sync_state=self.sync_state,
+            file_projection=file_projection,
+        )
+
         try:
-            self._recover_projections()
+            self._startup_sync_check()
         except Exception as e:
-            print(f"[recovery] error: {e}", file=sys.stderr)
+            print(f"[sync] startup check error: {e}", file=sys.stderr)
 
         # Single tool-loop: all tools available (read + mutation).
         # Mutations go through IntentExecutor → WorldSession → Veritas,
@@ -305,6 +323,7 @@ class Runtime:
             world_runtime=self.world,
             projections=self.projections,
             allow_mutation=True,
+            sync_layer=self.sync_layer,
         )
         def spawn_subagent(task: str, max_steps: int = 15) -> ToolResult:
             """Run an isolated subagent tool-loop; return conclusion text only."""
@@ -343,14 +362,77 @@ class Runtime:
         self.phase = AgentPhase.IDLE
         self._handlers: dict = {t: [] for t in EventType}
 
-    def _recover_projections(self):
-        from forge.recovery.replay import ProjectionRecovery
+    def _startup_sync_check(self):
+        """启动时只做同步状态检测，不自动 replay receipt 写磁盘（决策 3/8）。
 
-        recovery = ProjectionRecovery(self.world, self.projections)
-        recovered = recovery.recover()
-        for name, count in recovered.items():
-            if count > 0:
-                print(f"[recovery] {name}: {count} receipts replayed", file=sys.stderr)
+        契约 §4：发现分叉则 STOP；发现 FAST_FORWARD 也不自动推进，
+        仅提示显式 forge_sync。
+        """
+        from forge.recovery.check import RecoveryCheck
+        from forge.sync.sync_layer import (
+            CONFLICT,
+            FAST_FORWARD_DISK_TO_WORLD,
+            FAST_FORWARD_WORLD_TO_DISK,
+            IN_SYNC,
+            NOT_A_GIT_REPO,
+        )
+
+        report = RecoveryCheck(self.sync_layer).check()
+        status = report.status
+        if status == IN_SYNC:
+            return
+        if status == NOT_A_GIT_REPO:
+            print("[sync] 工作区不是 Git 仓库；跳过同步状态检测。", file=sys.stderr)
+            return
+        if status == CONFLICT:
+            print(
+                "[sync] CONFLICT：World 与 Disk/Git 在共同已知状态之后都发生了独立变化。\n"
+                "       已停止自动同步；不覆盖磁盘、不覆盖 World、不推进水位。\n"
+                "       请运行 forge_sync 查看 diff 并显式决策。",
+                file=sys.stderr,
+            )
+            return
+        direction = (
+            "World → Disk"
+            if status == FAST_FORWARD_WORLD_TO_DISK
+            else "Disk → World"
+        )
+        print(
+            f"[sync] 检测到 FAST_FORWARD({direction})；启动时不自动推进。\n"
+            f"       请运行 forge_sync 执行显式同步。",
+            file=sys.stderr,
+        )
+
+    def sync_status(self):
+        """程序化同步状态查询（返回 SyncReport）。"""
+        return self.sync_layer.detect()
+
+    def sync(self):
+        """显式执行 `forge sync`：检测 → 依状态安全推进 / 报告冲突。"""
+        return self.sync_layer.sync()
+
+    def _guard_external_change(self, tool_name: str):
+        """运行期间外部变更守卫：变更工具执行前检测外部磁盘/Git 变化。
+
+        契约 §7：持锁写入期间发现外部磁盘变化 → 立即停止继续写入，重新对账。
+        """
+        if tool_name not in MUTATION_TOOL_NAMES:
+            return None
+        # forge_sync 是对账入口本身，不得被外部变更守卫拦截（否则无法解决冲突）。
+        if tool_name == "forge_sync":
+            return None
+        try:
+            if self.sync_layer is not None and self.sync_layer.external_change_detected():
+                from forge.adapters.base import ToolResult
+                return ToolResult.fail(
+                    display=(
+                        "⛔ 检测到外部磁盘/Git 变化：已停止继续写入。\n"
+                        "请先运行 forge_sync 重新对账，确认同步状态后再继续编辑。"
+                    )
+                )
+        except Exception:
+            pass
+        return None
 
     def on(self, event_type: EventType, handler):
         self._handlers[event_type].append(handler)
@@ -451,7 +533,8 @@ class Runtime:
                 self.emit(
                     Event(EventType.TOOL_CALL_START, {"name": tc.name, "args": tc.arguments})
                 )
-                result = self.executor.execute(tc)
+                guard = self._guard_external_change(tc.name)
+                result = guard if guard is not None else self.executor.execute(tc)
                 tool_calls_n += 1
                 self._last_tool_display = result.display or ""
                 self._last_tool_name = tc.name

@@ -41,6 +41,10 @@ class Receipt:
     after_root: int
     version: int
     delta: TransactionDelta = field(default_factory=lambda: TransactionDelta())
+    # Forge-side annotation（契约 §6）：区分事实来源。
+    # - forge_tool: 由 Forge 工具经 Veritas 正常提交产生
+    # - external_sync: 用户进行外部同步这一事实（不伪造为 Forge 修改）
+    source: str = "forge_tool"
 
 
 @dataclass

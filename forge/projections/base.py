@@ -87,7 +87,12 @@ class ProjectionManager:
         return confirmations
 
     def project(self, receipt: Receipt, delta: TransactionDelta) -> list[ProjectionResult]:
-        """运行所有 Projection 的 apply，统一收集结果。双层幂等保护。"""
+        """运行所有 Projection 的 apply，统一收集结果。双层幂等保护。
+
+        本方法在 result.success 时推进 receipt_consumed_version（projection
+        bookkeeping）。磁盘真正同步的 disk_synced_version 由 FileProjection
+        在完整写盘成功后经其 SyncState 推进（规则 A），与本水位解耦。
+        """
 
         results: list[ProjectionResult] = []
         for p in self._projections:

@@ -1,5 +1,5 @@
-"""Recovery — 从 Veritas WAL 恢复 Projection 状态。"""
+"""Recovery — 启动时同步状态检测（不再 replay receipt 写磁盘）。"""
 
-from forge.recovery.replay import ProjectionRecovery
+from forge.recovery.check import RecoveryCheck
 
-__all__ = ["ProjectionRecovery"]
+__all__ = ["RecoveryCheck"]

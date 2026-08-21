@@ -161,6 +161,25 @@ def _background_health_check(project_root: str) -> None:
 
 
 def main():
+    # 无 REPL 的同步子命令：`dp.py sync <project>` / `dp.py status <project>`
+    if len(sys.argv) >= 3 and sys.argv[1] in ("sync", "status"):
+        action = sys.argv[1]
+        root = sys.argv[2]
+        print(f"🔌 使用 {tag}")
+        print(f"📁 项目: {os.path.abspath(os.path.expanduser(root))}")
+        workspace = Workspace(project_root=root)
+        memory = MemoryStore()
+        runtime = Runtime(adapter, workspace, memory)
+        try:
+            report = runtime.sync_status() if action == "status" else runtime.sync()
+            print(report.format())
+        finally:
+            try:
+                runtime.world.close()
+            except Exception:
+                pass
+        return
+
     print(f"🔌 使用 {tag}")
     print(f"📁 项目: {os.path.abspath(os.path.expanduser(project_root))}")
     workspace = Workspace(project_root=project_root)
