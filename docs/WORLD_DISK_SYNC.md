@@ -238,3 +238,29 @@ World 与外部工作区之间的双向同步边界和一致性语义。
 
 不允许通过修改测试来适应违反本契约的旧行为。
 
+---
+
+## Implementation notes (SyncLayer)
+
+### External untracked detection (gap #1)
+
+`detect()` treats git `??` paths that are **not** in the Forge-known path set as
+`CONFLICT` with `conflict_kind=untracked_external`.
+
+Forge-known paths = `last_known_file_hashes` keys ∪ paths extracted from
+World receipt history (`memory_written` state_id=0).
+
+**Performance (known follow-up):** each `detect()` currently full-scans receipt
+history via `get_receipts_since(0)` to build the known path set. If receipt volume
+makes `detect()` slow, add an in-process path cache or incremental index. This is
+**out of scope** for the gap #1/#4b fix and is not a silent correctness tradeoff.
+
+### Mid-batch write guard (gap #4b)
+
+`FileProjection.apply` snapshots hashes of existing targets before the batch,
+re-checks each path immediately before writing it, and on drift stops the batch,
+rolls back already-written files via `BackupManager`, and never advances
+`disk_synced_version`. Paths whose rollback fails are reported as
+`uncertain_paths` and removed from `last_known_file_hashes`.
+
+Single-file writes use atomic temp-file + `os.replace` in `FileManager.write`.

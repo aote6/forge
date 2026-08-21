@@ -20,6 +20,8 @@ class ProjectionResult:
     success: bool
     reason: str = ""
     retryable: bool = False
+    # 回滚失败、磁盘内容无法确认的路径（不得留在 last_known_file_hashes）
+    uncertain_paths: list = field(default_factory=list)
 
 
 class Projection(ABC):

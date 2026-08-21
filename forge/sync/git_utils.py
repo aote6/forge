@@ -91,3 +91,23 @@ def hash_file(path: str) -> str | None:
         return h.hexdigest()
     except OSError:
         return None
+
+
+def git_status_porcelain_untracked_all(project_root: str) -> str:
+    """`git status --porcelain -uall`：展开未跟踪目录内的文件。
+
+    用于外部新建文件检测；默认 porcelain 对未跟踪目录只显示目录名，
+    会漏掉目录内的具体文件。
+    """
+    try:
+        r = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return r.stdout if r.returncode == 0 else ""
+    except Exception:
+        return ""
+

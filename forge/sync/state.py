@@ -154,6 +154,21 @@ class SyncState:
         }
         self._save()
 
+    def forget_paths(self, paths: list[str]) -> None:
+        """从已知集合中移除路径（回滚失败 / 磁盘状态不确定时使用）。
+
+        这些路径不得再被 detect() 当成“已知且可信”的基线；
+        下次同步必须重新对账或由用户人工确认。
+        不推进、也不回退 disk_synced_version。
+        """
+        changed = False
+        for path in paths:
+            if path in self._last_known_file_hashes:
+                del self._last_known_file_hashes[path]
+                changed = True
+        if changed:
+            self._save()
+
     def reset(self) -> None:
         """测试/重建用：清空水位。"""
         self._disk_synced_version = 0

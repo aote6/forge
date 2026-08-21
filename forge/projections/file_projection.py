@@ -1,6 +1,9 @@
 """FileProjection — 世界状态在本地文件系统上的投影。
 
 适配 veritasd v2 delta 格式：memory_written 为 [{"object_id","state_id","value_hex"},...]
+
+缺口 #4b：批量写盘前后 / 逐文件写前做 hash 快照校验；漂移则停止并回滚已写部分。
+单文件写入经 FileManager 原子写（临时文件 + os.replace）。
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from forge.core.file_manager import FileManager
 from forge.core.patch_engine import PatchEngine
 from forge.core.validator import ValidatorRegistry
 from forge.core.backup_manager import BackupManager
+from forge.sync.git_utils import hash_file
 from forge.world.types import Receipt
 
 
@@ -23,7 +27,8 @@ class FileProjection(Projection):
         self.project_root = os.path.abspath(os.path.expanduser(project_root))
         self.fm = FileManager()
         self.patch_engine = PatchEngine()
-        self.backup = BackupManager()
+        backup_dir = os.path.join(self.project_root, ".forge", "backups")
+        self.backup = BackupManager(backup_dir=backup_dir)
         self.object_path_map = object_path_map
         # 可选 SyncState：磁盘真正写盘成功后推进 disk_synced_version（规则 A）。
         # None 表示不跟踪同步水位（单测 / 无同步场景）。
@@ -199,21 +204,60 @@ class FileProjection(Projection):
         契约 §4：任何分叉 / 部分失败都不得标为成功、不得推进同步水位。
         因此本方法要么完整写盘并返回 success=True，要么返回 success=False。
 
+        缺口 #4b：
+        - 写前对已存在目标路径记录 hash 快照；
+        - 逐文件写入前再验一次，漂移则停止并回滚已写部分；
+        - 回滚失败的路径记入 uncertain_paths，并从 last_known_file_hashes 移除。
+
         磁盘真正写盘成功后，才推进 sync_state.disk_synced_version（规则 A）。
         """
         from forge.projections.base import ProjectionResult
 
         applied: list[str] = []
         deleted: list[str] = []
+        # path -> hash at batch start (only for paths that existed)
+        pre_hashes: dict[str, str | None] = {}
 
         try:
-            for object_id, writes in self._group_writes_by_object(delta).items():
+            groups = self._group_writes_by_object(delta)
+            # ── 写前快照 ──────────────────────────────────────
+            planned_paths: list[str] = []
+            for object_id, writes in groups.items():
+                path = self._get_path(writes)
+                if path is None:
+                    continue
+                planned_paths.append(path)
+                if self.fm.exists(path):
+                    pre_hashes[path] = hash_file(path)
+
+            for object_id, writes in groups.items():
                 path = self._get_path(writes)
                 if path is None:
                     continue
 
                 content = self._get_content(writes)
                 operations = self._get_operations(writes)
+
+                # ── 逐文件写前再验（堵住文件之间的窗口）────────
+                if path in pre_hashes:
+                    cur = hash_file(path)
+                    if cur != pre_hashes[path]:
+                        uncertain = self._rollback_applied(applied)
+                        return ProjectionResult(
+                            name=self.name,
+                            success=False,
+                            reason=(
+                                f"external change during batch write detected on {path} "
+                                f"(hash drifted before write); rolled back {len(applied)} file(s)"
+                                + (
+                                    f"; uncertain (rollback failed): {uncertain}"
+                                    if uncertain
+                                    else ""
+                                )
+                            ),
+                            retryable=True,
+                            uncertain_paths=uncertain,
+                        )
 
                 original = ""
                 if self.fm.exists(path):
@@ -241,14 +285,20 @@ class FileProjection(Projection):
 
                 ok, msg = ValidatorRegistry.validate(path)
                 if not ok:
-                    # Best-effort local restore; world remains committed.
-                    for p in applied:
-                        try:
-                            self.backup.restore_latest(p)
-                        except Exception:
-                            pass
-                    raise RuntimeError(
-                        f"projection_failed: syntax validation failed for {path}: {msg}"
+                    uncertain = self._rollback_applied(applied)
+                    return ProjectionResult(
+                        name=self.name,
+                        success=False,
+                        reason=(
+                            f"projection_failed: syntax validation failed for {path}: {msg}"
+                            + (
+                                f"; uncertain (rollback failed): {uncertain}"
+                                if uncertain
+                                else ""
+                            )
+                        ),
+                        retryable=True,
+                        uncertain_paths=uncertain,
                     )
 
             for object_id in delta.objects_deleted:
@@ -271,8 +321,6 @@ class FileProjection(Projection):
                         source=getattr(receipt, "source", "forge_tool"),
                     )
                 except Exception:
-                    # 写盘已成功；sync_state 持久化失败不应伪装写盘失败，
-                    # 但必须暴露出来以便上层知晓同步元数据可能滞后。
                     import sys
                     print(
                         f"[sync] mark_disk_synced failed after write (version={receipt.version})",
@@ -281,12 +329,41 @@ class FileProjection(Projection):
 
             return ProjectionResult(name=self.name, success=True)
         except Exception as e:
+            uncertain = self._rollback_applied(applied)
             return ProjectionResult(
                 name=self.name,
                 success=False,
-                reason=str(e),
+                reason=str(e)
+                + (
+                    f"; uncertain (rollback failed): {uncertain}"
+                    if uncertain
+                    else ""
+                ),
                 retryable=True,
+                uncertain_paths=uncertain,
             )
+
+    def _rollback_applied(self, applied: list[str]) -> list[str]:
+        """尽力回滚本批已写入的文件；返回回滚失败、状态未知的路径。
+
+        回滚失败的路径会从 sync_state.last_known_file_hashes 中移除，
+        避免下次 detect 把不确定内容当成已知基线。
+        """
+        uncertain: list[str] = []
+        for p in applied:
+            ok = False
+            try:
+                ok = bool(self.backup.restore_latest(p))
+            except Exception:
+                ok = False
+            if not ok:
+                uncertain.append(p)
+        if uncertain and self.sync_state is not None:
+            try:
+                self.sync_state.forget_paths(uncertain)
+            except Exception:
+                pass
+        return uncertain
 
     def _path_for_object(
         self, object_id: int, delta: Optional[TransactionDelta] = None

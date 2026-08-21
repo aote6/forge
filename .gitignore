@@ -11,3 +11,4 @@ wal_*.log
 *.bak
 *.bak-*
 .claude/
+gap1_gap4b_fix.patch
