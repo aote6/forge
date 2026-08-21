@@ -16,6 +16,7 @@ from forge.memory import MemoryStore
 from forge.runtime import Runtime
 from forge.events import EventType
 from forge.adapters.deepseek import DeepSeekAdapter
+from forge.tui_input import read_multiline_input
 
 project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 adapter = DeepSeekAdapter(
@@ -233,7 +234,9 @@ def main():
 
     while True:
         try:
-            user_input = input("\n💬 > ")
+            user_input = read_multiline_input("\n💬 > ")
+            if user_input is None:  # EOF / Ctrl+D 空输入：退出
+                user_input = "q"
             if not user_input.strip():
                 continue
             cmd = user_input.strip().lower()
