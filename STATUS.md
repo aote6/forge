@@ -206,3 +206,21 @@ Checkpoint 拆成两套水位，避免"消费进度"和"磁盘真实同步进度
 
 ### 状态
 - 未处理，记入工程债
+
+## P0-4 第 3 批测试质量记录（2026-08-22）
+
+### 情况
+- 第 3 批修复了 intent_tools / runtime 的副作用失败可观测性，5 个测试全过
+- 但 5 个测试中只有 1 个（`test_save_session_summary_failure_is_logged`）直接验证了修复点
+- 其余 4 个测试存在以下问题：
+  - 只测 helper 函数本身，不测工具调用链
+  - 手动构造 ToolResult + 手动 raise + 手动调 helper，等价于"自己拿锤子砸钉子"
+  - `test_sync_path_map_failure_does_not_raise` 完全没有调用 `_sync_path_map`，只是手动 catch mock 异常
+
+### 影响
+- 测试全过不破坏功能，但提供虚假安全感
+- 如果将来有人删掉 `str_replace`/`write_file` 里的 `_note_side_effect_failure` 调用，这些测试仍然全绿，发现不了回归
+
+### 后续
+- 做 P1-4（验证闭环做硬）时补上真正的端到端测试
+- 测试应通过 `tools["str_replace"](...)` / `tools["write_file"](...)` 入口，注入副作用失败，断言 success=True + payload.side_effect_warnings + display 含 SIDE_EFFECT_WARN

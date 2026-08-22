@@ -132,8 +132,8 @@ def _save_session_summary(project_root: str, assistant_replies: list[str]) -> No
             json.dumps({"notes": notes}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[forge] _save_session_summary failed: {e}", file=sys.stderr)
 
 
 # 结果确认型工具：第一行就是精华（RESULT: path=... tx=... 之类），压成一行安全。

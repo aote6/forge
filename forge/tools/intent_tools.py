@@ -227,23 +227,52 @@ def _attach_next(result: ToolResult, paths: list[str] | None = None) -> ToolResu
     return result
 
 
+def _note_side_effect_failure(result: ToolResult, name: str, err: BaseException) -> None:
+    """主操作已成功时的附属副作用失败：可观测，但不把 success 改成 False。"""
+    import sys
+    print(f"[forge] side-effect {name} failed: {err}", file=sys.stderr)
+    if result.payload is None:
+        result.payload = {}
+    warns = result.payload.setdefault("side_effect_warnings", [])
+    msg = f"{name}: {err}"
+    if msg not in warns:
+        warns.append(msg)
+    if result.success and result.display is not None and "SIDE_EFFECT_WARN:" not in result.display:
+        result.display = result.display.rstrip() + f"\nSIDE_EFFECT_WARN: {msg}"
+
+
 def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) -> dict:
     """Build semantic tool callables bound to IntentExecutor + ProjectionManager."""
 
     world = executor._world
 
-    def _sync_path_map(delta) -> None:
+    def _sync_path_map(delta) -> str | None:
+        """Best-effort path map sync after a successful World commit.
+
+        Returns an error string if all update attempts failed, else None.
+        Does not raise — caller must not turn a successful commit into tool failure.
+        """
         if world is None or delta is None:
-            return
+            return None
+        errors: list[str] = []
         if hasattr(world, "_update_path_map"):
             try:
                 world._update_path_map(delta)
-                return
-            except Exception:
-                pass
+                return None
+            except Exception as e:
+                import sys
+                print(f"[forge] path_map _update_path_map failed: {e}", file=sys.stderr)
+                errors.append(f"_update_path_map: {e}")
         path_map = getattr(world, "_path_map", None)
         if path_map is not None and hasattr(path_map, "update_from_delta"):
-            path_map.update_from_delta(delta)
+            try:
+                path_map.update_from_delta(delta)
+                return None
+            except Exception as e:
+                import sys
+                print(f"[forge] path_map update_from_delta failed: {e}", file=sys.stderr)
+                errors.append(f"update_from_delta: {e}")
+        return "; ".join(errors) if errors else None
 
     def _register_path(path: str, content: str) -> tuple[int, Receipt | None, TransactionDelta | None]:
         """Ensure path has a World object. Returns (oid, receipt_or_None, delta_or_None).
@@ -743,8 +772,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                         )
                         update_memory(_project_root(world), recent_files=path_n, last_status="edited")
                         cache_invalidate(_project_root(world), path_n)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _note_side_effect_failure(result, "record_tx/memory/cache", e)
                 if result.payload is not None:
                     result.payload["_project_root"] = _project_root(world)
                     result.payload["replacements"] = (n if replace_all else 1)
@@ -759,8 +788,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                         summary=f"replacements={(result.payload or {}).get('replacements')}",
                         project_root=_project_root(world),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    _note_side_effect_failure(result, "record_session_change", e)
                 result = _attach_next(result, [path_n])
             return result
         except Exception as e:
@@ -800,8 +829,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                         )
                         update_memory(_project_root(world), recent_files=path_n, last_status="edited")
                         cache_invalidate(_project_root(world), path_n)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _note_side_effect_failure(result, "record_tx/memory/cache", e)
                 if result.payload is not None:
                     result.payload["_project_root"] = _project_root(world)
                 if result.payload is not None:
@@ -815,8 +844,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                         summary="write_file",
                         project_root=_project_root(world),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    _note_side_effect_failure(result, "record_session_change", e)
                 result = _attach_next(result, [path_n])
             return result
         except Exception as e:
