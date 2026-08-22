@@ -54,6 +54,7 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             if not root.exists():
                 return ToolResult.fail(display=f"目录不存在: {root_dir}")
             summary_lines = []
+            skipped = []
             for dirpath, _, filenames in os.walk(root):
                 if any(skip in dirpath for skip in (".git", "__pycache__", ".venv", ".pytest_cache")):
                     continue
@@ -75,15 +76,22 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
                         if file_signatures:
                             summary_lines.append(f"File: {rel_path}")
                             summary_lines.extend(file_signatures)
-                    except Exception:
+                    except Exception as e:
+                        skipped.append(f"{rel_path}: {e}")
                         continue
             result = "\n".join(summary_lines)
             if len(result) > max_tokens * 4:
                 result = result[: max_tokens * 4] + "\n... [Repo Map Truncated]"
+            display = result or "No Python signatures found."
+            if skipped:
+                display += (
+                    "\n\n⚠ skipped unparsable files:\n"
+                    + "\n".join(f"  - {s}" for s in skipped[:20])
+                )
             _log("get_repo_map", {"root_dir": root_dir, "max_tokens": max_tokens}, True)
             return ToolResult.ok(
-                display=result or "No Python signatures found.",
-                payload={"mutation": False, "file_count": len(summary_lines)},
+                display=display,
+                payload={"mutation": False, "file_count": len(summary_lines), "skipped_files": skipped},
             )
         except Exception as e:
             _log("get_repo_map", {"root_dir": root_dir}, False, str(e))
@@ -230,8 +238,11 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
                             "line": se.lineno,
                             "error": f"SyntaxError: {se.msg}",
                         })
-                    except Exception:
-                        continue
+                    except Exception as e:
+                        errors.append({
+                            "file": os.path.relpath(p, workspace.project_root),
+                            "error": f"read/parse error: {e}",
+                        })
             parsed = {
                 "status": "clean" if not errors else "issues_found",
                 "files_checked": checked,
@@ -498,6 +509,7 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             callees = set()
             target_file = None
             target_line = None
+            skipped: list[str] = []
 
             # 第一遍：找到符号定义位置
             for root, _, files in os.walk(workspace.project_root):
@@ -522,7 +534,8 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
                                             callees.add(sub.func.id)
                                         elif isinstance(sub.func, ast.Attribute):
                                             callees.add(sub.func.attr)
-                    except Exception:
+                    except Exception as e:
+                        skipped.append(f"{rel_path}: {e}")
                         continue
 
             # 第二遍：找到所有调用该符号的位置
@@ -543,7 +556,8 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
                                     callers.add(f"{rel_path}:{node.lineno}")
                                 elif isinstance(node.func, ast.Attribute) and node.func.attr == symbol_name:
                                     callers.add(f"{rel_path}:{node.lineno}")
-                    except Exception:
+                    except Exception as e:
+                        skipped.append(f"{rel_path}: {e}")
                         continue
 
             _log("get_call_chain", {"symbol": symbol_name}, True)
@@ -554,9 +568,14 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             output += ("\n".join(f"  ← {c}" for c in sorted(callers)) if callers else "  (无直接调用者)\n")
             output += f"\n被调用 ({len(callees)}):\n"
             output += ("\n".join(f"  → {c}" for c in sorted(callees)) if callees else "  (无直接调用)")
+            if skipped:
+                output += (
+                    "\n\n⚠ skipped unparsable files:\n"
+                    + "\n".join(f"  - {s}" for s in sorted(set(skipped))[:20])
+                )
             return ToolResult.ok(
                 display=output,
-                payload={"mutation": False, "callers": sorted(callers), "callees": sorted(callees)},
+                payload={"mutation": False, "callers": sorted(callers), "callees": sorted(callees), "skipped_files": sorted(set(skipped))},
             )
         except Exception as e:
             _log("get_call_chain", {"symbol": symbol_name}, False, str(e))

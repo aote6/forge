@@ -293,8 +293,12 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
     def _sync_path_map(delta) -> str | None:
         """Best-effort path map sync after a successful World commit.
 
-        Returns an error string if all update attempts failed, else None.
+        Returns an error string if any update attempt failed, else None.
         Does not raise — caller must not turn a successful commit into tool failure.
+
+        注意：`_update_path_map` 失败后仍会尝试 `update_from_delta` 兜底，但
+        `_update_path_map` 的失败必须保留在返回值里（即便兜底成功），否则会把
+        World 提交成功后的路径映射失败静默吞掉。
         """
         if world is None or delta is None:
             return None
@@ -302,7 +306,6 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
         if hasattr(world, "_update_path_map"):
             try:
                 world._update_path_map(delta)
-                return None
             except Exception as e:
                 import sys
                 print(f"[forge] path_map _update_path_map failed: {e}", file=sys.stderr)
@@ -311,7 +314,6 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
         if path_map is not None and hasattr(path_map, "update_from_delta"):
             try:
                 path_map.update_from_delta(delta)
-                return None
             except Exception as e:
                 import sys
                 print(f"[forge] path_map update_from_delta failed: {e}", file=sys.stderr)
@@ -345,11 +347,13 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 f"tx={getattr(receipt, 'tx_id', None)}: {reasons}. "
                 f"Run forge_sync; do not assume disk file exists."
             )
-        _sync_path_map(delta)
+        path_map_err = _sync_path_map(delta)
 
         # 投影层非致命告警（mark_disk_synced 失败）经 delta.metadata 传回调用方，
         # 避免 auto-register 路径把「磁盘已写但水位未推进」静默吞掉。
         warns = _projection_warnings(results)
+        if path_map_err:
+            warns.append(path_map_err)
         if warns and delta is not None:
             meta = getattr(delta, "metadata", None)
             if meta is None:
@@ -438,7 +442,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
         results = projections.project(receipt, delta)
         if _failed_projections(results):
             return _projection_failure_result(results, receipt, tool="write_file")
-        _sync_path_map(delta)
+        path_map_err = _sync_path_map(delta)
         proj = _format_projection_results(results)
         result = ToolResult.ok(
             display=(
@@ -455,7 +459,10 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 "requires_confirmation": False,
             },
         )
-        return _attach_projection_warnings(result, results)
+        result = _attach_projection_warnings(result, results)
+        if path_map_err:
+            result = _attach_warnings(result, [path_map_err])
+        return result
 
     def create_object() -> ToolResult:
         try:
@@ -507,7 +514,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             results = projections.project(receipt, delta)
             if _failed_projections(results):
                 return _projection_failure_result(results, receipt, tool="create_file")
-            _sync_path_map(delta)
+            path_map_err = _sync_path_map(delta)
             created = list(delta.objects_created) if delta.objects_created else []
             oid = created[0] if created else None
             if oid is not None:
@@ -531,6 +538,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 },
             )
             result = _attach_projection_warnings(result, results)
+            if path_map_err:
+                result = _attach_warnings(result, [path_map_err])
             return _attach_next(result, [path_n])
         except Exception as e:
             return ToolResult.fail(
@@ -564,7 +573,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             results = projections.project(receipt, delta)
             if _failed_projections(results):
                 return _projection_failure_result(results, receipt, tool="modify_file")
-            _sync_path_map(delta)
+            path_map_err = _sync_path_map(delta)
             proj = _format_projection_results(results)
             result = ToolResult.ok(
                 display=(
@@ -583,6 +592,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 },
             )
             result = _attach_projection_warnings(result, results)
+            if path_map_err:
+                result = _attach_warnings(result, [path_map_err])
             return _attach_next(result, [path_n])
         except Exception as e:
             return ToolResult.fail(
@@ -635,7 +646,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             results = projections.project(receipt, delta)
             if _failed_projections(results):
                 return _projection_failure_result(results, receipt, tool="edit_files_batch")
-            _sync_path_map(delta)
+            path_map_err = _sync_path_map(delta)
             proj = _format_projection_results(results)
             summary = ", ".join(f"{r['path']}#{r['object_id']}" for r in resolved)
             result = ToolResult.ok(
@@ -652,6 +663,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 },
             )
             result = _attach_projection_warnings(result, results)
+            if path_map_err:
+                result = _attach_warnings(result, [path_map_err])
             return _attach_next(result, [r["path"] for r in resolved])
         except Exception as e:
             return ToolResult.fail(
@@ -680,7 +693,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             results = projections.project(receipt, delta)
             if _failed_projections(results):
                 return _projection_failure_result(results, receipt, tool="delete_file")
-            _sync_path_map(delta)
+            path_map_err = _sync_path_map(delta)
             result = ToolResult.ok(
                 display=(
                     f"RESULT: object_id={oid} path={path_n} tx={receipt.tx_id} version={receipt.version}\n"
@@ -696,7 +709,10 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     "requires_confirmation": False,
                 },
             )
-            return _attach_projection_warnings(result, results)
+            result = _attach_projection_warnings(result, results)
+            if path_map_err:
+                result = _attach_warnings(result, [path_map_err])
+            return result
         except Exception as e:
             return ToolResult.fail(display=f"delete_file failed: {e}")
 
@@ -990,12 +1006,13 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 results_meta.append({"path": path_n, "object_id": oid, "mode": "modify"})
                 paths_out.append(path_n)
 
+            path_map_err = None
             if intents:
                 receipt, delta = executor.execute_batch(intents)
                 results = projections.project(receipt, delta)
                 if _failed_projections(results):
                     return _projection_failure_result(results, receipt, tool="apply_patch")
-                _sync_path_map(delta)
+                path_map_err = _sync_path_map(delta)
                 tx_id, version = receipt.tx_id, receipt.version
             else:
                 # all were register-only creates
@@ -1029,6 +1046,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 },
             )
             result = _attach_projection_warnings(result, results)
+            if path_map_err:
+                result = _attach_warnings(result, [path_map_err])
             return _attach_next(result, paths_out)
         except Exception as e:
             return ToolResult.fail(

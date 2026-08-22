@@ -457,7 +457,22 @@ class SyncLayer:
                     divergent_paths=divergent,
                     detail="fast-forward 中止：磁盘在同步期间发生了外部变化。",
                 )
-            conflicts = self._receipt_conflicts_with_disk(receipt)
+            try:
+                conflicts = self._receipt_conflicts_with_disk(receipt)
+            except Exception as e:
+                return SyncReport(
+                    status=CONFLICT,
+                    conflict_kind=CONFLICT_CONTENT,
+                    world_version=self._world_version(),
+                    disk_commit=git_head_commit(self.project_root),
+                    known_commit=self._state.last_known_commit,
+                    disk_synced_version=s,
+                    divergent_paths=[],
+                    detail=(
+                        f"fast-forward 中止于 version={getattr(receipt, 'version', '?')}："
+                        f"无法判定磁盘是否与 receipt 冲突：{e}"
+                    ),
+                )
             if conflicts:
                 return SyncReport(
                     status=CONFLICT,
@@ -506,13 +521,13 @@ class SyncLayer:
 
         已知基线 = sync_state.last_known_file_hashes。未在基线中的既有文件
         视为"World 未记录的手动修改"，禁止被 fast-forward 覆盖。
+
+        prepare() 失败（例如已有文件读不出来）时向上抛：无法判定"无冲突"，
+        不得把失败当成空冲突列表从而允许 fast-forward 覆盖。
         """
         if self._file_projection is None:
             return []
-        try:
-            info = self._file_projection.prepare(getattr(receipt, "delta", None))
-        except Exception:
-            return []
+        info = self._file_projection.prepare(getattr(receipt, "delta", None))
         if not info:
             return []
         touched = list(info.get("files_modified", []) or []) + list(

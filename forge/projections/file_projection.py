@@ -157,10 +157,9 @@ class FileProjection(Projection):
             operations = self._get_operations(writes)
 
             if self.fm.exists(path):
-                try:
-                    original = self.fm.read(path)
-                except Exception:
-                    original = ""
+                # 已有文件必须成功读出原内容；读失败不能退化为 original=""，
+                # 否则基于空内容生成的 diff/preview 会误导确认流程。
+                original = self.fm.read(path)
                 if operations:
                     new_content = self.patch_engine.apply_edits(original, self._dicts_to_edits(operations))
                     patch = self.patch_engine.diff(original, new_content, path)
