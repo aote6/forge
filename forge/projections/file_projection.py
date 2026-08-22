@@ -261,14 +261,44 @@ class FileProjection(Projection):
 
                 original = ""
                 if self.fm.exists(path):
+                    # 文件已存在：必须成功读出原内容 + 成功备份后才允许写盘。
+                    # 读失败不能退化为 original=""（否则 patch/modify 会基于空内容覆盖）。
                     try:
                         original = self.fm.read(path)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        uncertain = self._rollback_applied(applied)
+                        return ProjectionResult(
+                            name=self.name,
+                            success=False,
+                            reason=(
+                                f"projection_failed: cannot read existing file {path}: {e}"
+                                + (
+                                    f"; uncertain (rollback failed): {uncertain}"
+                                    if uncertain
+                                    else ""
+                                )
+                            ),
+                            retryable=True,
+                            uncertain_paths=uncertain,
+                        )
                     try:
                         self.backup.backup(path)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        uncertain = self._rollback_applied(applied)
+                        return ProjectionResult(
+                            name=self.name,
+                            success=False,
+                            reason=(
+                                f"projection_failed: backup failed for {path} before write: {e}"
+                                + (
+                                    f"; uncertain (rollback failed): {uncertain}"
+                                    if uncertain
+                                    else ""
+                                )
+                            ),
+                            retryable=True,
+                            uncertain_paths=uncertain,
+                        )
 
                 if operations:
                     new_content = self.patch_engine.apply_edits(
@@ -304,10 +334,25 @@ class FileProjection(Projection):
             for object_id in delta.objects_deleted:
                 path = self._path_for_object(object_id, delta)
                 if path and self.fm.exists(path):
+                    # 删除前必须成功备份；备份失败则禁止删除。
                     try:
                         self.backup.backup(path)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        uncertain = self._rollback_applied(applied)
+                        return ProjectionResult(
+                            name=self.name,
+                            success=False,
+                            reason=(
+                                f"projection_failed: backup failed for {path} before delete: {e}"
+                                + (
+                                    f"; uncertain (rollback failed): {uncertain}"
+                                    if uncertain
+                                    else ""
+                                )
+                            ),
+                            retryable=True,
+                            uncertain_paths=uncertain,
+                        )
                     os.remove(path)
                     deleted.append(path)
 
