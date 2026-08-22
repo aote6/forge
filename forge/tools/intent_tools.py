@@ -43,6 +43,58 @@ def _format_projection_results(results) -> str:
     world = "ok"
     disk = "ok" if all_ok else ("FAIL" if not disk_ok else "partial")
     return f"world={world} disk={disk}\n" + "\n".join(lines)
+
+
+def _failed_projections(results) -> list:
+    """Return projection results with success=False (empty if all ok / no results)."""
+    if not results:
+        return []
+    return [r for r in results if not getattr(r, "success", False)]
+
+
+def _projection_failure_result(results, receipt=None, *, tool: str = "mutation") -> ToolResult:
+    """Build ToolResult.fail when one or more projections failed after World commit.
+
+    World transaction is already committed; disk/host projection may lag. Caller must
+    treat this as failure (not success) so the model does not assume files exist.
+    """
+    failed = _failed_projections(results)
+    reasons = []
+    for r in failed:
+        reasons.append(f"{getattr(r, 'name', '?')}: {getattr(r, 'reason', '') or 'FAIL'}")
+    reason_s = "; ".join(reasons) if reasons else "unknown projection failure"
+    tx = getattr(receipt, "tx_id", None) if receipt is not None else None
+    ver = getattr(receipt, "version", None) if receipt is not None else None
+    before = getattr(receipt, "before_root", None) if receipt is not None else None
+    after = getattr(receipt, "after_root", None) if receipt is not None else None
+    proj = _format_projection_results(results)
+    display = (
+        f"❌ 事务已提交但投影失败 tool={tool}"
+        + (f" tx={tx}" if tx is not None else "")
+        + (f" version={ver}" if ver is not None else "")
+        + "\n"
+        + (f"  before_root={before} after_root={after}\n" if before or after else "")
+        + f"{proj}\n"
+        f"projection_failed: {reason_s}\n"
+        f"世界状态已变更；请依赖 forge_sync 重新对账修复主机投影。"
+        f"不要假设磁盘文件已写好。"
+    )
+    return ToolResult.fail(
+        display=display,
+        payload={
+            "tx_id": tx,
+            "version": ver,
+            "before_root": before,
+            "after_root": after,
+            "mutation": True,
+            "requires_confirmation": False,
+            "projection_failed": True,
+            "projection_reasons": reasons,
+            "phase": "verifying",
+        },
+    )
+
+
 def _norm_path(path: str) -> str:
     return path.replace("\\", "/").removeprefix("./")
 
@@ -208,6 +260,18 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
         intent = Intent.create_file(path=path_n, content=payload, require_confirm=False)
         receipt, delta = executor.execute(intent)
         results = projections.project(receipt, delta)
+        failed = _failed_projections(results)
+        if failed:
+            # World committed but host projection failed — do not advertise oid/path_map.
+            reasons = "; ".join(
+                f"{getattr(r, 'name', '?')}: {getattr(r, 'reason', '') or 'FAIL'}"
+                for r in failed
+            )
+            raise RuntimeError(
+                f"auto-register projection failed after commit "
+                f"tx={getattr(receipt, 'tx_id', None)}: {reasons}. "
+                f"Run forge_sync; do not assume disk file exists."
+            )
         _sync_path_map(delta)
 
         created = list(delta.objects_created) if delta.objects_created else []
@@ -280,6 +344,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
         intent.parameters["object_id"] = int(oid)
         receipt, delta = executor.execute(intent)
         results = projections.project(receipt, delta)
+        if _failed_projections(results):
+            return _projection_failure_result(results, receipt, tool="write_file")
         _sync_path_map(delta)
         proj = _format_projection_results(results)
         return ToolResult.ok(
@@ -303,6 +369,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             intent = Intent.create_object(require_confirm=False)
             receipt, delta = executor.execute(intent)
             results = projections.project(receipt, delta)
+            if _failed_projections(results):
+                return _projection_failure_result(results, receipt, tool="create_object")
             created = list(delta.objects_created) if delta.objects_created else []
             oid = created[0] if created else intent.parameters.get("_created_object_id")
             if oid is None:
@@ -343,6 +411,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             intent = Intent.create_file(path=path_n, content=payload, require_confirm=False)
             receipt, delta = executor.execute(intent)
             results = projections.project(receipt, delta)
+            if _failed_projections(results):
+                return _projection_failure_result(results, receipt, tool="create_file")
             _sync_path_map(delta)
             created = list(delta.objects_created) if delta.objects_created else []
             oid = created[0] if created else None
@@ -399,6 +469,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             intent.parameters["object_id"] = oid
             receipt, delta = executor.execute(intent)
             results = projections.project(receipt, delta)
+            if _failed_projections(results):
+                return _projection_failure_result(results, receipt, tool="modify_file")
             _sync_path_map(delta)
             proj = _format_projection_results(results)
             return _attach_next(
@@ -469,6 +541,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
 
             receipt, delta = executor.execute_batch(intents)
             results = projections.project(receipt, delta)
+            if _failed_projections(results):
+                return _projection_failure_result(results, receipt, tool="edit_files_batch")
             _sync_path_map(delta)
             proj = _format_projection_results(results)
             summary = ", ".join(f"{r['path']}#{r['object_id']}" for r in resolved)
@@ -513,6 +587,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             intent.parameters["object_id"] = int(oid)
             receipt, delta = executor.execute(intent)
             results = projections.project(receipt, delta)
+            if _failed_projections(results):
+                return _projection_failure_result(results, receipt, tool="delete_file")
             _sync_path_map(delta)
             return ToolResult.ok(
                 display=(
@@ -537,6 +613,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             intent = Intent.link_objects(from_id=from_id, to_id=to_id, link_type=link_type)
             receipt, delta = executor.execute(intent)
             results = projections.project(receipt, delta)
+            if _failed_projections(results):
+                return _projection_failure_result(results, receipt, tool="link_objects")
             proj = _format_projection_results(results)
             proj_line = f"\n{proj}" if proj else ""
             return ToolResult.ok(
@@ -571,6 +649,8 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             intent = Intent.unlink_objects(from_id=from_id, to_id=to_id)
             receipt, delta = executor.execute(intent)
             results = projections.project(receipt, delta)
+            if _failed_projections(results):
+                return _projection_failure_result(results, receipt, tool="unlink_objects")
             return ToolResult.ok(
                 display=(
                     f"RESULT: unlinked from_id={from_id} to_id={to_id} tx={receipt.tx_id}\n"
@@ -809,7 +889,9 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
 
             if intents:
                 receipt, delta = executor.execute_batch(intents)
-                projections.project(receipt, delta)
+                results = projections.project(receipt, delta)
+                if _failed_projections(results):
+                    return _projection_failure_result(results, receipt, tool="apply_patch")
                 _sync_path_map(delta)
                 tx_id, version = receipt.tx_id, receipt.version
             else:

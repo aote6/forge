@@ -29,17 +29,24 @@
 - "重试prompt携带结构化拒绝原因"：现有 STOP_HINT 已从纯计数升级为
   reason分类（type_mismatch/exception/logic），基本满足原始诉求。
 
+## P0-1/P0-2 投影失败检查（已修复）
+- 根因：mutation 主路径在 `projections.project()` 后不检查 `success`，与
+  `confirm_fn`（失败→ToolResult.fail）语义不一致；模型会把 disk=FAIL 当成功。
+- 修复：`intent_tools.py` 新增 `_failed_projections` / `_projection_failure_result`；
+  `_register_path`、`_write_content_to_world`、create_object/create_file/modify_file/
+  edit_files_batch/delete_file/link_objects/unlink_objects/apply_patch 全部在投影失败时
+  返回 `ToolResult.fail`（payload `projection_failed=True`），且失败时不写 path_map。
+- 说明：World 事务已提交无法自动回滚；失败文案引导 `forge_sync` 对账。
+
 ## 已知技术债（未处理）
-- 全库47处裸 `except Exception:`（历史遗留为主），建议分批清理
+- 全库约 147 处 `except Exception`（非裸 `except:`；旧记录「47 处」已过时），
+  建议按关键路径分批清理（local_tools / intent_tools / runtime / file_projection / sync_layer）
 - ~~`forge: tx=NN v=NN` 自动commit与人类feature commit混线~~ 已解决：
   自动事务提交已停用（git_projection.apply() 不再 commit），历史中的
   `forge: tx=` 提交已通过 filter-branch 全部移除
 - veritas_kernel 侧：object_birth 收窄 pub(crate)、WAL截断恢复测试，完全未碰
-- forge/intents/intent_tools.py:210 投影结果被静默丢弃：ProjectionManager.project()
-  内部对每个 projection 的 apply() 包 try/except（base.py:89-121），失败不抛异常、
-  返回 success=False 的 ProjectionResult；调用处未检查返回值，_register_path 照常执行，
-  可能返回"世界里存在但磁盘无文件"的 oid（2026-08 只读确认，未改）
-- forge/projections/base.py:122-133 永不执行的旧实现死代码（121 行已 return，未删）
+- ~~forge/intents/intent_tools.py 投影结果被静默丢弃~~ 已修复（见上 P0-1/P0-2）
+- ~~forge/projections/base.py:122-133 死代码~~ 已在 acaf7c4 删除；本条仅文档过时
 
 ## 生产路径不变
 
