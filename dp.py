@@ -56,18 +56,18 @@ def _collect_health_notes(runtime: Runtime) -> list[str]:
     return notes
 
 
-_READONLY_HINT = (
-    "当前处于只读工作形态：可以查看、分析、规划；"
-    "创建、修改、删除需要连接 Veritas。"
+_OFFLINE_HINT = (
+    "veritasd 不在线：读/搜/规划/一般 shell 可用；"
+    "事务写入主路径（str_replace/write_file 等）当前不可用。"
 )
 
 
 def _check_veritas(runtime: Runtime) -> None:
-    """Non-blocking health check for veritasd. Stage-1 copy only; behavior unchanged."""
+    """Non-blocking health check for veritasd. Copy only; no behavior change."""
     try:
         w = runtime.world
         if w is None:
-            print(f"⚠️ veritasd 不在线（无 WorldRuntime）。{_READONLY_HINT}")
+            print(f"⚠️ {_OFFLINE_HINT}")
             return
         online = getattr(w, "online", None)
         if callable(online):
@@ -82,13 +82,13 @@ def _check_veritas(runtime: Runtime) -> None:
             else:
                 ok = True
         if not ok:
-            print(f"⚠️ veritasd 不在线。{_READONLY_HINT}")
-            print("   启动 veritasd 后进入可变更工作形态；或继续只读使用。")
+            print(f"⚠️ {_OFFLINE_HINT}")
+            print("   需要事务写入时再启动 veritasd。")
         else:
-            print("✅ veritasd 在线 — 可变更工作形态（写经 Veritas 事务）")
+            print("✅ veritasd 在线 — 事务写入主路径可用")
     except Exception as e:
         print(f"⚠️ veritasd 检查失败: {e}")
-        print(f"   {_READONLY_HINT}")
+        print(f"   {_OFFLINE_HINT}")
 
 
 def _print_world_summary(runtime: Runtime) -> None:
