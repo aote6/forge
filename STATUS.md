@@ -192,3 +192,17 @@ Checkpoint 拆成两套水位，避免"消费进度"和"磁盘真实同步进度
 结果：17 个测试全绿，全量 176 通过（1 个无关旧失败）。实际运行不再出现重复行。
 
 关键变化：从依赖不可靠的终端保存序列，改为基于精确计算的基础 ANSI 序列，兼容性更好。
+
+## run_legacy / confirm_fn 废弃链确认（2026-08-22）
+
+### 核实结论
+- `run_legacy` 没有任何调用点（全仓库仅定义 + DEPRECATED 注释）
+- `confirm_fn` / `abort_fn` 只被 `run_legacy` 调用，生产路径 `Runtime.run → _run_conversation` 不经过它们
+- `forge/agent_state.py` 和 `forge/confirmation.py` 标注 "kept for run_legacy"，同属废弃链
+
+### 关联
+- P0-2 修复时选择"对齐语义"而非删除旧路径，因为 `confirm_fn` 仍被 `run_legacy` 引用
+- 后续可整串删除：`run_legacy` + `confirm_fn` / `abort_fn` + `agent_state.py` + `confirmation.py`，但不属于当前 P0 范畴
+
+### 状态
+- 未处理，记入工程债
