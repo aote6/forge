@@ -26,6 +26,22 @@ from forge.tools.read_cache import invalidate as cache_invalidate
 from forge.tools.session_changes import record as record_session_change
 
 
+def _projection_warnings(results) -> list[str]:
+    """Collect non-fatal warnings from successful projection results.
+
+    mark_disk_synced 失败时磁盘已写但同步水位未推进：success 保持 True，
+    但必须可观测，避免 agent 误以为已 IN_SYNC。
+    """
+    if not results:
+        return []
+    out = []
+    for r in results:
+        w = getattr(r, "warning", None)
+        if w:
+            out.append(f"{getattr(r, 'name', '?')}: {w}")
+    return out
+
+
 def _format_projection_results(results) -> str:
     """Summarize projections with explicit world/disk status."""
     if not results:
@@ -42,7 +58,11 @@ def _format_projection_results(results) -> str:
         lines.append(f"  projection[{r.name}]: {mark} {r.reason}")
     world = "ok"
     disk = "ok" if all_ok else ("FAIL" if not disk_ok else "partial")
-    return f"world={world} disk={disk}\n" + "\n".join(lines)
+    out = f"world={world} disk={disk}\n" + "\n".join(lines)
+    warnings = _projection_warnings(results)
+    if warnings:
+        out += "\nSIDE_EFFECT_WARN: " + "; ".join(warnings)
+    return out
 
 
 def _failed_projections(results) -> list:
@@ -241,6 +261,30 @@ def _note_side_effect_failure(result: ToolResult, name: str, err: BaseException)
         result.display = result.display.rstrip() + f"\nSIDE_EFFECT_WARN: {msg}"
 
 
+def _attach_warnings(result: ToolResult, warns: list[str]) -> ToolResult:
+    """把告警列表挂到 ToolResult payload + display（success 不变）。"""
+    if not warns:
+        return result
+    if result.payload is None:
+        result.payload = {}
+    existing = result.payload.setdefault("side_effect_warnings", [])
+    for w in warns:
+        if w not in existing:
+            existing.append(w)
+    if result.success and result.display is not None and "SIDE_EFFECT_WARN:" not in result.display:
+        result.display = result.display.rstrip() + "\nSIDE_EFFECT_WARN: " + "; ".join(warns)
+    return result
+
+
+def _attach_projection_warnings(result: ToolResult, results) -> ToolResult:
+    """把投影层的非致命告警（mark_disk_synced 失败等）挂到 ToolResult 上。
+
+    磁盘已写成功，success 保持 True；但同步水位未推进，必须让 agent 看到，
+    与 _note_side_effect_failure 同属「成功后的附属失败可观测但不翻转成功」。
+    """
+    return _attach_warnings(result, _projection_warnings(results))
+
+
 def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) -> dict:
     """Build semantic tool callables bound to IntentExecutor + ProjectionManager."""
 
@@ -303,6 +347,20 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             )
         _sync_path_map(delta)
 
+        # 投影层非致命告警（mark_disk_synced 失败）经 delta.metadata 传回调用方，
+        # 避免 auto-register 路径把「磁盘已写但水位未推进」静默吞掉。
+        warns = _projection_warnings(results)
+        if warns and delta is not None:
+            meta = getattr(delta, "metadata", None)
+            if meta is None:
+                meta = {}
+                try:
+                    delta.metadata = meta
+                except Exception:
+                    meta = None
+            if isinstance(meta, dict):
+                meta.setdefault("_projection_warnings", []).extend(warns)
+
         created = list(delta.objects_created) if delta.objects_created else []
         oid = created[0] if created else intent.parameters.get("_created_object_id")
         if oid is None:
@@ -326,11 +384,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 registered_now = reg_receipt is not None
                 # Registration already wrote full content via create_file — done
                 if registered_now:
-                    proj = ""
-                    if reg_delta is not None:
-                        # projection already applied inside _register_path
-                        pass
-                    return ToolResult.ok(
+                    result = ToolResult.ok(
                         display=(
                             f"RESULT: path={path_n} object_id={oid} "
                             f"tx={reg_receipt.tx_id} version={reg_receipt.version} registered=true\n"
@@ -346,6 +400,15 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                             "requires_confirmation": False,
                         },
                     )
+                    reg_warns = []
+                    if reg_delta is not None:
+                        reg_warns = (
+                            (getattr(reg_delta, "metadata", None) or {}).get(
+                                "_projection_warnings"
+                            )
+                            or []
+                        )
+                    return _attach_warnings(result, reg_warns)
             except Exception as e:
                 return ToolResult.fail(
                     display=(
@@ -377,7 +440,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             return _projection_failure_result(results, receipt, tool="write_file")
         _sync_path_map(delta)
         proj = _format_projection_results(results)
-        return ToolResult.ok(
+        result = ToolResult.ok(
             display=(
                 f"RESULT: path={path_n} object_id={oid} tx={receipt.tx_id} version={receipt.version}\n"
                 f"Wrote file: {path_n}\n{proj}"
@@ -392,6 +455,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 "requires_confirmation": False,
             },
         )
+        return _attach_projection_warnings(result, results)
 
     def create_object() -> ToolResult:
         try:
@@ -411,7 +475,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 )
             proj = _format_projection_results(results)
             proj_line = f"\n{proj}" if proj else ""
-            return ToolResult.ok(
+            result = ToolResult.ok(
                 display=(
                     f"RESULT: object_id={oid} tx={receipt.tx_id} version={receipt.version}\n"
                     f"Created world object ObjectId={oid}"
@@ -428,6 +492,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     "world_operation": True,
                 },
             )
+            return _attach_projection_warnings(result, results)
         except Exception as e:
             return ToolResult.fail(
                 display=f"create_object failed: {e}\n建议: 检查 veritasd 是否在线。"
@@ -451,23 +516,22 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     pm.set(int(oid), path_n)
             proj = _format_projection_results(results)
             oid_part = f" object_id={oid}" if oid is not None else ""
-            return _attach_next(
-                ToolResult.ok(
-                    display=(
-                        f"RESULT: path={path_n}{oid_part} tx={receipt.tx_id} version={receipt.version}\n"
-                        f"Created file: {path_n}\n{proj}"
-                    ).rstrip(),
-                    payload={
-                        "path": path_n,
-                        "object_id": int(oid) if oid is not None else None,
-                        "tx_id": receipt.tx_id,
-                        "version": receipt.version,
-                        "mutation": True,
-                        "requires_confirmation": False,
-                    },
-                ),
-                [path_n],
+            result = ToolResult.ok(
+                display=(
+                    f"RESULT: path={path_n}{oid_part} tx={receipt.tx_id} version={receipt.version}\n"
+                    f"Created file: {path_n}\n{proj}"
+                ).rstrip(),
+                payload={
+                    "path": path_n,
+                    "object_id": int(oid) if oid is not None else None,
+                    "tx_id": receipt.tx_id,
+                    "version": receipt.version,
+                    "mutation": True,
+                    "requires_confirmation": False,
+                },
             )
+            result = _attach_projection_warnings(result, results)
+            return _attach_next(result, [path_n])
         except Exception as e:
             return ToolResult.fail(
                 display=(
@@ -502,25 +566,24 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 return _projection_failure_result(results, receipt, tool="modify_file")
             _sync_path_map(delta)
             proj = _format_projection_results(results)
-            return _attach_next(
-                ToolResult.ok(
-                    display=(
-                        f"RESULT: path={path_n} object_id={oid} tx={receipt.tx_id} "
-                        f"version={receipt.version} ops={len(machine_ops)}\n"
-                        f"Modified file: {path_n}\n{proj}"
-                    ).rstrip(),
-                    payload={
-                        "path": path_n,
-                        "object_id": oid,
-                        "tx_id": receipt.tx_id,
-                        "version": receipt.version,
-                        "ops": len(machine_ops),
-                        "mutation": True,
-                        "requires_confirmation": False,
-                    },
-                ),
-                [path_n],
+            result = ToolResult.ok(
+                display=(
+                    f"RESULT: path={path_n} object_id={oid} tx={receipt.tx_id} "
+                    f"version={receipt.version} ops={len(machine_ops)}\n"
+                    f"Modified file: {path_n}\n{proj}"
+                ).rstrip(),
+                payload={
+                    "path": path_n,
+                    "object_id": oid,
+                    "tx_id": receipt.tx_id,
+                    "version": receipt.version,
+                    "ops": len(machine_ops),
+                    "mutation": True,
+                    "requires_confirmation": False,
+                },
             )
+            result = _attach_projection_warnings(result, results)
+            return _attach_next(result, [path_n])
         except Exception as e:
             return ToolResult.fail(
                 display=(
@@ -575,22 +638,21 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             _sync_path_map(delta)
             proj = _format_projection_results(results)
             summary = ", ".join(f"{r['path']}#{r['object_id']}" for r in resolved)
-            return _attach_next(
-                ToolResult.ok(
-                    display=(
-                        f"RESULT: batch={len(resolved)} tx={receipt.tx_id} version={receipt.version}\n"
-                        f"Edited: {summary}\n{proj}"
-                    ).rstrip(),
-                    payload={
-                        "tx_id": receipt.tx_id,
-                        "version": receipt.version,
-                        "edits": resolved,
-                        "mutation": True,
-                        "requires_confirmation": False,
-                    },
-                ),
-                [r["path"] for r in resolved],
+            result = ToolResult.ok(
+                display=(
+                    f"RESULT: batch={len(resolved)} tx={receipt.tx_id} version={receipt.version}\n"
+                    f"Edited: {summary}\n{proj}"
+                ).rstrip(),
+                payload={
+                    "tx_id": receipt.tx_id,
+                    "version": receipt.version,
+                    "edits": resolved,
+                    "mutation": True,
+                    "requires_confirmation": False,
+                },
             )
+            result = _attach_projection_warnings(result, results)
+            return _attach_next(result, [r["path"] for r in resolved])
         except Exception as e:
             return ToolResult.fail(
                 display=(
@@ -619,7 +681,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             if _failed_projections(results):
                 return _projection_failure_result(results, receipt, tool="delete_file")
             _sync_path_map(delta)
-            return ToolResult.ok(
+            result = ToolResult.ok(
                 display=(
                     f"RESULT: object_id={oid} path={path_n} tx={receipt.tx_id} version={receipt.version}\n"
                     f"Deleted object {oid}\n"
@@ -634,6 +696,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     "requires_confirmation": False,
                 },
             )
+            return _attach_projection_warnings(result, results)
         except Exception as e:
             return ToolResult.fail(display=f"delete_file failed: {e}")
 
@@ -646,7 +709,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 return _projection_failure_result(results, receipt, tool="link_objects")
             proj = _format_projection_results(results)
             proj_line = f"\n{proj}" if proj else ""
-            return ToolResult.ok(
+            result = ToolResult.ok(
                 display=(
                     f"RESULT: from_id={from_id} to_id={to_id} link_type={link_type} "
                     f"tx={receipt.tx_id} version={receipt.version}\n"
@@ -664,6 +727,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     "world_operation": True,
                 },
             )
+            return _attach_projection_warnings(result, results)
         except Exception as e:
             return ToolResult.fail(
                 display=(
@@ -680,7 +744,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             results = projections.project(receipt, delta)
             if _failed_projections(results):
                 return _projection_failure_result(results, receipt, tool="unlink_objects")
-            return ToolResult.ok(
+            result = ToolResult.ok(
                 display=(
                     f"RESULT: unlinked from_id={from_id} to_id={to_id} tx={receipt.tx_id}\n"
                     f"{_format_projection_results(results)}"
@@ -693,6 +757,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     "requires_confirmation": False,
                 },
             )
+            return _attach_projection_warnings(result, results)
         except Exception as e:
             return ToolResult.fail(display=f"unlink_objects failed: {e}")
 
@@ -791,6 +856,10 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 except Exception as e:
                     _note_side_effect_failure(result, "record_session_change", e)
                 result = _attach_next(result, [path_n])
+                # display 被 _attach_diff 重建；把 payload 里的投影告警重新挂回 display。
+                result = _attach_warnings(
+                    result, list((result.payload or {}).get("side_effect_warnings", []))
+                )
             return result
         except Exception as e:
             return ToolResult.fail(
@@ -847,6 +916,10 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 except Exception as e:
                     _note_side_effect_failure(result, "record_session_change", e)
                 result = _attach_next(result, [path_n])
+                # display 被 _attach_diff 重建；把 payload 里的投影告警重新挂回 display。
+                result = _attach_warnings(
+                    result, list((result.payload or {}).get("side_effect_warnings", []))
+                )
             return result
         except Exception as e:
             return ToolResult.fail(
@@ -871,6 +944,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     )
                 )
             results_meta = []
+            results: list = []
             # Apply each file via _write_content_to_world sequentially but we want one tx
             # Prefer batch: register all, then execute_batch of modify intents
             from forge.core.edit_contract import authoring_to_machine_ops
@@ -943,20 +1017,19 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             )
             if diff_blocks:
                 display = display + "\nDIFF:\n" + "\n\n".join(diff_blocks)
-            return _attach_next(
-                ToolResult.ok(
-                    display=display,
-                    payload={
-                        "tx_id": tx_id,
-                        "version": version,
-                        "files": results_meta,
-                        "mutation": True,
-                        "requires_confirmation": False,
-                        "diff": "\n\n".join(diff_blocks) if diff_blocks else "",
-                    },
-                ),
-                paths_out,
+            result = ToolResult.ok(
+                display=display,
+                payload={
+                    "tx_id": tx_id,
+                    "version": version,
+                    "files": results_meta,
+                    "mutation": True,
+                    "requires_confirmation": False,
+                    "diff": "\n\n".join(diff_blocks) if diff_blocks else "",
+                },
             )
+            result = _attach_projection_warnings(result, results)
+            return _attach_next(result, paths_out)
         except Exception as e:
             return ToolResult.fail(
                 display=f"apply_patch failed: {e}\n建议: 校验 diff；或改用 str_replace。"

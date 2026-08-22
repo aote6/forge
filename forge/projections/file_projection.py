@@ -357,6 +357,9 @@ class FileProjection(Projection):
                     deleted.append(path)
 
             # 磁盘已实际同步到 receipt.version：现在才推进 disk_synced_version。
+            # mark_disk_synced 失败不得静默：磁盘已写但同步水位未推进，下次 detect
+            # 会误判为分叉。success 保持 True（文件确实写成功），但告警必须可观测。
+            sync_warning = ""
             if self.sync_state is not None:
                 try:
                     self.sync_state.mark_disk_synced(
@@ -365,14 +368,20 @@ class FileProjection(Projection):
                         deleted_paths=deleted,
                         source=getattr(receipt, "source", "forge_tool"),
                     )
-                except Exception:
+                except Exception as e:
                     import sys
                     print(
-                        f"[sync] mark_disk_synced failed after write (version={receipt.version})",
+                        f"[sync] mark_disk_synced failed after write (version={receipt.version}): {e}",
                         file=sys.stderr,
                     )
+                    sync_warning = (
+                        f"mark_disk_synced failed after write (version={receipt.version}): {e}; "
+                        f"disk_synced_version 未推进，请运行 forge_sync 重新对账"
+                    )
 
-            return ProjectionResult(name=self.name, success=True)
+            return ProjectionResult(
+                name=self.name, success=True, warning=sync_warning
+            )
         except Exception as e:
             # _rollback_applied 在 forget_paths 失败时会再抛；必须继续返回
             # ProjectionResult，不能让异常逃出 apply()。
