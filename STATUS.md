@@ -224,3 +224,27 @@ Checkpoint 拆成两套水位，避免"消费进度"和"磁盘真实同步进度
 ### 后续
 - 做 P1-4（验证闭环做硬）时补上真正的端到端测试
 - 测试应通过 `tools["str_replace"](...)` / `tools["write_file"](...)` 入口，注入副作用失败，断言 success=True + payload.side_effect_warnings + display 含 SIDE_EFFECT_WARN
+
+## P0-4 全部五批完成（2026-08-22）
+
+### 修复内容
+- 第 1 批：FileProjection.apply 读原文件/备份失败 → 硬失败，不写盘不删除
+- 第 2 批：forget_paths 失败 raise；ensure_identity 失败中止启动；path_map 重建失败标记 degraded
+- 第 3 批：工具成功后副作用失败（record_tx/memory/cache/session_summary）→ stderr + payload.side_effect_warnings，success 保持
+- 第 4 批：ProjectionResult 加 warning 字段；mark_disk_synced 失败可观测，success 保持
+- 第 5 批：git_utils 真实故障抛 GitError；sync_layer prepare 失败不伪装"无冲突"；local_tools 单文件失败可观测；prepare 读失败不退化
+
+### 测试
+- 全量 pytest：237 passed，10 skipped（veritasd 二进制缺失，环境问题）
+
+### commit
+- batch1: afb8691
+- batch2: 98bac4f
+- batch3: 1a16e96
+- batch4: ba4aab2
+- batch5: b4dafa7
+
+### 遗留
+- 第 3 批测试质量差（4/5 安慰剂），记录在上方，P1-4 时补端到端
+- 其余裸 except 非关键路径未清（P3-1）
+- run_legacy/confirm_fn 废弃链未删（记录在上方）
