@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Forge 一键安装 / 环境检查
+# 阶段 1 文案：Veritas 非安装失败条件；无 Veritas = 只读工作形态仍可安装启动。
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
@@ -19,7 +20,7 @@ python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)
 }
 echo "OK python $PYVER"
 
-# veritasd
+# veritasd（可选：仅进入可变更工作形态需要）
 VERITASD=""
 for cand in \
   "$HOME/veritas_kernel/target/release/veritasd" \
@@ -34,18 +35,18 @@ do
 done
 
 if [ -z "$VERITASD" ]; then
-  echo "WARN: veritasd binary not found"
+  echo "INFO: veritasd not found — Forge can still install and run in read-only form."
+  echo "  Read-only: view / analyze / plan. Create / modify / delete requires Veritas."
+  echo "  To enable changeable form later:"
   if [ -d "$HOME/veritas_kernel" ]; then
-    echo "  Found source at ~/veritas_kernel — build with:"
     echo "    cd ~/veritas_kernel && cargo build --release"
   elif [ -d "$HOME/veritas" ]; then
-    echo "  Found source at ~/veritas — build with:"
     echo "    cd ~/veritas && cargo build --release"
   else
-    echo "  Clone/build Veritas (https://github.com/aote6/veritas) then re-run."
+    echo "    install veritasd (see https://github.com/aote6/veritas), then restart Forge"
   fi
 else
-  echo "OK veritasd: $VERITASD"
+  echo "OK veritasd: $VERITASD (changeable form available when daemon is running)"
 fi
 
 # deps (stdlib-heavy; pytest for tests)
@@ -53,7 +54,7 @@ python3 -m pip install -q pytest 2>/dev/null || true
 
 echo "==> running tests"
 python3 -m pytest -q || {
-  echo "WARN: some tests failed (veritasd offline may cause skips)"
+  echo "WARN: some tests failed (veritasd offline may skip or fail write-path tests; install still OK)"
 }
 
 # convenience launcher
@@ -66,4 +67,7 @@ LAUNCH
 chmod +x "$BIN/forge" "$ROOT/dp.py" 2>/dev/null || true
 echo "OK launcher: $BIN/forge"
 echo "Add to PATH: export PATH=\"$BIN:\$PATH\""
-echo "Done."
+echo ""
+echo "Done. Next: set an AI key (e.g. DEEPSEEK_API_KEY), then: python3 dp.py"
+echo "  Without veritasd → read-only work form"
+echo "  With veritasd online → changeable work form (writes via Veritas transactions)"
