@@ -21,9 +21,9 @@ Forge 必须接入一个可用的 AI 才能进入运行状态。
 
 Veritas 是可选连接的下层机器。
 
-- 不连接 Veritas，Forge 仍然是完整且可运行的 Forge
-- 连接 Veritas 后，Forge 额外获得 Veritas 的能力与规则
-- Veritas 不是 Forge 启动或正常工作的前提
+- 不连接 Veritas，Forge 仍可运行，处于只读工作形态
+- 连接 Veritas 后，Forge 进入可变更工作形态
+- Veritas 不是 Forge 的启动条件；它是进入可变更工作形态的条件
 
 ## 三、最小启动路径
 
