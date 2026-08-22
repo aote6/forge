@@ -57,13 +57,22 @@ class WorldRuntime:
             return
         if not hasattr(self, "_path_map"):
             self._path_map = ObjectPathMap()
+        # 重建是 best-effort：单条 delta 失败不应丢掉其余历史映射，
+        # 但必须可观测，不能假装 path map 与 World 完全一致。
+        self._path_map_degraded = False
         for receipt in receipts:
             delta = getattr(receipt, "delta", None)
             if delta is not None:
                 try:
                     self._path_map.update_from_delta(delta)
-                except Exception:
-                    pass
+                except Exception as e:
+                    import sys
+                    print(
+                        f"[world] path_map update_from_delta failed during rebuild "
+                        f"(receipt version={getattr(receipt, 'version', '?')}): {e}",
+                        file=sys.stderr,
+                    )
+                    self._path_map_degraded = True
 
     @property
     def adapter(self) -> WorldAdapter:

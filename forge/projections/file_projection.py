@@ -374,7 +374,20 @@ class FileProjection(Projection):
 
             return ProjectionResult(name=self.name, success=True)
         except Exception as e:
-            uncertain = self._rollback_applied(applied)
+            # _rollback_applied 在 forget_paths 失败时会再抛；必须继续返回
+            # ProjectionResult，不能让异常逃出 apply()。
+            try:
+                uncertain = self._rollback_applied(applied)
+            except Exception as rollback_err:
+                return ProjectionResult(
+                    name=self.name,
+                    success=False,
+                    reason=(
+                        f"{e}; rollback/forget_paths also failed: {rollback_err}"
+                    ),
+                    retryable=True,
+                    uncertain_paths=list(applied),
+                )
             return ProjectionResult(
                 name=self.name,
                 success=False,
@@ -393,6 +406,10 @@ class FileProjection(Projection):
 
         回滚失败的路径会从 sync_state.last_known_file_hashes 中移除，
         避免下次 detect 把不确定内容当成已知基线。
+
+        若 forget_paths 失败，不得静默：不确定路径仍留在 known hashes 会导致
+        下次 detect 把坏内容当基线。抛出 RuntimeError，由 apply() 统一收成
+        ProjectionResult(success=False)，并保留 uncertain 信息。
         """
         uncertain: list[str] = []
         for p in applied:
@@ -406,8 +423,16 @@ class FileProjection(Projection):
         if uncertain and self.sync_state is not None:
             try:
                 self.sync_state.forget_paths(uncertain)
-            except Exception:
-                pass
+            except Exception as e:
+                import sys
+                print(
+                    f"[projection] forget_paths failed for uncertain={uncertain}: {e}",
+                    file=sys.stderr,
+                )
+                raise RuntimeError(
+                    f"forget_paths failed; uncertain paths may remain in sync baseline: "
+                    f"{uncertain}: {e}"
+                ) from e
         return uncertain
 
     def _path_for_object(

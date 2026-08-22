@@ -314,10 +314,13 @@ class Runtime:
         self.workspace = workspace
         self.memory = memory
         self.world = WorldRuntime(project_root=workspace.project_root)
+        # Identity 是 mutation / session 的前置条件；失败则 Runtime 不得以正常状态启动。
         try:
             self.world.ensure_identity()
-        except Exception:
-            pass
+        except Exception as e:
+            raise RuntimeError(
+                f"Forge Runtime 启动失败：无法建立 World identity: {e}"
+            ) from e
 
         from forge.sync.state import SyncState
         from forge.sync.sync_layer import SyncLayer
