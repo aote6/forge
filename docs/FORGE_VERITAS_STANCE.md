@@ -11,45 +11,77 @@
 
 ## 一、Veritas 不是 Forge 的启动条件
 
-Forge 接入可用 AI 后即可进入正常工作状态。
+Forge 接入可用 AI 后即可进入可工作状态。
 
-没有 Veritas 不意味着 Forge 功能被降级。
+Veritas 不参与 Forge 的启动。
 
-无 Veritas 时，Forge 处于正常独立工作形态。
+## 二、Forge 有两种正常工作形态
 
-## 二、连接 Veritas 是用户主动选择
+### 无 Veritas：只读工作形态
 
-Forge 不要求用户安装、启动或连接 Veritas。
+Forge 可以：
 
-用户需要时主动连接即可。
+- 查看
+- 分析
+- 交互
+- 规划
 
-连接行为不属于 Forge 的最小启动路径。
+但不能进行写操作：
 
-## 三、连接 Veritas 后，Forge 身份不变
+- 不能创建
+- 不能修改
+- 不能删除
 
-连接 Veritas 后，Forge 可以使用 Veritas 提供的机器能力，
-并遵循 Veritas 的运行规则。
+无 Veritas 不是残缺状态，而是 Forge 的只读工作形态。
 
-但 Forge 仍然是 Forge，Veritas 仍然是独立机器。
+### 有 Veritas：可变更工作形态
 
-这是工作环境的变化，不是 Forge 身份的变化。
+Forge 在只读能力之外，
+获得完整的工程变更能力。
 
-## 四、两种正常工作形态
+写操作必须通过 Veritas 事务，
+形成可信变更闭环。
 
-Forge
+## 三、Veritas 的产品定位
+
+Veritas 不是 Forge 的启动依赖。
+
+Veritas 是 Forge 获得可信变更能力的机器。
+
+用户第一次打开 Forge 时：
+
+- 可以读
+- 可以看
+- 可以分析
+- 可以讨论
+
+用户需要让 Forge 真正修改东西时：
+
+连接 Veritas。
+
+连接后，Forge 才拥有改变世界的能力。
+
+## 四、两种形态关系
+
+Forge + AI
 │
 ├── 无 Veritas
-│   └── 正常工作
+│   ├── 查看 / 分析 / 交互 / 规划
+│   └── 不可修改
 │
-└── 连接 Veritas
-    ├── 正常工作
-    ├── 使用机器能力
-    └── 遵循机器规则
+└── 有 Veritas
+    ├── 查看 / 分析 / 交互 / 规划
+    ├── 创建 / 修改 / 删除
+    └── Veritas Transaction → Commit
 
 不使用以下措辞描述无 Veritas 状态：
 
 - 降级模式
 - fallback
 - reduced mode
+- 残缺品
 
-无 Veritas 是正常形态之一，不是残缺状态。
+无 Veritas 是只读工作形态。
+有 Veritas 是可变更工作形态。
+
+两者都是 Forge 的正常形态。
