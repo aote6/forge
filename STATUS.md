@@ -995,3 +995,20 @@ payload 带 `direct_disk=True / world_recorded=False`。World 可达时行为逐
 3. `forge_sync` 清账前多一次 `detect()` 预检（World 往返），量级极小（forge_sync 属
    低频入口），未加缓存。
 4. 未 commit、未 push（按本轮要求）。
+
+## 遗留债：except Exception 改具体异常类型（暂缓）
+
+### 状态
+P3-1 的"消除完全静默"目标已完成（29 处）。但原始清单还要求"改成具体异常 + 日志"，目前只做了"加日志"，大部分 `except Exception` 仍是宽泛捕获。
+
+### 剩余工作
+- 约 100+ 处宽泛 `except Exception` 可改为具体异常类型（如 `except OSError`、`except json.JSONDecodeError`）
+- 需要逐处读上下文判断该用哪个具体异常
+- 预计 3~5 轮才能完成
+
+### 收益评估
+- 生产行为不变，仅提高代码可读性和维护性
+- 收益低于 P3-2（拆 local_tools）和 P3-6（429 重试）
+
+### 决定
+暂缓，等 P3 其他项完成后再单独处理。
