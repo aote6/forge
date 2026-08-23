@@ -385,14 +385,14 @@ veritasd 不可用时体验断崖：`Runtime._guard_external_change` 对所有 m
 - 全量：**327 passed, 10 skipped**
 
 ### 已知边界 / 剩余 P2
-- **P2-2 启动期降级**：`Runtime.__init__` 里 `world.ensure_identity()` 失败仍然 raise
+- **P2-1a 启动期降级**：`Runtime.__init__` 里 `world.ensure_identity()` 失败仍然 raise
   （由 `tests/test_p0_batch2_consistency.py::test_ensure_identity_failure_aborts_runtime_init`
   锁定）。所以本轮的 direct_disk 覆盖的是"会话中途 veritasd 掉线"，
   不覆盖"veritasd 从一开始就起不来"。要做冷启动降级需要单独一轮并改那条既有契约测试。
-- **P2-3 其余文件 mutation 的直写**：`create_file` / `modify_file` / `apply_patch` /
+- **P2-1b 其余文件 mutation 的直写**：`create_file` / `modify_file` / `apply_patch` /
   `edit_files_batch` / `delete_file` 目前在 World 不可达时仍硬 STOP。
   write_file 已能覆盖创建与整体覆写，故未纳入本轮最小范围。
-- **P2-4 复线对账**：direct_disk 写入不产生 receipt，恢复 veritasd 后需要 `forge_sync`
+- **P2-1c 复线对账**：direct_disk 写入不产生 receipt，恢复 veritasd 后需要 `forge_sync`
   把磁盘变更 FAST_FORWARD 回 World；目前只在 display 里提示，没有自动提醒/记账。
 - 每次 str_replace/write_file 会多一次 `get_version()` 探测往返（与 guard 的探测重复）。
   量级很小，若成为热点再加进程内短 TTL 缓存。
