@@ -1,5 +1,40 @@
 # Forge 状态
 
+## P3-2 + P3-3：local_tools 拆模块 + get_call_chain 优化（2026-08-23）
+
+只做这两项，不做 P3-4/5/6，不推远程，未 commit。
+
+### P3-2：local_tools.py 拆模块（1526 → 48 行）
+- `forge/tools/local_tools.py` 从 1526 行拆成 8 个文件，工具函数体一字不改：
+  - `_common.py`（37 行）：`LOG_PATH` / `MAX_OUTPUT_CHARS` / `_log` / `_truncate` / `_truncate_head`
+  - `read_tools.py`（494 行）：read_file / read_function / read_files / read_file_with_lines / preview_line_mutation / get_symbol_line_range / extract_code_skeleton / summarize_file / get_repo_map / list_files / get_context_budget
+  - `search_tools.py`（322 行）：search_code / glob_files / find_symbol_definition / get_call_chain / rebuild_symbol_index / search_history / inspect_last_intent
+  - `git_tools.py`（154 行）：git_diff / git_log / git_status_enhanced / get_diff_summary / read_git_version
+  - `test_tools.py`（260 行）：run_test_structured / run_type_check / run_single_test / run_diagnostics / list_tests
+  - `world_tools.py`（120 行）：world_info / list_world_objects / get_world_object / list_world_links / resolve_path_object
+  - `meta_tools.py`（264 行）：todo_write / todo_list / web_fetch / project_memory / session_changes / run_command / post_toot / delete_toot
+- `local_tools.py` 保留 `make_local_tools` 组装入口，再导出 `_log` / `_truncate` / `MAX_OUTPUT_CHARS` 等以保持 `test_truncate_keeps_tail` 兼容。
+- 各子模块的 factory（`make_read_tools(workspace)` 等）仍以闭包方式定义工具，`workspace` / `world_runtime` / `_todo_items` 通过闭包捕获，函数体不变。
+- 返回 key 集合不变（41 个），schema 不变。
+
+### P3-3：get_call_chain 优化
+- 原实现：两遍全仓 AST 遍历（第一遍找定义+收集被调用者，第二遍找调用者），每次调用都重新 parse 每个 .py。
+- 优化后：
+  1. 定义定位改走 `forge.core.symbol_index.lookup_symbol`（只认 `kind in ("function","class")`，与原实现只匹配 ClassDef/FunctionDef/AsyncFunctionDef 对齐，避免误报变量），命中则跳过第一遍全仓遍历。
+  2. 被调用者只解析定义所在文件（去重）。
+  3. 调用者仍需一遍全仓遍历（符号索引不存调用点），但用模块级 `_AST_CACHE`（键含 mtime_ns+size，上限 256，超限整体清空）缓存已解析 AST，跨调用复用。
+  4. 索引未命中时回退到原全仓找定义逻辑（复用已缓存 AST，几乎零额外成本）。
+- 返回 display / payload 格式完全不变。
+- 性能（300 个 .py 合成项目，索引已预热）：原实现 ≈1966ms → 优化后冷 ≈1584ms、热（AST 缓存命中）≈1447ms，稳态约 26% 提升；定义定位从全仓遍历降为索引 O(1) 查询。
+
+### 验证
+- 全量 pytest：**395 passed，10 skipped**（与基线一致，无回归）。
+
+### 真实遗留问题
+1. `get_call_chain` 的「调用者」仍需一遍全仓遍历——`symbol_index` 只索引符号定义、不索引调用点（call sites）。若要进一步提速，需扩展 `symbol_index` 存反向调用图（每个名字→调用它的位置），属更大改动，未在本轮做。
+2. `_AST_CACHE` 是进程内内存缓存，不落盘；长会话内多次调用同一/不同符号可复用，但新进程首次调用仍要冷启动一次全仓 parse（索引本身已落盘 `.forge/symbols.json`，可省「找定义」一遍）。
+3. `make_local_tools` 的 `safe_mode` 参数自始未被任何工具使用（拆分前即是如此），本轮未动，仅保留签名兼容。
+
 ## runtime 结构层清理第 1 轮（2026-08-23）
 
 只做 3 项，不碰 P3，不推远程，未 commit。
