@@ -342,3 +342,10 @@ Checkpoint 拆成两套水位，避免"消费进度"和"磁盘真实同步进度
 剩余未做：
 - P1-7：子代理结论结构化
 - P1-8：工具面与实现面对齐
+
+## P1 遗留补充（2026-08-23，P1-8 收尾时发现）
+
+### 未记录问题（补记）
+1. `post_toot` 有副作用（外部发帖）但分类在 READ_ONLY_TOOL_DECLARATIONS，规划阶段也暴露；`delete_toot` 却在 MUTATION。分类不一致，后续可修
+2. `TOOL_DECLARATIONS = list(READ_ONLY_TOOL_DECLARATIONS)` 命名误导——实际只含只读面，且未被生产代码使用。死常量/易混淆，后续清理
+3. `subagent.py` 顶部 `from typing import Any, Callable` 为历史遗留未使用导入，后续清理
