@@ -543,3 +543,69 @@ mutation 或不知道下一步该做什么。
   测试通过直接调用 `_read_loop` 注入宽度。若后续想让公开 API 可直接测窄屏，可
   加一个 `width=None` 透传参数（属最小 API 补充，非算法变更）。
 - 未推远程（按本轮要求）。
+
+## 测试质量统一修复 Batch 1（2026-08-23）
+
+纯测试修复，不碰生产代码。处理 3 项记录在案的测试质量问题（安慰剂 / weak 断言）。
+
+### 处理的 3 项
+
+1. **测试质量-1（Batch3 4/5 安慰剂，`tests/test_p1_batch3_side_effects.py`）**
+   - 原问题：4 个测试只手动构造 `ToolResult` + 手动调 `_note_side_effect_failure`，
+     `test_sync_path_map_failure_does_not_raise` 甚至根本没调 `_sync_path_map`（手动
+     catch mock 异常数 `len(errors)==2`）。删掉生产里 `_note_side_effect_failure` /
+     path_map 告警调用点，这些测试仍全绿。
+   - 强契约：走 `tools["write_file"]` / `tools["str_replace"]` 入口（direct_disk
+     路径，复用 `test_p2_direct_disk.py` 的 offline world 模式），patch
+     `record_tx` / `record_session_change` 抛异常，断言 `success is True` +
+     `payload.side_effect_warnings` 含对应标签 + `display` 含 `SIDE_EFFECT_WARN:` +
+     磁盘主操作本身确实完成。`test_sync_path_map_failure_does_not_raise` 改为
+     World 路径下两条 path_map 更新路径都抛异常 → 工具仍成功 + 告警可观测。
+   - 已验证：把 `_note_side_effect_failure` 替换成 no-op 后，新断言立即失败。
+
+2. **测试质量-2（P1-2 weak 断言，`tests/test_p1_compress.py`）**
+   - 原问题：`_compress_messages` 有 `len(messages) < 24` 的硬门；4 个 weak 测试里
+     3 个消息数 < 24，根本没触发压缩（`assert len(out) >= 1`、`"NEAR_MISS" in joined`、
+     `"tx=99" in joined` 都是天然通过）。
+   - 强契约：4 个测试全部改到 ≥24 消息、> keep_recent_tools，真正触发压缩后断言
+     精确契约 —— goal 经 `[Working Set]` system 消息逐字保留（且确有其它消息被压）；
+     两条 NEAR_MISS 落到 recent 尾巴之外仍逐字保留（非被摘要）；无关历史精确
+     26 压 / 4 留（recent 逐字保留、其余 `[compressed` 前缀）；confirmation 型
+     write_file 摘要保留 path + tx。
+   - 已验证：把 `_is_near_miss_or_fail_content` 改成恒 False 后，NEAR_MISS 逐字
+     保留断言立即失败。
+
+3. **测试质量-3（TUI 两弱断言，`tests/test_tui_input.py`）**
+   - 原问题：`test_long_wrapping_line_does_not_duplicate` /
+     `test_narrow_termux_width_no_duplicate` 用 `read_multiline_input(...)` 且不注入
+     width，`_render` 一直用真实终端宽度 80，MiniVT 的 10/64 从未驱动折行；`count(text)==1`
+     在屏幕重复 3 次折叠后仍侥幸通过。
+   - 强契约：改用 `_run_input`（注入 `width=vt.width`）+ 精确等值
+     `"".join(vt.screen()) == prompt + buffer` + 光标位置断言（证明确实走了窄屏折行）。
+
+### 是否修改生产代码
+
+全部为「否」——`forge/` 下所有实现文件未动，仅改 `tests/` 下 3 个文件。
+
+### 测试数量
+
+- 修改（非新增/删除）：3 个文件共 39 个测试，函数数量与 HEAD 完全一致（5 + 6 + 28）。
+- 无新增、无删除测试函数；只把安慰剂/weak 断言重写为强契约。
+
+### 专项与全量结果
+
+- 专项：`test_p1_batch3_side_effects.py`（5 passed）、`test_p1_compress.py`（6 passed）、
+  `test_tui_input.py`（28 passed）。
+- 全量：**366 passed，10 skipped**（与 HEAD 基线一致；本轮不新增测试数）。
+
+### 是否发现新的真实 bug
+
+未发现。生产实现正确，本轮只补测试锁死既有行为。（注：任务给出的基线 376 与本仓
+实际 HEAD 基线不符；实测 HEAD 全量为 366 passed / 10 skipped，与 P2-4 记录一致。）
+
+### 遗留（不在本轮范围）
+
+- `test_compress_does_not_destroy_working_set_message`（22 条消息 < 24）与
+  `test_compress_keeps_edited_file_paths_visible`（25 条，仅 substring 断言）仍偏弱，
+  但不在此次列出的 4 项 weak 清单内，未动。
+- 未 commit、未 push（按本轮要求）。

@@ -223,11 +223,12 @@ def test_long_wrapping_line_does_not_duplicate():
     """回归：打一行含中文的长字触发折行时，屏幕不应冒出重复行。"""
     vt = MiniVT(10)
     text = "你好世界，测试"  # 7 个宽字符 = 14 列，必然折行
-    read_multiline_input(
-        "> ", key_source=feed(text, "\r"), write=vt.write
-    )
-    full = "".join(vt.screen())
-    assert full.count(text) == 1, f"重绘后屏幕出现重复：{vt.screen()!r}"
+    out = _run_input(vt, "> ", text, "\r")
+    assert out == text
+    # 精确等值：重绘后最终屏幕 == prompt + buffer，无重复、无残留、无截断
+    assert "".join(vt.screen()) == "> " + text
+    # 确认确实走了窄屏折行路径（宽度 10 下必然折行，光标落在内容末尾）
+    assert (vt.cy, vt.cx) == _cursor_pos("> " + text, 10)
 
 
 def test_display_lines_wide_chars():
@@ -238,14 +239,15 @@ def test_display_lines_wide_chars():
 
 
 def test_narrow_termux_width_no_duplicate():
-    """模拟 Termux COLUMNS=64 下连续输入中文，不应重复。"""
+    """模拟 Termux COLUMNS=64 下连续输入中文，不应重复、不截断。"""
     vt = MiniVT(64)
     text = "这是一段在华为P20 Termux上测试的中文输入内容，用来验证折行重绘"
-    read_multiline_input(
-        "\n💬 > ", key_source=feed(text, "\r"), write=vt.write
-    )
-    full = "".join(vt.screen())
-    assert full.count(text) == 1, f"出现重复：{vt.screen()!r}"
+    out = _run_input(vt, "💬 > ", text, "\r")
+    assert out == text
+    # 精确等值：窄屏折行重绘后最终屏幕 == prompt + buffer，无重复/残留/截断
+    assert "".join(vt.screen()) == "💬 > " + text
+    # 确认确实走了 64 列折行路径（内容宽 > 64，光标落在内容末尾）
+    assert (vt.cy, vt.cx) == _cursor_pos("💬 > " + text, 64)
 
 
 def _cursor_pos(text, width):
