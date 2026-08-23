@@ -74,7 +74,9 @@ class FileProjection(Projection):
             if sid == 0:
                 try:
                     return self._resolve(bytes.fromhex(val).decode("utf-8"))
-                except Exception:
+                except Exception as e:
+                    import sys
+                    print(f"[projection] _get_path decode failed: {e}", file=sys.stderr)
                     return self._resolve(val)
         return None
 
@@ -86,7 +88,9 @@ class FileProjection(Projection):
             if sid == 1:
                 try:
                     return bytes.fromhex(val).decode("utf-8")
-                except Exception:
+                except Exception as e:
+                    import sys
+                    print(f"[projection] _get_content decode failed: {e}", file=sys.stderr)
                     return val
         return None
 
@@ -99,7 +103,9 @@ class FileProjection(Projection):
                 try:
                     raw = bytes.fromhex(val).decode("utf-8") if isinstance(w, dict) else val
                     return json.loads(raw)
-                except Exception:
+                except Exception as e:
+                    import sys
+                    print(f"[projection] _get_operations decode failed: {e}", file=sys.stderr)
                     return None
         return None
 

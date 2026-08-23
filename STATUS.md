@@ -84,6 +84,41 @@
 - 剩余 2 处：`checkpoint.py:51` / `sync/state.py:65`（`.broken` 重命名失败，主 load 失败已打日志，属冗余兜底，留待后续）
 - 全量测试：395 passed，10 skipped
 
+## P3-1 第二批：静默默认值清理（2026-08-23）
+
+只清第二批 12 处 `return ""` / `return None` / `continue`（无日志），不碰 P3-2~P3-6，不推远程，未 commit。
+
+### 清理的 12 处（`except Exception` 静默默认值 → 加 stderr 日志）
+1. `forge/runtime.py:563` `_load_session_summary` — `return ""`
+2. `forge/runtime.py:618` `_load_task_state` — `return None`（顺带把 docstring「静默」措辞改为「损坏则记日志」）
+3. `forge/runtime.py:900` `_todo_nudge_from_tools` — `return ""`
+4. `forge/runtime.py:1344` `_sync_system_hint` — `return ""`
+5. `forge/sync/sync_layer.py:144` `_path_from_memory_write` — 内层 `return None`（顺带顶层补 `import sys`）
+6. `forge/sync/sync_layer.py:402` `_build_diff_hint` — `return ""`
+7. `forge/adapters/mastodon.py:164` `maybe_toot_git_event` — `return None`
+8. `forge/projections/file_projection.py:77` `_get_path` — 解码失败 fallback `self._resolve(val)`
+9. `forge/projections/file_projection.py:89` `_get_content` — 解码失败 fallback `val`
+10. `forge/projections/file_projection.py:102` `_get_operations` — `return None`
+11. `forge/tools/session_changes.py:67` `pending_direct_disk` — `continue`
+12. `forge/tools/session_changes.py:145` `load_into_memory` — `continue`
+
+每处只加 `print(f"[模块] 操作名 failed: {e}", file=sys.stderr)`，保留原 return 默认值 / continue，不改控制流、不改返回语义。
+
+### 对上轮报告的 3 处纠正
+- `mastodon.py` 实际行号 164（报告写 163）。
+- `session_changes.py:96` 是 `out.append(line)` + `continue`（无法解析的行原样保留，有注释），非静默默认值，跳过。
+- `file_projection.py:77/89` 的 `except` 返回的是 fallback 值（`self._resolve(val)` / `val`）而非 `None`，但仍属「解码失败吞异常无日志」，一并加日志。
+
+### 结果
+- 静默默认值（`return ""/None/continue` 且无任何日志）：本批 12 → 0
+- 剩余非静默 `continue` 模式：`local_tools.py:81/539/561` 的 `skipped.append(f"{rel_path}: {e}")`（错误已记入 skipped 列表回显）；`session_changes.py:97` 的 `out.append(line)`（有意保留）
+- 全量测试：395 passed，10 skipped（无回归）
+
+### 真实遗留问题（其它类型静默默认值，属 P3-2~P3-6，未动）
+- `return False`（无日志）：`core/backup_manager.py:28`、`projections/git_projection.py:43`、`tools/direct_disk.py:52`、`sync/sync_layer.py:556`（`world_available`）
+- `return {}`（无日志）：`tools/project_memory.py:20`
+- 纯 `pass` 剩余 2 处（第一批遗留）：`checkpoint.py:51`、`sync/state.py:65`
+
 ## P0-1/P0-2 投影失败检查（已修复）
 - 根因：mutation 主路径在 `projections.project()` 后不检查 `success`，与
   `confirm_fn`（失败→ToolResult.fail）语义不一致；模型会把 disk=FAIL 当成功。

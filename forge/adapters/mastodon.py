@@ -161,5 +161,6 @@ def maybe_toot_git_event(cmd: str, ok: bool, cwd: str = ".") -> str | None:
         client = MastodonClient()
         data = client.post_status(text)
         return data.get("url") or data.get("uri")
-    except Exception:
+    except Exception as e:
+        print(f"[mastodon] 发嘟失败: {e}", file=sys.stderr)
         return None

@@ -29,6 +29,7 @@ detect() 变慢，应增加进程内 path 缓存或增量索引，不属于本�
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -141,7 +142,8 @@ def _path_from_memory_write(w) -> Optional[str]:
     except Exception:
         try:
             return str(val)
-        except Exception:
+        except Exception as e:
+            print(f"[sync] _path_from_memory_write fallback failed: {e}", file=sys.stderr)
             return None
 
 
@@ -399,7 +401,8 @@ class SyncLayer:
     def _build_diff_hint(self, divergent_paths: list[str]) -> str:
         try:
             return git_diff(self.project_root, divergent_paths or None)
-        except Exception:
+        except Exception as e:
+            print(f"[sync] _build_diff_hint failed: {e}", file=sys.stderr)
             return ""
 
     # ── resolution ─────────────────────────────────────────────

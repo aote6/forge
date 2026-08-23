@@ -560,7 +560,8 @@ def _load_session_summary(project_root: str) -> str:
         if path.is_file():
             data = json.loads(path.read_text(encoding="utf-8"))
             notes = notes or list(data.get("notes") or data.get("summaries") or [])
-    except Exception:
+    except Exception as e:
+        print(f"[forge] _load_session_summary failed: {e}", file=sys.stderr)
         return ""
     if not notes and not tasks:
         return ""
@@ -607,7 +608,7 @@ def _save_task_state(project_root: str, ws: "WorkingSet") -> None:
 
 
 def _load_task_state(project_root: str) -> dict | None:
-    """读 .forge/task_state.json；缺失/损坏/非对象静默返回 None（不阻塞启动）。"""
+    """读 .forge/task_state.json；缺失/非对象返回 None，损坏则记日志后返回 None（不阻塞启动）。"""
     from pathlib import Path as _P
     try:
         path = _P(project_root) / ".forge" / _TASK_STATE_FILENAME
@@ -615,7 +616,8 @@ def _load_task_state(project_root: str) -> dict | None:
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else None
-    except Exception:
+    except Exception as e:
+        print(f"[forge] _load_task_state failed: {e}", file=sys.stderr)
         return None
 
 
@@ -897,7 +899,8 @@ def _todo_nudge_from_tools(tools: dict) -> str:
             return ""
         lines = [f"- [{it.get('status')}] {it.get('content')}" for it in pending[:7]]
         return "\n[system reminder] 未完成 todo（以用户最新消息为准）:\n" + "\n".join(lines)
-    except Exception:
+    except Exception as e:
+        print(f"[forge] _todo_nudge_from_tools failed: {e}", file=sys.stderr)
         return ""
 
 
@@ -1341,7 +1344,8 @@ class Runtime:
         """
         try:
             report = self.sync_status()
-        except Exception:
+        except Exception as e:
+            print(f"[forge] _sync_system_hint failed: {e}", file=sys.stderr)
             return ""
         return _sync_status_system_hint(report)
 

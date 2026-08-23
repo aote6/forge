@@ -64,7 +64,8 @@ def pending_direct_disk(project_root: str) -> list[dict[str, Any]]:
                 continue
             try:
                 entry = json.loads(line)
-            except Exception:
+            except Exception as e:
+                print(f"[session_changes] pending_direct_disk parse failed: {e}", file=sys.stderr)
                 continue
             if entry.get("direct_disk"):
                 out.append(entry)
@@ -142,7 +143,8 @@ def load_into_memory(project_root: str) -> None:
                 continue
             try:
                 entries.append(json.loads(ln))
-            except Exception:
+            except Exception as e:
+                print(f"[session_changes] load parse failed: {e}", file=sys.stderr)
                 continue
         _LOG.clear()
         _LOG.extend(entries)
