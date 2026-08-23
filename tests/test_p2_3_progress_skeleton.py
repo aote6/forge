@@ -197,6 +197,14 @@ def _mutation_round(step: int) -> Message:
     )
 
 
+def _named_mutation_round(step: int, name: str) -> Message:
+    return Message(
+        role="assistant",
+        content=None,
+        tool_calls=[ToolCall(id=f"n{step}", name=name, arguments={})],
+    )
+
+
 def test_successful_mutation_triggers_checkpoint_next_round(tmp_path):
     """mutation 成功 → 下一轮模型上下文包含 [PROGRESS]（不必等到第 5 步）。"""
     ok = ToolResult.ok(
@@ -243,6 +251,32 @@ def test_failed_mutation_does_not_trigger_immediate_checkpoint(tmp_path):
     rt = _runtime(tmp_path, adapter, _ScriptedExecutor({"str_replace": bad}))
 
     rt._run_conversation("改 pkg/a.py", schemas=[])
+
+    assert _rounds_with(adapter, _PROGRESS) == []
+
+
+def test_forge_sync_success_does_not_trigger_checkpoint(tmp_path):
+    """forge_sync 成功是对账不是文件编辑，不应触发 [PROGRESS] checkpoint。"""
+    ok = ToolResult.ok(display="sync_status: IN_SYNC", payload={"mutation": True})
+    adapter = _RecordingAdapter(
+        [_named_mutation_round(0, "forge_sync"), _read_round(1), _read_round(2)]
+    )
+    rt = _runtime(tmp_path, adapter, _ScriptedExecutor({"forge_sync": ok}))
+
+    rt._run_conversation("对账", schemas=[])
+
+    assert _rounds_with(adapter, _PROGRESS) == []
+
+
+def test_undo_last_tx_success_does_not_trigger_checkpoint(tmp_path):
+    """undo_last_tx 成功是回滚不是文件编辑，不应触发 [PROGRESS] checkpoint。"""
+    ok = ToolResult.ok(display="RESULT: undone", payload={})
+    adapter = _RecordingAdapter(
+        [_named_mutation_round(0, "undo_last_tx"), _read_round(1), _read_round(2)]
+    )
+    rt = _runtime(tmp_path, adapter, _ScriptedExecutor({"undo_last_tx": ok}))
+
+    rt._run_conversation("撤销", schemas=[])
 
     assert _rounds_with(adapter, _PROGRESS) == []
 

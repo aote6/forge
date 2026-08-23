@@ -84,6 +84,13 @@ _VERIFY_GUARDED_MUTATIONS = {
     "delete_file",
 }
 
+# Mastodon 工具（post_toot / delete_toot）走环境变量 + HTTP，既不依赖 World
+# 也不写磁盘，外部变更守卫（World 可达性 / 磁盘变化）对它们无意义，直接放行。
+_MASTODON_TOOLS = {
+    "post_toot",
+    "delete_toot",
+}
+
 
 def _norm_path(p: str) -> str:
     """归一化相对路径：统一分隔符、去 ./、去尾部 /，便于比较。"""
@@ -1097,6 +1104,9 @@ class Runtime:
         # forge_sync 是对账入口本身，不得被外部变更守卫拦截（否则无法解决冲突）。
         if tool_name == "forge_sync":
             return None
+        # Mastodon 走环境变量 + HTTP，不依赖 World，也不写磁盘；豁免 World 可达性检查。
+        if tool_name in _MASTODON_TOOLS:
+            return None
         try:
             if self.sync_layer is not None:
                 if not self.sync_layer.world_available():
@@ -1412,9 +1422,10 @@ class Runtime:
                     )
                 except Exception as e:
                     print(f"[forge] WorkingSet update failed: {e}", file=sys.stderr)
-                # P2-3: 复用既有 mutation 成功判定（MUTATION_TOOL_NAMES + result.success），
-                # Working Set 刷新之后再排队 checkpoint；失败的 mutation 不触发、不入 done。
-                if tc.name in MUTATION_TOOL_NAMES and result.success:
+                # P2-3: 复用文件编辑成功判定（_EDIT_TOOLS + result.success），
+                # Working Set 刷新之后再排队 checkpoint；失败的编辑不触发、不入 done。
+                # 收窄：forge_sync / undo_last_tx 不是文件编辑，不再触发 checkpoint。
+                if tc.name in _EDIT_TOOLS and result.success:
                     mutation_pending = True
                 self.emit(
                     Event(

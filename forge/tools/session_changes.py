@@ -73,6 +73,39 @@ def pending_direct_disk(project_root: str) -> list[dict[str, Any]]:
     return out
 
 
+def clear_pending_direct_disk(project_root: str) -> None:
+    """forge_sync 把磁盘变更 FAST_FORWARD 回 World 后清账。
+
+    P2-1c 清账：只移除 direct_disk 标记（让 pending_direct_disk 不再把已对账文件
+    报为待对账），保留条目其余字段（path/tx/tool/summary），不动其它 session_changes。
+    无法解析的行原样保留，避免破坏日志文件。
+    """
+    path = Path(project_root) / ".forge" / "session_changes.jsonl"
+    if not path.is_file():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        out: list[str] = []
+        changed = False
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except Exception:
+                out.append(line)  # 无法解析的行原样保留
+                continue
+            if entry.get("direct_disk"):
+                entry.pop("direct_disk", None)
+                changed = True
+            out.append(json.dumps(entry, ensure_ascii=False))
+        if changed:
+            path.write_text("\n".join(out) + ("\n" if out else ""), encoding="utf-8")
+    except Exception as e:
+        print(f"[session_changes] clear_pending_direct_disk failed: {e}", file=sys.stderr)
+
+
 def format_list() -> str:
     if not _LOG:
         return "(本会话尚无文件修改)"

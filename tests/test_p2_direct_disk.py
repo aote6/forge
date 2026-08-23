@@ -328,6 +328,25 @@ def test_external_guard_allows_direct_disk_tools_when_world_offline():
         assert rt._guard_external_change(name) is None, name
 
 
+def test_external_guard_exempts_mastodon_tools_when_world_offline():
+    """Mastodon 走环境变量 + HTTP，不依赖 World；World 不可达时不得硬失败。"""
+    rt = _rt_offline()
+    for name in ("post_toot", "delete_toot"):
+        assert rt._guard_external_change(name) is None, name
+
+
+def test_external_guard_exempts_mastodon_tools_even_when_disk_changed():
+    """Mastodon 既不依赖 World 也不写磁盘，磁盘外部变化同样不应拦截。"""
+    rt = _rt_offline()
+    rt.sync_layer = SimpleNamespace(
+        world_available=lambda: True,
+        disk_change_detected=lambda: True,
+        external_change_detected=lambda: True,
+    )
+    for name in ("post_toot", "delete_toot"):
+        assert rt._guard_external_change(name) is None, name
+
+
 def test_external_guard_still_blocks_world_object_ops_when_offline():
     """World object 操作没有磁盘等价物 → 必须继续硬失败。"""
     rt = _rt_offline()
@@ -621,3 +640,100 @@ def test_forge_sync_appends_reconcile_hint(tmp_path):
     assert r.success is True
     assert "direct_disk 待对账" in (r.display or "")
     assert "a.py" in (r.display or "")
+
+
+def test_clear_pending_direct_disk_removes_only_direct_disk_marker(tmp_path):
+    """清账只移除 direct_disk 标记，保留条目其它字段与其它 session_changes。"""
+    from forge.tools.session_changes import clear_pending_direct_disk
+
+    sc.record(
+        "a.py", tool="write_file", tx_id="direct-1",
+        summary="write_file mode=direct_disk",
+        project_root=str(tmp_path), direct_disk=True,
+    )
+    sc.record(
+        "b.py", tool="str_replace", tx_id="tx-2",
+        summary="str_replace mode=overwrite",
+        project_root=str(tmp_path),
+    )
+
+    assert len(sc.pending_direct_disk(str(tmp_path))) == 1
+
+    clear_pending_direct_disk(str(tmp_path))
+
+    assert sc.pending_direct_disk(str(tmp_path)) == []
+    lines = (tmp_path / ".forge" / "session_changes.jsonl").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert len(lines) == 2
+    first = json.loads(lines[0])
+    second = json.loads(lines[1])
+    assert first["path"] == "a.py"
+    assert "direct_disk" not in first
+    assert second["path"] == "b.py"
+
+
+def test_forge_sync_clears_pending_direct_disk_after_disk_to_world(tmp_path):
+    """forge_sync 成功把磁盘 FAST_FORWARD 回 World 后清掉 direct_disk 待对账标记。"""
+    from forge.workspace import Workspace
+    from forge.tools import make_tools
+    from forge.sync.sync_layer import (
+        FAST_FORWARD_DISK_TO_WORLD,
+        IN_SYNC,
+        SyncReport,
+    )
+
+    sc.record("a.py", tool="write_file", tx_id="direct-1",
+             summary="mode=direct_disk", project_root=str(tmp_path), direct_disk=True)
+    assert len(sc.pending_direct_disk(str(tmp_path))) == 1
+
+    workspace = Workspace(project_root=str(tmp_path))
+    world = MagicMock()
+    projections = MagicMock()
+    sync_layer = MagicMock()
+    sync_layer.project_root = str(tmp_path)
+    sync_layer.detect.return_value = SyncReport(status=FAST_FORWARD_DISK_TO_WORLD)
+    sync_layer.sync.return_value = SyncReport(status=IN_SYNC)
+
+    tools, _, _ = make_tools(
+        workspace=workspace,
+        world_runtime=world,
+        projections=projections,
+        allow_mutation=True,
+        sync_layer=sync_layer,
+    )
+    r = tools["forge_sync"]()
+    assert r.success is True
+    assert sc.pending_direct_disk(str(tmp_path)) == []
+    # 清账后 display 不再把已对账文件列为待对账
+    assert "direct_disk 待对账" not in (r.display or "")
+
+
+def test_forge_sync_does_not_clear_pending_when_conflict(tmp_path):
+    """未完成对账（如 CONFLICT）时不得清掉 direct_disk 待对账标记。"""
+    from forge.workspace import Workspace
+    from forge.tools import make_tools
+    from forge.sync.sync_layer import CONFLICT, FAST_FORWARD_DISK_TO_WORLD, SyncReport
+
+    sc.record("a.py", tool="write_file", tx_id="direct-1",
+             summary="mode=direct_disk", project_root=str(tmp_path), direct_disk=True)
+    assert len(sc.pending_direct_disk(str(tmp_path))) == 1
+
+    workspace = Workspace(project_root=str(tmp_path))
+    world = MagicMock()
+    projections = MagicMock()
+    sync_layer = MagicMock()
+    sync_layer.project_root = str(tmp_path)
+    sync_layer.detect.return_value = SyncReport(status=FAST_FORWARD_DISK_TO_WORLD)
+    sync_layer.sync.return_value = SyncReport(status=CONFLICT)
+
+    tools, _, _ = make_tools(
+        workspace=workspace,
+        world_runtime=world,
+        projections=projections,
+        allow_mutation=True,
+        sync_layer=sync_layer,
+    )
+    r = tools["forge_sync"]()
+    assert r.success is False
+    assert len(sc.pending_direct_disk(str(tmp_path))) == 1

@@ -107,7 +107,7 @@ def make_tools(
                 return ToolResult.fail(display=f"取消失败: {e}")
 
     if sync_layer is not None:
-        from forge.sync.sync_layer import IN_SYNC
+        from forge.sync.sync_layer import FAST_FORWARD_DISK_TO_WORLD, IN_SYNC
 
         def forge_sync() -> ToolResult:
             """显式同步：IN_SYNC 无操作 / FAST_FORWARD 安全推进 / CONFLICT 停止并出 diff。
@@ -115,10 +115,22 @@ def make_tools(
             报告同时承载同步状态；只读状态查询可用 Runtime.sync_status() 或 CLI `status`。
             """
             try:
+                # P2-1c 清账：先看是否正处在 Disk → World 分叉；若 forge_sync 成功把它
+                # FAST_FORWARD 回 World，则清掉对应的 direct_disk 待对账标记。
+                try:
+                    was_disk_to_world = (
+                        sync_layer.detect().status == FAST_FORWARD_DISK_TO_WORLD
+                    )
+                except Exception:
+                    was_disk_to_world = False
                 report = sync_layer.sync()
                 ok = report.status == IN_SYNC
                 payload = {"mutation": True, **report.to_dict()}
                 display = report.format()
+                if ok and was_disk_to_world:
+                    from forge.tools.session_changes import clear_pending_direct_disk
+
+                    clear_pending_direct_disk(sync_layer.project_root)
                 # P2-1c: 列出 direct_disk 待对账文件，提醒用户这些磁盘变更已被/需被对账。
                 # 只提示，不在这里额外做任何 fast-forward（对账方向仍由 report 决定）。
                 from forge.tools.session_changes import pending_direct_disk

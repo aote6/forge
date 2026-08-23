@@ -800,3 +800,63 @@ payload 带 `direct_disk=True / world_recorded=False`。World 可达时行为逐
    的既有 undo 行为一致，可接受。
 3. direct_disk 探测仍每次 `get_version()` 往返（与 guard 探测重复），量级小，未加缓存。
 4. 未 commit、未 push（按本轮要求）。
+
+## 剩余小修第一轮：Mastodon 豁免 / direct_disk 清账 / checkpoint 收窄（2026-08-23）
+
+处理 3 项独立小修，均为前几轮 STATUS 里记录在案的真实遗留问题。基线实测
+**385 passed / 10 skipped**（同 P2-1 补全记录）。
+
+### 1. Mastodon 工具豁免 World 可达性 guard
+
+- **原问题**：`post_toot` / `delete_toot` 进入 `MUTATION_TOOL_NAMES` 后，会命中
+  `_guard_external_change` 的 mutation 分支。World 不可达时该 guard 对非
+  direct_disk 的 mutation 返回硬失败，但 Mastodon 走环境变量 + HTTP，不依赖 World，
+  也不写磁盘，「World 不可达」对它们无关紧要。（见「write_file 覆盖提示 + P1 遗留」
+  一节真实遗留问题 1。）
+- **修复方式**：`forge/runtime.py` 新增模块级 `_MASTODON_TOOLS = {"post_toot",
+  "delete_toot"}`；`_guard_external_change` 在 forge_sync 豁免之后加一条 Mastodon
+  豁免（早于 `sync_layer` 相关检查）。既豁免 World 可达性，也豁免磁盘变化——
+  因为这两个工具根本不碰 World 或磁盘。
+- **测试变化**：`tests/test_p2_direct_disk.py` 新增 2 用例
+  （World 离线时豁免 / 磁盘变化时也豁免）。
+
+### 2. pending_direct_disk 标记清账
+
+- **原问题**：direct_disk 的 `session_changes` 条目永久保留，每次启动 / forge_sync
+  都重复提示已对账过的文件。（见 P2-1 补全一节遗留 1。）
+- **修复方式**：`forge/tools/session_changes.py` 新增 `clear_pending_direct_disk(
+  project_root)`——重写 `.forge/session_changes.jsonl`，只移除 `direct_disk` 标记，
+  保留条目其它字段（path/tx/tool/summary），不动其它 session_changes；无法解析的行
+  原样保留。`forge/tools/__init__.py` 的 `forge_sync` 在 sync 前预检
+  `detect().status == FAST_FORWARD_DISK_TO_WORLD`，sync 后 `status == IN_SYNC` 时
+  调用清账（只清标记，不加新状态类型）。未完成对账（CONFLICT 等）不清。
+- **测试变化**：`tests/test_p2_direct_disk.py` 新增 3 用例（只清 direct_disk 标记 /
+  forge_sync 成功后清账且 display 不再列待对账 / CONFLICT 时不清）。
+
+### 3. checkpoint 判定集合收窄
+
+- **原问题**：`forge_sync` / `undo_last_tx` 也在 `MUTATION_TOOL_NAMES` 里，成功后
+  会触发一次 `[PROGRESS]` checkpoint，但它们不是文件编辑，触发 checkpoint 无意义。
+  （见 P2-3 一节真实遗留问题 1。）
+- **修复方式**：`_run_conversation` 里 `mutation_pending` 的触发判定从
+  `tc.name in MUTATION_TOOL_NAMES` 改为 `tc.name in _EDIT_TOOLS`（复用既有的文件编辑
+  工具集合）。`forge_sync` / `undo_last_tx` 不再触发 checkpoint。
+- **测试变化**：`tests/test_p2_3_progress_skeleton.py` 新增 2 用例（forge_sync 成功
+  不触发 / undo_last_tx 成功不触发）。
+
+### 验证
+
+- 专项：`test_p2_direct_disk.py` + `test_p2_3_progress_skeleton.py` = 65 passed。
+- 全量：**392 passed，10 skipped**（基线 385 + 新增 7，无回归）。
+
+### 真实遗留问题
+
+1. `_EDIT_TOOLS` 仍含 `create_object`（纯 World 对象操作，非文件编辑），因此
+   `create_object` 成功后仍会触发一次 checkpoint；但它无 path、不进 `files_edited`，
+   checkpoint 的 `done` 为空，语义上只是「无意义的空 checkpoint」，非本轮范围。
+2. `clear_pending_direct_disk` 只清持久化文件，不清进程内 `_LOG` 的 direct_disk 字段；
+   `pending_direct_disk` 读的是文件，故对提示无影响，但 `_LOG` 与文件在该字段上会有
+   短暂不一致（仅在 long-lived 进程内可观察，无功能后果）。
+3. `forge_sync` 清账前多一次 `detect()` 预检（World 往返），量级极小（forge_sync 属
+   低频入口），未加缓存。
+4. 未 commit、未 push（按本轮要求）。
