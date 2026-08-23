@@ -434,3 +434,112 @@ mutation 或不知道下一步该做什么。
   FAST_FORWARD / IN_SYNC / WORLD_UNAVAILABLE / NOT_A_GIT_REPO / 只注入一次 /
   进入真实 system 消息 / 不改 mutation 路径）。
 - 全量：**337 passed, 10 skipped**
+
+## P2-3 完成：弱模型 / 免费模型长任务骨架（2026-08-23）
+
+### 问题
+弱模型在长工具循环里会丢失「现在要完成什么 / 已经完成什么 / 下一步 / 有什么风险」，
+表现为重复搜索、失忆、无意义工具调用，并在接近步数上限时仍在盲目探索。
+
+### 实现
+全部复用现有 WorkingSet，**没有**新增 ProgressState / TaskState 之类平行状态系统。
+
+- `forge/runtime.py` 新增常量 `PROGRESS_CHECKPOINT_EVERY = 5`、
+  `FINAL_CHECKPOINT_TAIL_STEPS = 3`。
+- 新增模块级纯函数（全部只读 WorkingSet，字段为空写「无」，不编造）：
+  - `_progress_checkpoint_text(ws)` → `[PROGRESS]` + `goal/done/next/risk` 四行 +
+    「在继续任何工具调用之前先输出上面 4 行」的强制 checkpoint 措辞。
+    goal ← `ws.goal`；done ← `files_edited` 末 3 项；next ← `verify_targets`
+    （优先，给出 `run_test_structured(target=...)`）否则 `pending_verify`；
+    risk ← `open_hypotheses` 否则 `failure_context`。
+  - `_final_checkpoint_text(ws)` → `[FINAL CHECKPOINT]` + `goal/done/unfinished/next`
+    + 停止无关探索 / 已完成则不要继续调用工具。
+  - `_checkpoint_for_step(ws, step_i, mutation_pending, max_steps)` 决定本轮注入哪种。
+  - `_is_checkpoint_message(m)` 识别本机制的瞬时注入。
+- `_run_conversation` 最小接入（3 处）：
+  1. 每轮开头把上一轮的 checkpoint 消息丢弃（**瞬时**注入，每轮重建，
+     与既有 `[Working Set]` 注入同一生命周期，不进 `self.conversation` 持久历史）。
+  2. `adapter.send` 前按 `_checkpoint_for_step` 追加一条 system 消息。
+  3. 工具结果 → 原有成功处理 → `working_set.update_from_tool` 之后，
+     用**既有** mutation 成功判定（`tc.name in MUTATION_TOOL_NAMES and result.success`）
+     置 `mutation_pending`，由下一轮注入 checkpoint。
+
+触发规则：
+- 周期：`step_i > 0 and step_i % 5 == 0`。
+- mutation 成功：下一轮补一次（失败的 mutation 不触发，也不进 done——done 只来自
+  `files_edited`，而它本就只在成功时入账）。
+- 收束：`step_i >= MAX_AGENT_STEPS - 3` 改注入 `[FINAL CHECKPOINT]`，取代周期 progress。
+
+### 边界（不要扩大）
+- 纯上下文提示：不新增工具、不改 schemas、不改 mutation / transaction / projection 行为，
+  不改 `MAX_AGENT_STEPS` 与循环终止逻辑，不阻止任何工具调用。
+- 未加重复调用检测 / 相似度检测 / 输出分类器 / 新 Planner / 新 memory / 新 scheduler。
+- 未动 Veritas、direct_disk、sync_layer，未改 `_sync_status_system_hint()` 语义；
+  P2-2 首轮 sync system hint 仍是独立那条 system 消息，checkpoint 不覆盖不重写
+  （含 CONFLICT 时「禁止 mutation / 必须先 forge_sync」约束）。
+
+### 测试
+- `tests/test_p2_3_progress_skeleton.py` **18 个契约测试**（每 5 步 checkpoint /
+  周期反复出现 / 瞬时不累积 / mutation 成功触发 / 失败不触发且不进 done /
+  Working Set 四字段进入 checkpoint / next 优先 verify_target / done 上限 3 项 /
+  空 Working Set 用「无」/ checkpoint 长度受控 / FINAL CHECKPOINT 形状与最后 3 步 /
+  短任务不受影响 / P2-2 sync hint 不回归 / Working Set 注入仍在 /
+  不新增工具 / 不进持久 conversation）。
+- 全量：**355 passed, 10 skipped**
+
+### 真实遗留问题
+1. `forge_sync` / `undo_last_tx` 也在 `MUTATION_TOOL_NAMES` 里，成功后同样会触发一次
+   checkpoint。这是复用既有 mutation 判定的直接后果，语义上可接受（都改变了状态），
+   但如果后续想让 checkpoint 只跟「文件编辑」，需要改判定集合而不是加字符串猜测。
+2. 同一轮内多个成功 mutation 只合并成下一轮**一次** checkpoint（有意为之，避免重复注入）。
+3. checkpoint 只保证信息进入下一轮上下文，**不校验**模型是否真的复述了那 4 行——
+   本轮明确不做输出分类器。
+4. `pending_verify` / `verify_targets` 都为空时 `next: 无`，此时 checkpoint 对下一步
+   没有实际指导；这是「不编造信息」的直接代价。
+
+## P2-4 完成：TUI 输入（Termux）回归测试锁死（2026-08-23）
+
+### 目标
+把 `forge/tui_input.py` 已修好的折行 / 重绘行为用回归测试锁死，防止后续修改再次破坏。
+只补测试，不改实现算法。
+
+### 审查发现的测试质量问题（情况 A，非实现 bug）
+- **harness 缺口**：`read_multiline_input` 不暴露 `width`，`_render` 一直用
+  `_get_terminal_width()`（真实终端，测试环境 = 80），而 MiniVT 模拟的是 10 / 64。
+  因此现有 MiniVT 测试从未在「窄屏宽度」下真正驱动 `_render` 的折行路径。
+- **弱断言**：现有 `test_long_wrapping_line_does_not_duplicate` /
+  `test_narrow_termux_width_no_duplicate` 用 `count(text) == 1` 判断「不重复」，
+  但实测其屏幕是 `['> 你好世界', '> 你好世界', '> 你好世界', '，测试']`
+  ——**已经重复 3 次**，折叠后 `count` 恰好只匹配一次而侥幸通过，属于安慰剂测试。
+- 结论：`tui_input.py` 生产路径（`_get_terminal_width()` 用真实宽度 + 相对上移 +
+  逐行 `\x1b[2K` 清屏）逻辑正确，本次不修实现。
+
+### 新增回归测试（tests/test_tui_input.py，11 个）
+统一走 `_read_loop` 并注入 `width=vt.width`（`_run_input` helper），让 `_render` 的
+折行宽度与 MiniVT 一致；断言改用**精确等值**（`"".join(screen()) == prompt + buffer`）
+而非易被折叠逃逸的 `count`：
+
+- B emoji：`test_display_lines_emoji` / `test_emoji_wrap_no_duplicate_no_truncation` /
+  `test_emoji_cursor_position`
+- C 多行粘贴渲染不重复：`test_paste_multiline_no_render_duplicate`
+- D 退格重绘：`test_backspace_ascii_rewrites_exactly` / `test_backspace_deletes_wide_char` /
+  `test_backspace_cross_wrap_clears_old_line`
+- A/E 中文/长文本折行 + 光标：`test_chinese_wrap_cursor_position` /
+  `test_long_text_cursor_position_at_end` / `test_long_text_backspace_no_residue`
+- F 窄终端（64 列）退格：`test_narrow_backspace_no_residue`
+
+新增 `_cursor_pos` 作为独立 oracle，按同一套列宽/折行模型算出内容末尾的 (行, 列)，
+校验 `_render` 之后光标落在内容末尾而非明显偏移。
+
+### 结果
+- `tests/test_tui_input.py`：28 passed。
+- 全量：**366 passed, 10 skipped**（P2-3 基线 355 → 新增 11 全绿）。
+
+### 遗留（本轮未做，避免扩大范围）
+- 现有两个弱断言测试（`test_long_wrapping_line_does_not_duplicate`、
+  `test_narrow_termux_width_no_duplicate`）仍用 `count` + 不注入宽度，建议后续
+  一并改为 `_run_input` + 精确等值断言，才能真正锁死「不重复」。
+- `read_multiline_input` 未暴露 `width` 参数（未改实现，符合本轮「只补测试」边界）；
+  测试通过直接调用 `_read_loop` 注入宽度。若后续想让公开 API 可直接测窄屏，可
+  加一个 `width=None` 透传参数（属最小 API 补充，非算法变更）。
+- 未推远程（按本轮要求）。

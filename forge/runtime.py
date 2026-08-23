@@ -43,6 +43,11 @@ from forge.world import WorldRuntime
 MAX_AGENT_STEPS = 40
 MAX_CONSECUTIVE_FAILURES = 3
 
+# P2-3：弱模型长任务骨架。每 N 个工具循环步骤注入一次 progress checkpoint；
+# 距离 MAX_AGENT_STEPS 只剩这些步时改注入 final checkpoint 收束。
+PROGRESS_CHECKPOINT_EVERY = 5
+FINAL_CHECKPOINT_TAIL_STEPS = 3
+
 # Tools that primarily read code/content into context
 _READ_TOOLS = {
     "read_file",
@@ -331,6 +336,117 @@ class WorkingSet:
         if len(lines) > max_lines:
             lines = lines[: max_lines - 1] + ["  ...(truncated)"]
         return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# P2-3：长任务骨架 checkpoint
+#
+# 只做一件事：把已有 WorkingSet 压成几行，周期性地作为**瞬时** system 注入交给
+# 下一轮模型，让弱模型不丢「目标/已完成/下一步/风险」。不是第二套状态系统：
+# 所有内容都从 WorkingSet 读，字段为空写「无」，绝不编造。
+# --------------------------------------------------------------------------- #
+
+PROGRESS_MARKER = "[PROGRESS]"
+FINAL_CHECKPOINT_MARKER = "[FINAL CHECKPOINT]"
+_CHECKPOINT_MARKERS = (PROGRESS_MARKER, FINAL_CHECKPOINT_MARKER)
+_EMPTY = "无"
+
+
+def _one_line(text, limit: int = 160) -> str:
+    """压成单行并截断；空值返回空串。"""
+    t = " ".join(str(text or "").split())
+    return t[:limit]
+
+
+def _ck_done(ws: "WorkingSet") -> str:
+    """done：已完成的编辑，最多 3 项。只来自 files_edited（成功 mutation 才入账）。"""
+    items = [_one_line(p, 80) for p in (ws.files_edited or [])[-3:]]
+    items = [i for i in items if i]
+    return ", ".join(items) if items else _EMPTY
+
+
+def _ck_next(ws: "WorkingSet") -> str:
+    """next：优先待验证 target（最可执行），否则 pending_verify。"""
+    if ws.verify_targets:
+        return _one_line(
+            f"run_test_structured(target={ws.verify_targets[0]!r}) 验证已改动文件"
+        )
+    if ws.pending_verify:
+        return _one_line(ws.pending_verify[-1], 120)
+    return _EMPTY
+
+
+def _ck_risk(ws: "WorkingSet") -> str:
+    """risk：已有阻塞信息，来自 open_hypotheses / failure_context。"""
+    if ws.open_hypotheses:
+        return _one_line(ws.open_hypotheses[-1], 120)
+    if ws.failure_context:
+        c = ws.failure_context[0]
+        if isinstance(c, dict):
+            return _one_line(f"测试失败于 {c.get('file', '?')}:{c.get('line', '?')}", 120)
+        return _one_line(c, 120)
+    return _EMPTY
+
+
+def _ck_unfinished(ws: "WorkingSet") -> str:
+    items = [_one_line(p, 80) for p in (ws.pending_verify or [])[-3:]]
+    items = [i for i in items if i]
+    return ", ".join(items) if items else _EMPTY
+
+
+def _progress_checkpoint_text(ws: "WorkingSet") -> str:
+    """周期性强制 checkpoint：要求模型先复述状态，再继续工具调用。"""
+    return (
+        f"{PROGRESS_MARKER}\n"
+        f"goal: {_one_line(ws.goal, 200) or _EMPTY}\n"
+        f"done: {_ck_done(ws)}\n"
+        f"next: {_ck_next(ws)}\n"
+        f"risk: {_ck_risk(ws)}\n"
+        "在继续任何工具调用之前，先按上面 4 行原样输出当前状态（这是强制 checkpoint，"
+        "不是建议）。信息以上面给出的为准，不要重新猜测 goal；字段为空就写「无」。"
+    )
+
+
+def _final_checkpoint_text(ws: "WorkingSet") -> str:
+    """接近最大步数时的收束 checkpoint：停止探索，立即总结。"""
+    return (
+        f"{FINAL_CHECKPOINT_MARKER}\n\n"
+        "你已接近本轮最大工具调用次数。\n"
+        "停止新的无关探索。\n\n"
+        "请立即总结：\n\n"
+        f"goal: {_one_line(ws.goal, 200) or _EMPTY}\n"
+        f"done: {_ck_done(ws)}\n"
+        f"unfinished: {_ck_unfinished(ws)}\n"
+        f"next: {_ck_next(ws)}\n\n"
+        "如果任务已经完成，不要继续调用工具。\n"
+        "如果仍未完成，只指出最必要的下一步。"
+    )
+
+
+def _is_checkpoint_message(m) -> bool:
+    """是否为本机制注入的瞬时 checkpoint system 消息（每轮重建，不进历史）。"""
+    if getattr(m, "role", None) != "system":
+        return False
+    content = getattr(m, "content", None)
+    return isinstance(content, str) and content.startswith(_CHECKPOINT_MARKERS)
+
+
+def _checkpoint_for_step(
+    ws: "WorkingSet",
+    step_i: int,
+    mutation_pending: bool,
+    max_steps: int,
+) -> str:
+    """本轮该注入哪种 checkpoint（空串表示不注入）。
+
+    - 最后 FINAL_CHECKPOINT_TAIL_STEPS 步：收束，取代周期 progress。
+    - 每 PROGRESS_CHECKPOINT_EVERY 步，或上一轮有成功 mutation：progress。
+    """
+    if step_i >= max_steps - FINAL_CHECKPOINT_TAIL_STEPS:
+        return _final_checkpoint_text(ws)
+    if mutation_pending or (step_i > 0 and step_i % PROGRESS_CHECKPOINT_EVERY == 0):
+        return _progress_checkpoint_text(ws)
+    return ""
 
 
 # 规划/执行阶段注入到 system 的额外指令
@@ -1154,8 +1270,12 @@ class Runtime:
         # P1-1: task-level Working Set (in-memory for this conversation)
         working_set = WorkingSet(goal=(task or "").strip()[:800])
         self._working_set = working_set
+        # P2-3: 上一轮有成功 mutation → 下一轮补一次 progress checkpoint
+        mutation_pending = False
         for step_i in range(MAX_AGENT_STEPS):
             messages = _compress_messages(messages, working_set=working_set)
+            # P2-3: checkpoint 是瞬时注入，每轮先丢弃上一轮那条再重建
+            messages = [m for m in messages if not _is_checkpoint_message(m)]
             # Inject compact Working Set so goal/files/hypotheses stay visible
             ws_text = working_set.summary()
             if ws_text:
@@ -1175,6 +1295,12 @@ class Runtime:
                 if nudge:
                     messages.append(ForgeMessage(role="user", content=nudge))
                     nudged = True
+            checkpoint = _checkpoint_for_step(
+                working_set, step_i, mutation_pending, MAX_AGENT_STEPS
+            )
+            if checkpoint:
+                messages.append(ForgeMessage(role="system", content=checkpoint))
+            mutation_pending = False
             resp = self.adapter.send(messages, schemas)
             if not resp.tool_calls:
                 if resp.content:
@@ -1227,6 +1353,10 @@ class Runtime:
                     )
                 except Exception as e:
                     print(f"[forge] WorkingSet update failed: {e}", file=sys.stderr)
+                # P2-3: 复用既有 mutation 成功判定（MUTATION_TOOL_NAMES + result.success），
+                # Working Set 刷新之后再排队 checkpoint；失败的 mutation 不触发、不入 done。
+                if tc.name in MUTATION_TOOL_NAMES and result.success:
+                    mutation_pending = True
                 self.emit(
                     Event(
                         EventType.TOOL_CALL_END,

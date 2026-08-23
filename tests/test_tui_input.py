@@ -7,7 +7,7 @@ import os
 import unicodedata
 
 from forge import tui_input
-from forge.tui_input import _display_lines, _read_key, read_multiline_input
+from forge.tui_input import _display_lines, _read_key, _read_loop, read_multiline_input
 
 
 class Feed:
@@ -246,3 +246,135 @@ def test_narrow_termux_width_no_duplicate():
     )
     full = "".join(vt.screen())
     assert full.count(text) == 1, f"出现重复：{vt.screen()!r}"
+
+
+def _cursor_pos(text, width):
+    """按终端折行模型算出 text 末尾的光标位置 (行, 列)。
+
+    与 _display_lines 同一套列宽/折行规则（宽字符 2 列、放不下先折行）。
+    用作独立 oracle，校验 _render 之后 MiniVT 的光标确实落在内容末尾，
+    而不是明显偏移。
+    """
+    col = 0
+    row = 0
+    for ch in text:
+        if ch == "\n":
+            row += 1
+            col = 0
+            continue
+        w = _cols(ch) or 1
+        if col + w > width:
+            row += 1
+            col = w
+        else:
+            col += w
+    return row, col
+
+
+def _run_input(vt, prompt, *chunks):
+    """用 vt 的终端宽度驱动核心输入状态机，返回提交结果。
+
+    read_multiline_input 不暴露 width，这里直接走 _read_loop 并注入
+    width=vt.width，保证 _render 的折行宽度与 MiniVT 模拟的终端宽度一致。
+    """
+    result, _submitted = _read_loop(prompt, feed(*chunks), vt.write, width=vt.width)
+    return result
+
+
+# ---- P2-4 回归测试：折行 / 重绘行为锁死（只补测试，不改实现） ----
+
+
+def test_display_lines_emoji():
+    """emoji 占 2 列的折行计算。"""
+    assert _display_lines("😀", 2) == 1
+    assert _display_lines("😀😀", 2) == 2
+    assert _display_lines("😀😀😀", 4) == 2
+
+
+def test_emoji_wrap_no_duplicate_no_truncation():
+    """emoji 折行：不重复、不截断，整段只渲染一次。"""
+    vt = MiniVT(10)
+    text = "😀😀😀😀😀"  # 5 emoji × 2 = 10 列，加 "> " 必折行
+    assert _run_input(vt, "> ", text, "\r") == text
+    assert "".join(vt.screen()) == "> " + text
+
+
+def test_emoji_cursor_position():
+    """emoji 后光标列数按 2 列宽推进，不偏移。"""
+    vt = MiniVT(10)
+    _run_input(vt, "> ", "😀😀", "\r")
+    assert (vt.cy, vt.cx) == (0, 6)  # "> " 2 列 + 2 emoji × 2 列
+
+
+def test_paste_multiline_no_render_duplicate():
+    """多行粘贴只整段渲染一次，屏幕上每行内容不重复、不截断。"""
+    vt = MiniVT(40)
+    out = _run_input(vt, "> ", "\x1b[200~", "line1\nline2\nline3", "\x1b[201~", "\r")
+    assert out == "line1\nline2\nline3"
+    assert "".join(vt.screen()) == "> line1line2line3"
+
+
+def test_backspace_ascii_rewrites_exactly():
+    """删除普通字符后整行重绘，无残留。"""
+    vt = MiniVT(20)
+    out = _run_input(vt, "> ", "abcdef", "\x7f", "\x7f", "\r")
+    assert out == "abcd"
+    assert "".join(vt.screen()) == "> abcd"
+
+
+def test_backspace_deletes_wide_char():
+    """删除中文宽字符后重绘正确，光标列数按剩余宽度收窄。"""
+    vt = MiniVT(20)
+    out = _run_input(vt, "> ", "你", "好", "\x7f", "\r")
+    assert out == "你"
+    assert "".join(vt.screen()) == "> 你"
+    assert (vt.cy, vt.cx) == (0, 4)
+
+
+def test_backspace_cross_wrap_clears_old_line():
+    """跨折行删除：从 2 行退到 1 行，第 2 行旧内容被清掉。"""
+    vt = MiniVT(10)
+    text = "你好世界！"  # "> " + 5 宽字符 = 12 列 > 10 → 折成 2 行
+    out = _run_input(vt, "> ", text, "\x7f", "\r")
+    assert out == "你好世界"
+    assert "".join(vt.screen()) == "> 你好世界"
+    assert (vt.cy, vt.cx) == (0, 10)
+
+
+def test_chinese_wrap_cursor_position():
+    """中文折行后光标落在内容末尾，不重复不覆盖。"""
+    vt = MiniVT(10)
+    text = "你好世界！"
+    _run_input(vt, "> ", text, "\r")
+    assert "".join(vt.screen()) == "> " + text
+    assert (vt.cy, vt.cx) == _cursor_pos("> " + text, 10)
+
+
+def test_long_text_cursor_position_at_end():
+    """长文本跨多行后光标最终位置正确，不产生重复行。"""
+    vt = MiniVT(40)
+    text = "这是一段用于验证长文本折行后光标最终位置的测试内容abc"
+    _run_input(vt, "> ", text, "\r")
+    assert "".join(vt.screen()) == "> " + text
+    assert (vt.cy, vt.cx) == _cursor_pos("> " + text, 40)
+
+
+def test_long_text_backspace_no_residue():
+    """删除长文本末尾宽字符后不留残影，光标同步收窄。"""
+    vt = MiniVT(40)
+    text = "这是一段用来验证删除末尾宽字符后不会留下残影的长文本内容测试"
+    out = _run_input(vt, "> ", text, "\x7f", "\r")
+    expected = text[:-1]
+    assert out == expected
+    assert "".join(vt.screen()) == "> " + expected
+    assert (vt.cy, vt.cx) == _cursor_pos("> " + expected, 40)
+
+
+def test_narrow_backspace_no_residue():
+    """窄终端（64 列）退格后不重复、不截断、不留残影。"""
+    vt = MiniVT(64)
+    text = "这是一段在华为P20 Termux上测试的中文输入内容，用来验证折行重绘"
+    out = _run_input(vt, "💬 > ", text, "\x7f", "\x7f", "\x7f", "\r")
+    expected = text[:-3]
+    assert out == expected
+    assert "".join(vt.screen()) == "💬 > " + expected
