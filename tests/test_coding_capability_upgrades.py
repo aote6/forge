@@ -62,7 +62,7 @@ def test_schemas_include_new_tools():
 
 def test_make_tools_registers_coding_tools(tmp_path: Path):
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    tools = make_tools(workspace=ws, allow_mutation=False)
     assert "find_symbol_definition" in tools
     assert "read_function" in tools
     assert "run_type_check" in tools
@@ -82,7 +82,7 @@ def test_make_tools_registers_coding_tools(tmp_path: Path):
 
 def test_run_type_check_ast_detects_mismatch(tmp_path: Path):
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    tools = make_tools(workspace=ws, allow_mutation=False)
     (tmp_path / "bad.py").write_text("x: int = 'nope'\n", encoding="utf-8")
     r = tools["run_type_check"]("bad.py", "ast")
     assert not r.success

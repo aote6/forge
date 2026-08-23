@@ -54,7 +54,7 @@ def test_glob_files_tool(tmp_path: Path):
     sub.mkdir()
     (sub / "c.py").write_text("z=1\n", encoding="utf-8")
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    tools = make_tools(workspace=ws, allow_mutation=False)
     assert "glob_files" in tools
     r = tools["glob_files"]("**/*.py")
     assert r.success
@@ -65,6 +65,6 @@ def test_glob_files_tool(tmp_path: Path):
 def test_implementations_still_register_legacy_helpers(tmp_path: Path):
     """Implementations stay for tests/compat; only schemas are curated."""
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    tools = make_tools(workspace=ws, allow_mutation=False)
     assert "summarize_file" in tools  # still callable if needed
     assert "find_symbol_definition" in tools

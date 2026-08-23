@@ -72,7 +72,7 @@ def test_read_file_truncates_long_file(tmp_path: Path):
     lines = [f"line{i}" for i in range(300)]
     (tmp_path / "big.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    tools = make_tools(workspace=ws, allow_mutation=False)
     r = tools["read_file"]("big.py")
     assert r.success
     # large files now return outline mode

@@ -52,7 +52,7 @@ def test_apply_unified_patch_to_files(tmp_path: Path):
 
 def test_todo_write_and_list(tmp_path: Path):
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    tools = make_tools(workspace=ws, allow_mutation=False)
     r = tools["todo_write"](
         items=[
             {"id": "1", "content": "read code", "status": "done"},
@@ -69,7 +69,7 @@ def test_todo_write_and_list(tmp_path: Path):
 
 def test_web_fetch_rejects_non_http():
     ws = Workspace(project_root=".")
-    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    tools = make_tools(workspace=ws, allow_mutation=False)
     r = tools["web_fetch"]("file:///etc/passwd")
     assert not r.success
     assert "http" in r.display.lower()
@@ -104,10 +104,10 @@ def test_auto_register_resolve_helpers(tmp_path: Path):
 
 def test_make_tools_registers_apply_patch_and_todo(tmp_path: Path):
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    tools = make_tools(workspace=ws, allow_mutation=False)
     assert "todo_write" in tools and "web_fetch" in tools
     # apply_patch only with mutation+world
-    tools2, _, _ = make_tools(
+    tools2 = make_tools(
         workspace=ws, world_runtime=None, projections=None, allow_mutation=True
     )
     # without world, mutation tools not registered

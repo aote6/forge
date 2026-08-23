@@ -4,8 +4,6 @@ Production path (唯一):
   Runtime.run(task) → _run_conversation() 工具循环
     → READ_ONLY + MUTATION schemas
     → ToolExecutor → IntentExecutor → Veritas commit/abort → Projection
-
-run_legacy / AgentPhase 确认流已 DEPRECATED；生产只用 _run_conversation。
 """
 from __future__ import annotations
 
@@ -17,7 +15,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from forge.adapters.base import BaseAdapter, Message, ToolResult
-from forge.agent_state import AgentPhase
 from forge.confirmation import is_cancel, is_confirm
 from forge.conversation import Conversation
 from forge.events import Event, EventType
@@ -68,7 +65,6 @@ _EDIT_TOOLS = {
     "delete_file",
     "apply_patch",
     "edit_files_batch",
-    "create_object",
 }
 
 # P1-6: 待验证状态下需要硬拦截的"文件内容 mutation"工具（最小集合）。
@@ -343,6 +339,47 @@ class WorkingSet:
             lines = lines[: max_lines - 1] + ["  ...(truncated)"]
         return "\n".join(lines)
 
+    def to_dict(self) -> dict:
+        """把持久化字段序列化为 JSON-safe dict（P2-4 WorkingSet 持久化）。
+
+        只序列化 8 个跨会话字段；verify_map / failure_target 属会话内瞬态，
+        不持久化（恢复后按空处理，见 from_dict）。
+        """
+        return {
+            "goal": self.goal,
+            "constraints": list(self.constraints),
+            "files_read": list(self.files_read),
+            "files_edited": list(self.files_edited),
+            "open_hypotheses": list(self.open_hypotheses),
+            "pending_verify": list(self.pending_verify),
+            "verify_targets": list(self.verify_targets),
+            "failure_context": list(self.failure_context),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "WorkingSet":
+        """从 JSON dict 重建；缺失/损坏/非 dict 一律按空处理，绝不抛异常。"""
+        d = data if isinstance(data, dict) else {}
+
+        def _str_list(v) -> list[str]:
+            out: list[str] = []
+            for item in (v if isinstance(v, list) else []):
+                s = str(item).strip()
+                if s:
+                    out.append(s)
+            return out
+
+        return cls(
+            goal=str(d.get("goal") or ""),
+            constraints=_str_list(d.get("constraints")),
+            files_read=_str_list(d.get("files_read")),
+            files_edited=_str_list(d.get("files_edited")),
+            open_hypotheses=_str_list(d.get("open_hypotheses")),
+            pending_verify=_str_list(d.get("pending_verify")),
+            verify_targets=_str_list(d.get("verify_targets")),
+            failure_context=list(d.get("failure_context") or []),
+        )
+
 
 # --------------------------------------------------------------------------- #
 # P2-3：长任务骨架 checkpoint
@@ -548,6 +585,38 @@ def _save_session_summary(project_root: str, assistant_replies: list[str]) -> No
         )
     except Exception as e:
         print(f"[forge] _save_session_summary failed: {e}", file=sys.stderr)
+
+
+# P2-4: WorkingSet 跨 Runtime 持久化。只做 JSON 全量存取，不做增量同步/版本迁移。
+_TASK_STATE_FILENAME = "task_state.json"
+
+
+def _save_task_state(project_root: str, ws: "WorkingSet") -> None:
+    """把 WorkingSet 写到 .forge/task_state.json（best-effort，不阻塞会话）。"""
+    from pathlib import Path as _P
+    try:
+        log_dir = _P(project_root) / ".forge"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / _TASK_STATE_FILENAME
+        path.write_text(
+            json.dumps(ws.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[forge] _save_task_state failed: {e}", file=sys.stderr)
+
+
+def _load_task_state(project_root: str) -> dict | None:
+    """读 .forge/task_state.json；缺失/损坏/非对象静默返回 None（不阻塞启动）。"""
+    from pathlib import Path as _P
+    try:
+        path = _P(project_root) / ".forge" / _TASK_STATE_FILENAME
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
 
 
 def _sync_status_system_hint(report) -> str:
@@ -985,7 +1054,7 @@ class Runtime:
         # Single tool-loop: all tools available (read + mutation).
         # Mutations go through IntentExecutor → WorldSession → Veritas,
         # with commit/abort handled inside the tool call.
-        tools, confirm_fn, abort_fn = make_tools(
+        tools = make_tools(
             workspace=workspace,
             world_runtime=self.world,
             projections=self.projections,
@@ -1021,12 +1090,9 @@ class Runtime:
 
         tools["spawn_subagent"] = spawn_subagent
         self.executor = ToolExecutor(tools)
-        self._confirm_fn = confirm_fn
-        self._abort_fn = abort_fn
 
         self.conversation = Conversation()
         self.conversation.append(Message(role="system", content=SYSTEM_INSTRUCTION))
-        self.phase = AgentPhase.IDLE
         self._handlers: dict = {t: [] for t in EventType}
         # 规划→确认→执行 状态：待用户确认的计划与原任务
         self._pending_plan: str | None = None
@@ -1336,8 +1402,12 @@ class Runtime:
         assistant_replies: list[str] = []
         half = max(5, MAX_AGENT_STEPS // 2)
         nudged = False
-        # P1-1: task-level Working Set (in-memory for this conversation)
-        working_set = WorkingSet(goal=(task or "").strip()[:800])
+        # P1-1: task-level Working Set；P2-4 从 .forge/task_state.json 恢复上次
+        # 未完成任务的上下文（goal 始终以本次 task 为准，其余字段恢复）。
+        working_set = WorkingSet.from_dict(
+            _load_task_state(self.workspace.project_root)
+        )
+        working_set.goal = (task or "").strip()[:800]
         self._working_set = working_set
         # P2-3: 上一轮有成功 mutation → 下一轮补一次 progress checkpoint
         mutation_pending = False
@@ -1420,6 +1490,8 @@ class Runtime:
                     working_set.update_from_tool(
                         tc.name, getattr(tc, "arguments", None) or {}, result
                     )
+                    # P2-4: 每次工具调用后持久化（best-effort，损坏下次静默重建）
+                    _save_task_state(self.workspace.project_root, working_set)
                 except Exception as e:
                     print(f"[forge] WorkingSet update failed: {e}", file=sys.stderr)
                 # P2-3: 复用文件编辑成功判定（_EDIT_TOOLS + result.success），
@@ -1457,136 +1529,3 @@ class Runtime:
 
     # Backward-compat alias
     run_v2 = run
-
-    def _update_phase_from_result(self, result: ToolResult):
-        if not result.success or not result.payload:
-            return
-        payload = result.payload
-        if payload.get("requires_confirmation"):
-            self.phase = AgentPhase.WAIT_CONFIRM
-            return
-        phase_hint = payload.get("phase")
-        if phase_hint == "verifying" and self.phase == AgentPhase.VERIFYING:
-            self.phase = AgentPhase.REPORT
-            return
-        if payload.get("mutation") and not payload.get("requires_confirmation"):
-            self.phase = AgentPhase.VERIFYING
-            return
-        if self.phase in (AgentPhase.IDLE, AgentPhase.DISCOVERY):
-            self.phase = AgentPhase.DISCOVERY
-
-    def run_legacy(self, user_input: str) -> str:
-        """DEPRECATED interactive tool-loop (只读/确认兜底).
-
-        Must not be used for engineering mutation tasks.
-        Production path is Runtime.run → _run_conversation (full tool-loop).
-        """
-        if self.phase == AgentPhase.WAIT_CONFIRM:
-            if is_confirm(user_input):
-                if self._confirm_fn is None:
-                    return "无法提交：确认回调未就绪。"
-                result = self._confirm_fn()
-                if result.success:
-                    self.phase = AgentPhase.VERIFYING
-                    self.conversation.append(
-                        Message(
-                            role="system",
-                            content="事务已提交。现在进入验证阶段，请运行 git_diff 和测试。",
-                        )
-                    )
-                return result.display
-            if is_cancel(user_input):
-                if self._abort_fn is not None:
-                    result = self._abort_fn()
-                    self.phase = AgentPhase.IDLE
-                    return result.display
-                self.phase = AgentPhase.IDLE
-                return "事务已取消。"
-            return "⏸️ 当前有待确认的事务\n请输入「确认」提交，或「取消」放弃。\n"
-
-        self.executor.reset()
-        if self.phase == AgentPhase.IDLE:
-            self.phase = AgentPhase.DISCOVERY
-
-        event = self.emit(Event(EventType.USER_MESSAGE, {"content": user_input}))
-        if event.cancelled:
-            return "⏸️ 已拦截。"
-
-        self.conversation.append(Message(role="user", content=user_input))
-        response = self.adapter.send(self.conversation.get_messages(), READ_ONLY_TOOL_DECLARATIONS)
-
-        step_count = 0
-        while response.tool_calls:
-            step_count += 1
-            if step_count > MAX_AGENT_STEPS:
-                self.conversation.append(
-                    Message(
-                        role="assistant",
-                        content=f"⛔ 已达到最大执行步数({MAX_AGENT_STEPS})，任务中止。",
-                    )
-                )
-                return f"⛔ Agent 步数超限({MAX_AGENT_STEPS})，已强制终止。"
-
-            self.conversation.append(
-                Message(
-                    role="assistant",
-                    content=response.content,
-                    tool_calls=response.tool_calls,
-                )
-            )
-
-            for tc in response.tool_calls:
-                if self.phase == AgentPhase.WAIT_CONFIRM:
-                    self.conversation.append(
-                        Message(
-                            role="tool",
-                            content="⏸️ 当前有未确认的事务，请等待用户确认后再继续。",
-                            tool_call_id=tc.id,
-                            name=tc.name,
-                        )
-                    )
-                    continue
-
-                self.emit(
-                    Event(EventType.TOOL_CALL_START, {"name": tc.name, "args": tc.arguments})
-                )
-                result = self.executor.execute(tc)
-                self.emit(
-                    Event(
-                        EventType.TOOL_CALL_END,
-                        {"name": tc.name, "success": result.success, "display": result.display},
-                    )
-                )
-                self.conversation.append(
-                    Message(
-                        role="tool",
-                        content=result.display,
-                        tool_call_id=tc.id,
-                        name=tc.name,
-                    )
-                )
-                self._update_phase_from_result(result)
-
-                if (
-                    result.success
-                    and result.payload
-                    and result.payload.get("requires_confirmation")
-                ):
-                    self.conversation.append(
-                        Message(
-                            role="system",
-                            content="修改已准备完成。必须等待用户确认后才能继续。不要调用其它修改工具。",
-                        )
-                    )
-                    return result.display
-
-            response = self.adapter.send(
-                self.conversation.get_messages(), READ_ONLY_TOOL_DECLARATIONS
-            )
-
-        if self.phase != AgentPhase.DONE:
-            self.phase = AgentPhase.DONE
-        self.emit(Event(EventType.ASSISTANT_REPLY, {"content": response.content or ""}))
-        if response.content:
-            self.conversation.append(Message(role="assistant", content=response.content))
-        return response.content or ""

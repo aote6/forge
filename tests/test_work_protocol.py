@@ -24,7 +24,7 @@ def test_session_changes_tool(tmp_path: Path):
     clear()
     record("x.py", tx_id=9, tool="str_replace", summary="fix")
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    tools = make_tools(workspace=ws, allow_mutation=False)
     assert "session_changes" in tools
     r = tools["session_changes"]()
     assert r.success

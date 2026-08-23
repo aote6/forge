@@ -38,7 +38,7 @@ def _full_registry(tmp_path: Path) -> tuple[dict, set[str]]:
     mirrors Runtime.__init__: make_tools(allow_mutation=True, sync_layer=...) + spawn_subagent.
     """
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(
+    tools = make_tools(
         workspace=ws,
         allow_mutation=True,
         world_runtime=object(),  # intent tools are lazy; never called during build

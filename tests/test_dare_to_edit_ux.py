@@ -50,7 +50,7 @@ def test_read_file_outline(tmp_path: Path):
     body = body + "\n".join(f"# pad {i}" for i in range(100))
     (tmp_path / "big.py").write_text(body, encoding="utf-8")
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    tools = make_tools(workspace=ws, allow_mutation=False)
     r = tools["read_file"]("big.py")
     assert r.success
     assert r.payload.get("mode") == "outline"

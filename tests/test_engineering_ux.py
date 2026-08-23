@@ -45,7 +45,7 @@ def test_run_test_structured_has_failure_context_field(tmp_path: Path):
         "def test_ok():\n    assert True\n", encoding="utf-8"
     )
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    tools = make_tools(workspace=ws, allow_mutation=False)
     r = tools["run_test_structured"]("tests/")
     assert "failure_context" in r.payload
     assert r.payload["returncode"] == 0

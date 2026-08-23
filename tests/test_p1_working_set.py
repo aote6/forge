@@ -10,7 +10,7 @@ Minimal behavior:
 from __future__ import annotations
 
 from forge.adapters.base import ToolResult
-from forge.runtime import WorkingSet
+from forge.runtime import WorkingSet, _load_task_state, _save_task_state
 
 
 def test_working_set_goal_at_start():
@@ -95,3 +95,59 @@ def test_working_set_constraints_and_inject_shape():
     s = ws.summary()
     assert "ship P1-1" in s
     assert "do not push remote" in s or "constraints" in s.lower()
+
+
+# --- P2-4: WorkingSet 跨会话持久化（.forge/task_state.json） ---
+
+def test_working_set_to_from_dict_roundtrip():
+    ws = WorkingSet(
+        goal="g",
+        constraints=["c1"],
+        files_read=["a.py"],
+        files_edited=["b.py"],
+        open_hypotheses=["h1"],
+        pending_verify=["verify edit on b.py"],
+        verify_targets=["tests/test_b.py"],
+        failure_context=[{"file": "b.py", "line": 3}],
+    )
+    ws2 = WorkingSet.from_dict(ws.to_dict())
+    assert ws2.goal == "g"
+    assert ws2.constraints == ["c1"]
+    assert ws2.files_read == ["a.py"]
+    assert ws2.files_edited == ["b.py"]
+    assert ws2.open_hypotheses == ["h1"]
+    assert ws2.pending_verify == ["verify edit on b.py"]
+    assert ws2.verify_targets == ["tests/test_b.py"]
+    assert ws2.failure_context == [{"file": "b.py", "line": 3}]
+
+
+def test_working_set_from_dict_tolerates_bad_input():
+    assert WorkingSet.from_dict(None).goal == ""
+    assert WorkingSet.from_dict("not a dict").files_edited == []
+    assert WorkingSet.from_dict({}).files_read == []
+    # 损坏字段（字符串/非 list）按空处理，不抛异常
+    ws = WorkingSet.from_dict({"files_edited": "oops", "goal": 123})
+    assert ws.files_edited == []
+    assert ws.goal == "123"
+
+
+def test_task_state_save_load_and_corrupt(tmp_path):
+    ws = WorkingSet(goal="resume me", files_edited=["x.py"])
+    _save_task_state(str(tmp_path), ws)
+    data = _load_task_state(str(tmp_path))
+    assert data is not None
+    assert data["goal"] == "resume me"
+    assert data["files_edited"] == ["x.py"]
+
+    # 损坏 JSON 静默返回 None（不阻塞启动）
+    path = tmp_path / ".forge" / "task_state.json"
+    path.write_text("{not valid json", encoding="utf-8")
+    assert _load_task_state(str(tmp_path)) is None
+
+    # 非对象 JSON 同样返回 None
+    path.write_text("[1,2,3]", encoding="utf-8")
+    assert _load_task_state(str(tmp_path)) is None
+
+    # 缺失文件返回 None
+    path.unlink()
+    assert _load_task_state(str(tmp_path)) is None

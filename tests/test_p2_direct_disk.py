@@ -629,7 +629,7 @@ def test_forge_sync_appends_reconcile_hint(tmp_path):
     report.to_dict.return_value = {"status": "IN_SYNC"}
     sync_layer.sync.return_value = report
 
-    tools, _, _ = make_tools(
+    tools = make_tools(
         workspace=workspace,
         world_runtime=world,
         projections=projections,
@@ -695,7 +695,7 @@ def test_forge_sync_clears_pending_direct_disk_after_disk_to_world(tmp_path):
     sync_layer.detect.return_value = SyncReport(status=FAST_FORWARD_DISK_TO_WORLD)
     sync_layer.sync.return_value = SyncReport(status=IN_SYNC)
 
-    tools, _, _ = make_tools(
+    tools = make_tools(
         workspace=workspace,
         world_runtime=world,
         projections=projections,
@@ -727,7 +727,7 @@ def test_forge_sync_does_not_clear_pending_when_conflict(tmp_path):
     sync_layer.detect.return_value = SyncReport(status=FAST_FORWARD_DISK_TO_WORLD)
     sync_layer.sync.return_value = SyncReport(status=CONFLICT)
 
-    tools, _, _ = make_tools(
+    tools = make_tools(
         workspace=workspace,
         world_runtime=world,
         projections=projections,

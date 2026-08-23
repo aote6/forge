@@ -1,5 +1,5 @@
 """
-DEPRECATED: DEPRECATED: tool-loop does not use chat confirm; kept for run_legacy.
+计划确认词解析（生产路径 Runtime._handle_plan_reply 使用）。
 用户确认指令解析"""
 import re
 
@@ -20,9 +20,3 @@ def is_cancel(text: str) -> bool:
     if t.startswith("取消") or t.startswith("cancel") or t.startswith("abort"):
         return True
     return False
-
-
-def extract_confirmation(text: str) -> str | None:
-    if is_confirm(text):
-        return "confirm"
-    return None

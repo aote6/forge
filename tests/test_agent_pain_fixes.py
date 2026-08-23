@@ -65,7 +65,7 @@ def test_read_file_uses_cache(tmp_path: Path):
     clear()
     (tmp_path / "x.py").write_text("def a():\n    return 1\n", encoding="utf-8")
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(workspace=ws, allow_mutation=False)
+    tools = make_tools(workspace=ws, allow_mutation=False)
     r1 = tools["read_file"]("x.py")
     assert r1.success
     r2 = tools["read_file"]("x.py")

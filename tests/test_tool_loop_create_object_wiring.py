@@ -33,7 +33,7 @@ def test_make_tools_registers_create_object(tmp_path):
 
     ws = Workspace(project_root=str(tmp_path))
     # WorldRuntime may fail without veritasd; still test registration path with mocks
-    tools, _, _ = make_tools(
+    tools = make_tools(
         workspace=ws,
         world_runtime=None,
         projections=None,
@@ -42,7 +42,7 @@ def test_make_tools_registers_create_object(tmp_path):
     assert "create_object" not in tools
 
     # With mutation but no world: intent tools not registered
-    tools2, _, _ = make_tools(
+    tools2 = make_tools(
         workspace=ws,
         world_runtime=None,
         projections=None,
@@ -94,7 +94,7 @@ def test_create_object_tool_returns_object_id(tmp_path):
     )
 
     ws = Workspace(project_root=str(tmp_path))
-    tools, _, _ = make_tools(
+    tools = make_tools(
         workspace=ws,
         world_runtime=world,
         projections=projections,

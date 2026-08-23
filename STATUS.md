@@ -1,5 +1,37 @@
 # Forge 状态
 
+## runtime 结构层清理第 1 轮（2026-08-23）
+
+只做 3 项，不碰 P3，不推远程，未 commit。
+
+### 1. 删除 run_legacy 废弃链
+- 删除 `Runtime.run_legacy`、`Runtime._update_phase_from_result`、`self.phase`、`self._confirm_fn`/`self._abort_fn`
+- 删除 `forge/agent_state.py`（AgentPhase 仅被上述死代码使用）
+- `make_tools` 移除 `confirm_fn`/`abort_fn` 闭包，返回值从 3 元组改为单值 `tools`；同步更新全部 ~20 处测试调用点（`tools, _, _ = make_tools(...)` → `tools = make_tools(...)`）
+- **纠正原判断**：`forge/confirmation.py` 未整删——`is_confirm`/`is_cancel` 仍被生产路径 `Runtime._handle_plan_reply`（计划确认流程）使用，只删了无人引用的 `extract_confirmation`。原「同属废弃链」结论对 confirmation.py 不完全成立。
+
+### 2. WorkingSet 持久化（.forge/task_state.json）
+- `WorkingSet` 新增 `to_dict()` / `from_dict()`，序列化 8 字段：goal / constraints / files_read / files_edited / open_hypotheses / pending_verify / verify_targets / failure_context
+- runtime 新增 `_save_task_state` / `_load_task_state`（纯 JSON 全量存取，不做增量同步/版本迁移）
+- `_run_conversation` 启动时加载上次 task_state（goal 以本次 task 为准，其余字段恢复）；每次 `update_from_tool` 后保存
+- JSON 缺失/损坏/非对象 → 静默返回 None 重建，不阻塞启动
+- 新增测试 3 个（`test_p1_working_set.py`）：roundtrip / 坏输入容错 / 存取+损坏处理
+
+### 3. create_object 从 `_EDIT_TOOLS` 移除
+- `_EDIT_TOOLS` 去掉 `create_object`（纯 World 对象操作，非文件编辑），消除其成功后触发一次空 checkpoint 的问题
+- 影响面：`update_from_tool` 本就因无 path 不记 files_edited；唯一行为变化是 `mutation_pending` 不再被 create_object 置位（P2-3 checkpoint 触发判定）
+
+### 验证
+- 全量 pytest：**395 passed，10 skipped**（基线 392 + 新增 3，无回归）
+
+### 真实遗留问题
+1. `confirmation.py` 仍保留 `is_confirm`/`is_cancel`（计划确认流程使用），并非整文件废弃。
+2. `verify_map` / `failure_target` 两个内部字段未持久化：恢复后 pending_verify/verify_targets 在、但 path→target 关联丢失；broad 运行仍可清账，精确关联需重建（任务范围限定 8 字段，有意为之）。
+3. 每次工具调用（含只读 read_file 等）都触发一次写盘；JSON 很小成本可忽略，严格可优化为「状态变化时才写」。
+4. `task_state.json` 位于 `.forge/`（已 gitignore），不会污染 git。
+
+---
+
 ## recovery 分叉问题（今天发现，已修复 120eee2）
 - 问题：启动 recovery 重放 receipt 时无条件用 World 内容覆盖磁盘，
   会冲掉用户手动修改的文件（数据丢失风险）。
@@ -198,14 +230,14 @@ Checkpoint 拆成两套水位，避免"消费进度"和"磁盘真实同步进度
 ### 核实结论
 - `run_legacy` 没有任何调用点（全仓库仅定义 + DEPRECATED 注释）
 - `confirm_fn` / `abort_fn` 只被 `run_legacy` 调用，生产路径 `Runtime.run → _run_conversation` 不经过它们
-- `forge/agent_state.py` 和 `forge/confirmation.py` 标注 "kept for run_legacy"，同属废弃链
+- `forge/agent_state.py` 标注 "kept for run_legacy"，属废弃链
+- ⚠️ 原结论误判：`forge/confirmation.py` 的 `is_confirm`/`is_cancel` 仍被 `_handle_plan_reply`（计划确认流程）使用，并非整文件废弃（仅 `extract_confirmation` 无人引用）
 
 ### 关联
 - P0-2 修复时选择"对齐语义"而非删除旧路径，因为 `confirm_fn` 仍被 `run_legacy` 引用
-- 后续可整串删除：`run_legacy` + `confirm_fn` / `abort_fn` + `agent_state.py` + `confirmation.py`，但不属于当前 P0 范畴
 
 ### 状态
-- 未处理，记入工程债
+- ✅ 已处理（2026-08-23 runtime 结构层清理第 1 轮）：删除 `run_legacy` / `confirm_fn` / `abort_fn` / `agent_state.py`；`confirmation.py` 保留 `is_confirm`/`is_cancel`，删除 `extract_confirmation`
 
 ## P0-4 第 3 批测试质量记录（2026-08-22）
 
@@ -851,9 +883,10 @@ payload 带 `direct_disk=True / world_recorded=False`。World 可达时行为逐
 
 ### 真实遗留问题
 
-1. `_EDIT_TOOLS` 仍含 `create_object`（纯 World 对象操作，非文件编辑），因此
+1. ~~`_EDIT_TOOLS` 仍含 `create_object`（纯 World 对象操作，非文件编辑），因此
    `create_object` 成功后仍会触发一次 checkpoint；但它无 path、不进 `files_edited`，
-   checkpoint 的 `done` 为空，语义上只是「无意义的空 checkpoint」，非本轮范围。
+   checkpoint 的 `done` 为空，语义上只是「无意义的空 checkpoint」，非本轮范围。~~
+   ✅ 已修复（2026-08-23 runtime 结构层清理第 1 轮）：`create_object` 已从 `_EDIT_TOOLS` 移除。
 2. `clear_pending_direct_disk` 只清持久化文件，不清进程内 `_LOG` 的 direct_disk 字段；
    `pending_direct_disk` 读的是文件，故对提示无影响，但 `_LOG` 与文件在该字段上会有
    短暂不一致（仅在 long-lived 进程内可观察，无功能后果）。
