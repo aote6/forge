@@ -428,6 +428,87 @@ def _save_session_summary(project_root: str, assistant_replies: list[str]) -> No
         print(f"[forge] _save_session_summary failed: {e}", file=sys.stderr)
 
 
+def _sync_status_system_hint(report) -> str:
+    """把一次同步判定（SyncReport）转成首轮 system 注入的一等提示。
+
+    P2-2：`_startup_sync_check` 发现同步状态后，不再只写 stderr，而是把状态
+    作为首轮 system 上下文交给 Agent，让 Agent 明确下一步该做什么。
+
+    纯文本格式化，不改变任何同步/权限逻辑；返回空串表示无需注入。
+    """
+    if report is None:
+        return ""
+    from forge.sync.sync_layer import (
+        CONFLICT,
+        FAST_FORWARD_DISK_TO_WORLD,
+        FAST_FORWARD_WORLD_TO_DISK,
+        IN_SYNC,
+        NOT_A_GIT_REPO,
+        WORLD_UNAVAILABLE,
+    )
+
+    status = getattr(report, "status", "") or ""
+    detail = getattr(report, "detail", "") or ""
+
+    if status == IN_SYNC:
+        return (
+            "\n\n## 同步状态\n"
+            "sync=IN_SYNC：World 与 Disk/Git 处于同一已知状态，可直接继续，不阻塞。"
+        )
+
+    if status == CONFLICT:
+        kind = getattr(report, "conflict_kind", None) or ""
+        lines = [
+            "## 同步状态（一等上下文）",
+            "sync=CONFLICT：工作区可能与 World 分叉，当前禁止 mutation。",
+        ]
+        if kind:
+            lines.append(f"conflict_kind={kind}")
+        lines += [
+            "- 在 forge_sync 完成对账、确认恢复到可继续状态之前，禁止任何 mutation"
+            "（str_replace/write_file/undo_last_tx 等）。",
+            "- 必须优先调用 forge_sync 查看 diff 并显式决策同步方向。",
+            "- 你首次面向用户的回复应解释当前冲突，以及下一步如何同步。",
+        ]
+        if detail:
+            lines.append(f"详情：{detail}")
+        return "\n\n" + "\n".join(lines)
+
+    if status in (FAST_FORWARD_DISK_TO_WORLD, FAST_FORWARD_WORLD_TO_DISK):
+        direction = (
+            "World → Disk" if status == FAST_FORWARD_WORLD_TO_DISK else "Disk → World"
+        )
+        lines = [
+            "## 同步状态（一等上下文）",
+            f"sync={status}（方向：{direction}）",
+            "- 同步完成前禁止任何 mutation。",
+            f"- 必须先调用 forge_sync 完成同步，方向为 {direction}（以 SyncReport 实际结果为准）。",
+        ]
+        if detail:
+            lines.append(f"详情：{detail}")
+        return "\n\n" + "\n".join(lines)
+
+    if status == WORLD_UNAVAILABLE:
+        lines = [
+            "## 同步状态（一等上下文）",
+            "sync=WORLD_UNAVAILABLE：World（veritasd）不可达。",
+            "- 允许使用 direct_disk 文件工具（str_replace/write_file/undo_last_tx）直写磁盘。",
+            "- 纯 World 操作（create_object/link_objects/unlink_objects）不可用。",
+            "- 恢复 veritasd 后运行 forge_sync 重新对账。",
+        ]
+        if detail:
+            lines.append(f"详情：{detail}")
+        return "\n\n" + "\n".join(lines)
+
+    if status == NOT_A_GIT_REPO:
+        return (
+            "\n\n## 同步状态\n"
+            "sync=NOT_A_GIT_REPO：当前工作区不是 Git 仓库，同步能力不可用。"
+        )
+
+    return ""
+
+
 # 结果确认型工具：第一行就是精华（RESULT: path=... tx=... 之类），压成一行安全。
 # 其余(默认)按"内容承载型"处理：read_file/str_replace/near_miss/diff 等，
 # 精华常常不在第一行，压缩过头是长会话后期质量下滑的直接原因之一。
@@ -1006,17 +1087,44 @@ class Runtime:
                 replies.append(m.content)
         _save_session_summary(self.workspace.project_root, replies)
 
-    def _run_conversation(self, task: str, schemas: list, extra_system: str = "") -> str:
-        """Tool-calling loop；schemas 决定本轮可见工具（规划=只读，执行=只读+mutation）。"""
-        from forge.adapters.base import Message as ForgeMessage
+    def _sync_system_hint(self) -> str:
+        """首轮 system 注入：把当前同步状态作为一等上下文交给 Agent。
 
+        复用 `sync_status()` / `SyncReport`，不重做同步模型；任何探测失败都
+        退回空串（不阻塞正常会话）。
+        """
+        try:
+            report = self.sync_status()
+        except Exception:
+            return ""
+        return _sync_status_system_hint(report)
+
+    def _initial_system(self, extra_system: str = "") -> str:
+        """构建首轮 system 消息文本（base 指令 + sync 状态 + 阶段指令 + 摘要 + 记忆）。
+
+        sync 状态只在首轮构建时注入一次；工具循环后续轮次只追加 Working Set /
+        todo 提醒，不再重复注入同步状态。
+        """
         prior = _load_session_summary(self.workspace.project_root)
         try:
             from forge.tools.project_memory import format_for_prompt
             mem = format_for_prompt(self.workspace.project_root)
         except Exception:
             mem = ""
-        system = SYSTEM_INSTRUCTION + (extra_system or "") + (prior or "") + (mem or "")
+        sync_hint = self._sync_system_hint()
+        return (
+            SYSTEM_INSTRUCTION
+            + sync_hint
+            + (extra_system or "")
+            + (prior or "")
+            + (mem or "")
+        )
+
+    def _run_conversation(self, task: str, schemas: list, extra_system: str = "") -> str:
+        """Tool-calling loop；schemas 决定本轮可见工具（规划=只读，执行=只读+mutation）。"""
+        from forge.adapters.base import Message as ForgeMessage
+
+        system = self._initial_system(extra_system)
         messages = [ForgeMessage(role="system", content=system)]
         history = self.conversation.get_messages()
         if history:

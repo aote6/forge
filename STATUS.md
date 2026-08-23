@@ -402,3 +402,35 @@ veritasd 不可用时体验断崖：`Runtime._guard_external_change` 对所有 m
   它写进 `result.display` 后，紧接着 `_attach_diff` 用 `format_block` 整体重建了 display，
   提示被丢弃。**World 路径与 direct_disk 路径都一样**，即该 P1 提示从未真正到达模型。
   修法是把它并进 `_attach_diff` 的 body/hint，属独立一小轮，不在 P2-1 内。
+
+## P2-2 完成：启动/冲突提示进入首轮 system 上下文（2026-08-23）
+
+### 问题
+`_startup_sync_check` 发现同步状态后只写 stderr，Agent 首轮看不到，仍会盲目
+mutation 或不知道下一步该做什么。
+
+### 实现
+- `forge/runtime.py` 新增模块级纯函数 `_sync_status_system_hint(report)`：把
+  `SyncReport` 格式化成结构化、可执行的首轮 system 提示（复用现有 `SyncReport`，
+  不重做同步模型）。
+  - CONFLICT：`sync=CONFLICT` + 禁止 mutation + 优先 `forge_sync` + 首轮回复解释冲突。
+  - FAST_FORWARD（两方向）：`sync=...` + 明确方向（Disk → World / World → Disk，
+    以 SyncReport 实际结果为准）+ 先 `forge_sync` + 同步完成前禁止 mutation。
+  - IN_SYNC：`sync=IN_SYNC`，不阻塞。
+  - WORLD_UNAVAILABLE：World 不可达；允许 direct_disk 文件工具、纯 World 操作不可用。
+  - NOT_A_GIT_REPO：同步能力不可用。
+- `Runtime._sync_system_hint()`：调用现有 `sync_status()` 取报告并格式化；探测失败退回空串。
+- `Runtime._initial_system(extra_system)`：构建首轮 system（base 指令 + sync 状态 +
+  阶段指令 + 摘要 + 记忆），sync 状态只在首轮构建时注入一次。
+- `_run_conversation` 改用 `_initial_system`，注入真正进入 Agent 首轮可见的 system 消息
+  （不是 stderr / assistant 文本），工具循环后续轮次只追加 Working Set / todo 提醒。
+
+### 边界（不要扩大）
+- 纯文本追加，不改 `_guard_external_change` / 工具声明 / direct_disk / sync 状态机。
+- 复用 `sync_status()` / `SyncReport`，未重复实现同步或权限逻辑。
+
+### 测试
+- `tests/test_p2_2_sync_system_hint.py` 10 个契约测试（覆盖 CONFLICT / 两向
+  FAST_FORWARD / IN_SYNC / WORLD_UNAVAILABLE / NOT_A_GIT_REPO / 只注入一次 /
+  进入真实 system 消息 / 不改 mutation 路径）。
+- 全量：**337 passed, 10 skipped**
