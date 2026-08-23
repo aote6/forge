@@ -20,10 +20,11 @@ CONFLICT 通过 conflict_kind 区分：
 契约 §4：任何未解决分叉 MUST STOP；禁止 skip → success → advance。
 契约 §7：`forge sync` = 检测 → 依状态安全推进 / 报告冲突 → 更新元数据 → 记录同步事实。
 
-性能备注（已知后续优化项，非本轮范围）：
-detect() 当前每次全量查询 receipt 历史（get_receipts_since(0)）构造
-forge_known_paths 集合，用于识别外部 untracked。若 receipt 量级增长导致
-detect() 变慢，应增加进程内 path 缓存或增量索引，不属于本轮修复范围。
+性能备注（P3-4 已落地）：
+detect() 在 World version 未变、且磁盘侧（git HEAD / 已知文件 hash /
+git untracked 状态）与同步水位均未变化时，直接复用上一次 SyncReport，
+不再全量 get_receipts_since(0)。仅当上述任一输入变化时才触发全量重算，
+三态判定语义与无缓存时完全一致（见 detect() 内 `_detect_cache_key`）。
 """
 
 from __future__ import annotations
@@ -165,10 +166,19 @@ class SyncLayer:
         self._world = world_runtime
         self._state = sync_state or SyncState(self.project_root)
         self._file_projection = file_projection
+        # P3-4：detect() 报告缓存。仅当 World version 与磁盘侧指纹均未变化时复用。
+        self._last_detect_version: Optional[int] = None
+        self._last_detect_key: Optional[tuple] = None
+        self._last_detect_report: Optional[SyncReport] = None
 
     @property
     def state(self) -> SyncState:
         return self._state
+
+    @property
+    def last_detect_version(self) -> Optional[int]:
+        """上一次 detect() 观察到的 World version（缓存命中时被复用）。"""
+        return self._last_detect_version
 
     # ── world / disk observation ───────────────────────────────
 
@@ -277,15 +287,54 @@ class SyncLayer:
                 external.append(abs_p)
         return external
 
+    def _invalidate_detect_cache(self) -> None:
+        """失效 detect 缓存（非 git 仓库 / World 不可达时禁止复用旧报告）。"""
+        self._last_detect_version = None
+        self._last_detect_key = None
+        self._last_detect_report = None
+
+    @staticmethod
+    def _clone_report(r: SyncReport) -> SyncReport:
+        """返回报告的浅拷贝，避免调用方改动缓存里的列表字段。"""
+        return SyncReport(**r.to_dict())
+
+    def _detect_cache_key(
+        self, world_version: int, c_disk: str, current_hashes: dict, untracked: str
+    ) -> tuple:
+        """detect() 结果的完整输入指纹（缓存键）。
+
+        覆盖影响三态判定的所有输入：
+        - `world_version`：唯一需要 World RPC 收据历史的部分；
+        - 同步水位（disk_synced_version / last_known_commit / last_known_file_hashes）：
+          sync() 期间会变（external_sync 重算 hash、mark_disk_synced 推进水位），
+          必须纳入，否则 sync 后的第二次 detect 会误命中旧报告；
+        - 磁盘侧（git HEAD、已知文件实时 hash、git untracked 状态）：
+          外部编辑/新文件/新 commit 都体现在这里。
+
+        任一输入变化 → 缓存失效 → 全量重算，语义与无缓存完全一致。
+        """
+        s = self._state
+        return (
+            world_version,
+            s.disk_synced_version,
+            s.last_known_commit,
+            tuple(sorted(s.last_known_file_hashes.items())),
+            c_disk,
+            untracked,
+            tuple(sorted(current_hashes.items())),
+        )
+
     # ── detection ──────────────────────────────────────────────
 
     def detect(self) -> SyncReport:
         if not is_git_repo(self.project_root):
+            self._invalidate_detect_cache()
             return SyncReport(status=NOT_A_GIT_REPO, detail="workspace is not a git repository")
 
         try:
-            self._world.get_version()
+            world_version = self._world.get_version()
         except Exception as e:
+            self._invalidate_detect_cache()
             return SyncReport(
                 status=WORLD_UNAVAILABLE,
                 world_version=None,
@@ -299,11 +348,37 @@ class SyncLayer:
                 ),
             )
 
+        # P3-4：先取廉价磁盘侧指纹（本地 git + hash + untracked），
+        # 若 World version 与指纹均未变化，直接复用上次报告，跳过全量 receipt 扫描。
+        c_disk = git_head_commit(self.project_root)
+        current_hashes = self._current_hashes()
+        try:
+            untracked = git_status_porcelain_untracked_all(self.project_root)
+        except Exception as e:
+            # git status 故障与 World receipt 查询失败同级：无法识别外部 untracked，
+            # 不得伪装成 IN_SYNC（保持原语义，git status 失败 → WORLD_UNAVAILABLE）。
+            self._invalidate_detect_cache()
+            return SyncReport(
+                status=WORLD_UNAVAILABLE,
+                world_version=None,
+                disk_commit=c_disk,
+                known_commit=self._state.last_known_commit,
+                disk_synced_version=self._state.disk_synced_version,
+                detail=(
+                    f"无法读取 git 工作区状态：{e}。"
+                    "无法识别外部 untracked 文件，禁止把“看不见”伪装成 IN_SYNC。"
+                ),
+            )
+        cache_key = self._detect_cache_key(world_version, c_disk, current_hashes, untracked)
+        if self._last_detect_report is not None and self._last_detect_key == cache_key:
+            return self._clone_report(self._last_detect_report)
+
         s = self._state.disk_synced_version
         try:
             world_file_receipts = self._world_file_receipts_beyond(s)
             external_untracked = self._external_untracked_paths()
         except Exception as e:
+            self._invalidate_detect_cache()
             return SyncReport(
                 status=WORLD_UNAVAILABLE,
                 world_version=None,
@@ -396,6 +471,10 @@ class SyncLayer:
 
         if report.status == CONFLICT and report.conflict_kind == CONFLICT_CONTENT:
             report.diff_hint = self._build_diff_hint(divergent)
+
+        self._last_detect_version = world_version
+        self._last_detect_key = cache_key
+        self._last_detect_report = report
         return report
 
     def _build_diff_hint(self, divergent_paths: list[str]) -> str:

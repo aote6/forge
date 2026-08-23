@@ -3,8 +3,23 @@
 """
 import json
 import os
+import time
 from openai import OpenAI
 from forge.adapters.base import BaseAdapter, Message, ToolCall
+
+
+def _is_retryable_error(e: BaseException) -> bool:
+    """判定是否可重试：仅 429 或 5xx；其它 4xx（400/401/404/422...）不重试。
+
+    对齐 deepseek.py 的重试策略（指数退避、最多 3 次），但判定更精确：
+    优先看 openai.APIStatusError 的 status_code；无 status_code 的传输层错误
+    （连接/超时）按网络抖动处理（非 4xx，可重试）。
+    """
+    status = getattr(e, "status_code", None)
+    if status is not None:
+        return status == 429 or (500 <= int(status) < 600)
+    err_str = str(e).lower()
+    return any(k in err_str for k in ("timeout", "connect", "unavailable", "connection"))
 
 
 class OpenAICompatAdapter(BaseAdapter):
@@ -77,7 +92,30 @@ class OpenAICompatAdapter(BaseAdapter):
         if api_tools:
             kwargs["tools"] = api_tools
 
-        response = self.client.chat.completions.create(**kwargs)
+        # 指数退避重试：仅 429 / 5xx（对齐 deepseek.py，最多 3 次，间隔 1/2/4s）。
+        max_retries = 3
+        last_err = None
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+                break
+            except Exception as e:
+                last_err = e
+                if not _is_retryable_error(e) or attempt >= max_retries - 1:
+                    raise
+                wait = 2 ** attempt  # 1, 2, 4
+                print(
+                    f"\n⏳ 模型网关限流/服务端错误，{wait}s 后重试 "
+                    f"({attempt + 1}/{max_retries})...",
+                    flush=True,
+                )
+                time.sleep(wait)
+
+        if response is None:
+            raise RuntimeError(
+                f"模型网关调用失败（已重试 {max_retries} 次）: {last_err}"
+            )
 
         if not response.choices:
             err_info = getattr(response, "error", None) or getattr(response, "model_extra", {}).get("error", None)

@@ -1502,7 +1502,13 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
 
 
     def undo_last_tx() -> ToolResult:
-        """Undo last mutation via file shadow; invalidate caches."""
+        """Undo last mutation via file shadow; invalidate caches.
+
+        语义（P3-5 文档化）：undo 只从 shadow 恢复磁盘文件内容；不回滚 World
+        账本、不写 external_sync receipt、不推进/回退 disk_synced_version。
+        因此 World 账本可能仍较新——display 里以 mode=file_shadow_revert 和
+        world=may_lag 明确标注，用户须以磁盘 read 为准，再用 forge_sync 对账。
+        """
         try:
             root = _project_root(world)
             info = shadow_undo_last(root)

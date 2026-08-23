@@ -1,5 +1,49 @@
 # Forge 状态
 
+## P3-4 + P3-5 + P3-6：detect 缓存 + undo 文档化 + openai_compat 429 重试（2026-08-23）
+
+只做这三项，不推远程，未 commit。
+
+### P3-4：Sync detect 缓存
+- 问题：detect() 每次全量扫 receipt 历史（get_receipts_since(0)），receipt 量级增长后变慢。
+- 方案：SyncLayer 记录 `last_detect_version` + 缓存上次 `SyncReport`。detect() 先取廉价磁盘侧
+  指纹（git HEAD + 已知文件实时 hash + git untracked 状态）+ 同步水位（disk_synced_version /
+  last_known_commit / last_known_file_hashes）构成完整缓存键 `_detect_cache_key`；键不变时直接
+  返回上次报告的浅拷贝（`_clone_report`），跳过全量 receipt 扫描。
+- 三态判定语义完全不变：任一输入（World version / 同步水位 / 磁盘侧）变化即失效重算。
+  特别处理了 sync() 后第二次 detect 的场景——external_sync 重算 hash、mark_disk_synced 推进
+  水位都会改变缓存键，不会误命中旧报告（这些字段都进了键）。
+- git status 失败（GitError）仍返回 WORLD_UNAVAILABLE：指纹里的 git status 调用单独守卫，
+  保持 P0-batch5「git status 故障不得伪装 IN_SYNC」语义。
+- 测试：新增 3 个（缓存命中不重复扫 receipt / World 前进失效 / 磁盘编辑失效）。
+
+### P3-5：undo_last_tx 语义文档化
+- 在 tx_shadow.py（模块 docstring + undo_last docstring）与 intent_tools.py（undo_last_tx
+  docstring）里明确文档化：undo 只从 shadow 恢复磁盘，不回滚 World 账本、不写 external_sync
+  receipt、不推进/回退 disk_synced_version；undo 后 World 账本可能仍较新，以磁盘 read 为准，
+  待 veritasd 恢复后 forge_sync 对账。
+- display 提示已足够清晰（无需改）：undo_last_tx 的 body 已写「mode=file_shadow_revert；World
+  账本可能仍较新，以磁盘 read 为准」，kv 标注 world=may_lag / disk=restored。
+- 不实现「undo 写 external_sync receipt」（超范围，维持 MVP 语义）。
+- 测试：新增 2 个（undo_last 纯磁盘不写 receipt / undo_last_tx display 明示 may_lag）。
+
+### P3-6：openai_compat 429 重试
+- 对齐 deepseek.py 重试策略：指数退避 `2**attempt`（1/2/4s），最多 3 次。
+- 判定更精确：`_is_retryable_error` 优先看 `status_code`，仅 429 与 5xx 重试；其它 4xx
+  （400/401/404/422...）立即抛出不重试。无 status_code 的传输层错误（连接/超时）按网络抖动处理。
+- 响应格式完全不变（retry 只包住 create 调用，成功路径照旧走 choices 解析）。
+- 测试：新增 4 个（429 重试后成功 / 5xx 重试后成功 / 其它 4xx 不重试 / 3 次耗尽后抛出）。
+
+### 验证
+- 全量 pytest：**404 passed，10 skipped**（基线 395 + 新增 9，无回归）。
+
+### 真实遗留问题
+1. detect 缓存是进程内内存缓存，不落盘；新进程首次 detect 仍要冷启动一次全量 receipt 扫描。
+2. detect() 里 `world_version` 与报告分支里的 `_world_version()` 是两次 `get_version()` 调用；
+  理论上 World 在两调用间前进会短暂不一致（下一次 detect 即重算自愈），非本轮范围。
+3. openai_compat 对无 status_code 的传输层错误（连接/超时）靠字符串关键词判定，与 deepseek 一致，
+   仍属启发式；若需更强可改判 `openai.APIConnectionError` / `APITimeoutError` 具体类型。
+
 ## P3-2 + P3-3：local_tools 拆模块 + get_call_chain 优化（2026-08-23）
 
 只做这两项，不做 P3-4/5/6，不推远程，未 commit。
