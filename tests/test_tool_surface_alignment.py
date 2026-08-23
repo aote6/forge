@@ -94,6 +94,16 @@ def test_read_only_and_mutation_surfaces_disjoint():
     assert ro.isdisjoint(mu), f"只读面与突变面重叠: {sorted(ro & mu)}"
 
 
+def test_mastodon_side_effects_are_mutations_not_read_only():
+    """post_toot / delete_toot 都是外部副作用，必须归 MUTATION，与只读面无关。"""
+    ro = {d["name"] for d in READ_ONLY_TOOL_DECLARATIONS}
+    mu = {d["name"] for d in MUTATION_TOOL_DECLARATIONS}
+    assert "post_toot" in mu, "post_toot 有外部发帖副作用，必须归 MUTATION"
+    assert "delete_toot" in mu, "delete_toot 有外部删除副作用，必须归 MUTATION"
+    assert "post_toot" not in ro
+    assert "delete_toot" not in ro
+
+
 def test_mutation_tools_all_registered(tmp_path: Path):
     registry = set(_full_registry(tmp_path).keys())
     missing = set(MUTATION_TOOL_NAMES) - registry

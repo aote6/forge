@@ -671,3 +671,64 @@ mutation 或不知道下一步该做什么。
 - write_file 覆盖提示死代码（下一轮）。
 - P2-1a/1b/1c、P3-1 ~ P3-6：未动。
 - 未 commit、未 push（按本轮要求）。
+
+## write_file 覆盖提示死代码 + P1 遗留 3 项小修（2026-08-23）
+
+本轮处理 4 项，均为「P2-1 顺带发现」与「P1 遗留补充」记录在案的独立小修。
+
+### 1. write_file 覆盖提示死代码（生产代码小修）
+
+- **原问题**：`write_file` 把「覆盖了已存在文件(N行)…建议用 str_replace」提示写进
+  `result.display`，紧接着 `_attach_diff` 用 `format_block` 整体重建 display，提示被
+  丢弃，从未真正到达模型。World 路径与 direct_disk 路径都一样。
+- **根因**：提示生成点（`write_file` 内拼进 RESULT 行）与 display 重建点
+  （`_attach_diff`）错位；且触发条件用 `mode == "overwrite"`，direct_disk 路径下
+  `mode == MODE_DIRECT_DISK`，提示根本不生成。
+- **修复方式**：把覆盖提示并进 `_attach_diff` 的 `hint`，通过新增可选参数
+  `overwrite_note` 传入；触发条件从「`mode == "overwrite"`」改为「`old_content.strip()
+  and old_content != new_content`」，使 World 与 direct_disk 两路径语义一致。
+  `_attach_diff` 内 `hint = overwrite_note + " " + hint`，display 重建后提示仍在。
+- **未做**：未重构 `write_file` 其他逻辑；`mode` 仍用于 RESULT 行/payload 展示。
+- **测试**：新增 `tests/test_write_file_overwrite_hint.py` 4 用例（World 覆盖含提示 /
+  direct_disk 覆盖含提示 / 新建文件无提示 / 同内容无提示）。
+
+### 2. post_toot 分类调整
+
+- **原问题**：`post_toot` 有外部发帖副作用（Mastodon POST），却归类在
+  `READ_ONLY_TOOL_DECLARATIONS`；`delete_toot` 同类外部删除副作用却在
+  `MUTATION_TOOL_DECLARATIONS`，分类不一致。
+- **修复方式**：把 `post_toot` 声明从 READ_ONLY 移到 MUTATION，置于 `delete_toot`
+  之前，二者一致。schema 与 `make_tools` 注册（local_tools.py 的 `make_local_tools`
+  返回字典本已含二者）对齐，无注册缺口。
+- **测试**：新增 `test_mastodon_side_effects_are_mutations_not_read_only`
+  （tests/test_tool_surface_alignment.py），断言 post_toot / delete_toot 均在 MUTATION
+  且均不在 READ_ONLY。
+
+### 3. TOOL_DECLARATIONS 处理方式
+
+- **原问题**：`TOOL_DECLARATIONS = list(READ_ONLY_TOOL_DECLARATIONS)` 命名误导
+  （实际只含只读面），且未被生产代码使用——全仓唯一引用是 `runtime.py` 顶部 import，
+  该 import 后也无任何使用点。死常量/易混淆。
+- **处理方式**：直接删除（定义 + `runtime.py` 未使用 import）。无测试引用，无需改测试。
+
+### 4. subagent.py import 清理
+
+- **删了什么**：`from typing import Any, Callable`。grep 全文确认 `Any` / `Callable`
+  均未被使用（文件只用 `dict[str, list[str]]`、`str | None` 等内置泛型）。
+
+### 测试数量变化
+
+- 新增 5 个：write_file 覆盖提示 4 + post_toot 分类 1。
+- 全量：**372 passed，10 skipped**（基线 367 + 新增 5）。
+
+### 真实遗留问题
+
+1. `post_toot` / `delete_toot` 进入 `MUTATION_TOOL_NAMES` 后，会命中 `_guard_external_change`
+   的 mutation 分支（此前 post_toot 在 READ_ONLY 不命中）。该 guard 对「World 不可达」的
+   mutation 会返回硬失败，但对 Mastodon 外部操作而言「World 不可达」本应无关紧要——
+   Mastodon 走的是环境变量 + HTTP，不依赖 World。当前 `delete_toot` 已是同样处境，属
+   既有行为而非本轮新引入，但语义上仍是「外部副作用工具被套了 World 可达性守卫」，
+   后续若要彻底修需为 Mastodon 工具单独豁免（非本轮范围）。
+2. `_EDIT_TOOLS` / `_VERIFY_GUARDED_MUTATIONS` 均不含 post_toot / delete_toot，故
+   VERIFY_REQUIRED 硬拦截与 Working Set 的 files_edited 记账不受本轮影响，保持正确。
+3. 未 commit、未 push（按本轮要求）。

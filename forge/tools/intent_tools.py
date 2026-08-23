@@ -197,7 +197,14 @@ def _make_unified_diff(path: str, old: str, new: str, max_lines: int = 80) -> st
     return "".join(lines)
 
 
-def _attach_diff(result: ToolResult, path: str, old: str, new: str, tool: str = "edit") -> ToolResult:
+def _attach_diff(
+    result: ToolResult,
+    path: str,
+    old: str,
+    new: str,
+    tool: str = "edit",
+    overwrite_note: str = "",
+) -> ToolResult:
     if not result.success:
         return result
     diff = _make_unified_diff(path, old, new)
@@ -223,6 +230,8 @@ def _attach_diff(result: ToolResult, path: str, old: str, new: str, tool: str = 
         "registered": pl.get("registered"),
     }
     hint = "不对就 undo_last_tx()；建议 run_test_structured 或 git_diff"
+    if overwrite_note:
+        hint = overwrite_note + " " + hint
     clip = {
         "task": f"{tool} path={path}",
         "tx": pl.get("tx_id"),
@@ -1037,17 +1046,17 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 )
                 if result.payload is not None:
                     result.payload["mode"] = mode
-                overwrite_hint = ""
-                if mode == "overwrite" and old_content.strip() and old_content != new_content:
+                overwrite_note = ""
+                if old_content.strip() and old_content != new_content:
                     old_lines = old_content.count("\n") + 1
-                    overwrite_hint = (
-                        f"\nHINT: 覆盖了已存在文件({old_lines}行)。"
+                    overwrite_note = (
+                        f"覆盖了已存在文件({old_lines}行)；"
                         f"若只想改部分内容，下次可用 str_replace/modify_file 更安全。"
                     )
                 result.display = (
                     f"RESULT: path={path_n} mode={mode} object_id={result.payload.get('object_id')} "
                     f"tx={result.payload.get('tx_id')} version={result.payload.get('version')}\n"
-                    f"write_file ok: {path_n}{overwrite_hint}"
+                    f"write_file ok: {path_n}"
                 )
                 if result.success and result.payload:
                     try:
@@ -1065,7 +1074,10 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     result.payload["_project_root"] = _project_root(world)
                 if result.payload is not None:
                     result.payload["_edit_symbols"] = symbols_from_edit(old_content, new_content)
-                result = _attach_diff(result, path_n, old_content, new_content, tool="write_file")
+                result = _attach_diff(
+                    result, path_n, old_content, new_content,
+                    tool="write_file", overwrite_note=overwrite_note,
+                )
                 try:
                     record_session_change(
                         path_n,

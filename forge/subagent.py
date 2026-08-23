@@ -7,7 +7,6 @@ to the parent context (no tool-call history).
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
 
 from forge.adapters.base import BaseAdapter, Message, ToolCall, ToolResult
 

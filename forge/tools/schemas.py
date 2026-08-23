@@ -242,7 +242,12 @@ READ_ONLY_TOOL_DECLARATIONS = [
             "required": ["url"],
         },
     },
+]
 
+# ---------------------------------------------------------------------------
+# Mutations — text-first edit primitives + World + batch
+# ---------------------------------------------------------------------------
+MUTATION_TOOL_DECLARATIONS = [
     {
         "name": "post_toot",
         "description": (
@@ -263,12 +268,6 @@ READ_ONLY_TOOL_DECLARATIONS = [
             "required": ["text"],
         },
     },
-]
-
-# ---------------------------------------------------------------------------
-# Mutations — text-first edit primitives + World + batch
-# ---------------------------------------------------------------------------
-MUTATION_TOOL_DECLARATIONS = [
     {
         "name": "delete_toot",
         "description": (
@@ -429,8 +428,6 @@ MUTATION_TOOL_DECLARATIONS = [
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
 ]
-
-TOOL_DECLARATIONS = list(READ_ONLY_TOOL_DECLARATIONS)
 
 MUTATION_TOOL_NAMES = frozenset(d["name"] for d in MUTATION_TOOL_DECLARATIONS)
 

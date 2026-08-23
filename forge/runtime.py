@@ -30,7 +30,6 @@ from forge.system_prompt import SYSTEM_INSTRUCTION
 from forge.tools import make_tools
 from forge.tools.direct_disk import DIRECT_DISK_TOOLS
 from forge.tools.schemas import (
-    TOOL_DECLARATIONS,
     READ_ONLY_TOOL_DECLARATIONS,
     MUTATION_TOOL_DECLARATIONS,
     MUTATION_TOOL_NAMES,
