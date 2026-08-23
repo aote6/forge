@@ -1091,3 +1091,23 @@ P3-1 的"消除完全静默"目标已完成（29 处）。但原始清单还要�
 
 ### 决定
 暂缓，等 P3 其他项完成后再单独处理。
+
+## 遗留观察：模型绕过注册工具直接跑 Python（2026-08-23）
+
+### 现象
+发嘟文任务中，模型没有直接调用已注册的 `post_toot` 工具，而是：
+1. 用 6 步搜索找到 post_toot 实现位置（search_code / glob_files / read_function）
+2. 最后用 `run_command` 直接调 MastodonClient 发帖，绕过工具层
+
+### 根因分析
+1. `post_toot` 的 schema 描述太模糊（"发一条 Mastodon 嘟文。非强制：想发就调"），模型不确定参数格式和用途
+2. 模型倾向"直接写代码更可控"，而非信任注册工具
+3. 工具发现效率低：post_toot 在 meta_tools.py，但模型先搜 mastodon.py 导致 read_function 失败
+
+### 改进方向（暂缓）
+- 强化 post_toot / delete_toot 的 schema 描述（明确参数、默认值、用途）
+- system prompt 增加约束："外部操作优先用注册工具，不要绕过工具层跑脚本"
+- 工具发现：模型搜 "post_toot" 时应能快速定位到 meta_tools.py 而非误搜 mastodon.py
+
+### 状态
+未处理，记入工程债。全量测试不受影响。
