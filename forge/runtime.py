@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+from dataclasses import dataclass, field
 from typing import Optional
 
 from forge.adapters.base import BaseAdapter, Message, ToolResult
@@ -40,6 +41,137 @@ from forge.world import WorldRuntime
 
 MAX_AGENT_STEPS = 40
 MAX_CONSECUTIVE_FAILURES = 3
+
+# Tools that primarily read code/content into context
+_READ_TOOLS = {
+    "read_file",
+    "read_file_with_lines",
+    "read_files",
+    "search_code",
+    "glob_files",
+    "list_files",
+    "summarize_file",
+    "read_function",
+}
+
+# Mutation tools that edit files on success
+_EDIT_TOOLS = {
+    "str_replace",
+    "write_file",
+    "modify_file",
+    "create_file",
+    "delete_file",
+    "apply_patch",
+    "edit_files_batch",
+    "create_object",
+}
+
+
+@dataclass
+class WorkingSet:
+    """Lightweight task-level state held in Runtime memory (P1-1).
+
+    Not a second todo system — just enough so long tool loops do not lose
+    the current goal, which files were touched, and what still needs verify.
+    """
+
+    goal: str = ""
+    constraints: list[str] = field(default_factory=list)
+    files_read: list[str] = field(default_factory=list)
+    files_edited: list[str] = field(default_factory=list)
+    open_hypotheses: list[str] = field(default_factory=list)
+    pending_verify: list[str] = field(default_factory=list)
+
+    def _add_unique(self, bucket: list[str], item: str, max_keep: int = 24) -> None:
+        item = (item or "").strip()
+        if not item:
+            return
+        if item in bucket:
+            return
+        bucket.append(item)
+        if len(bucket) > max_keep:
+            del bucket[: len(bucket) - max_keep]
+
+    def _path_from_args_or_payload(
+        self, arguments: dict | None, result: ToolResult
+    ) -> str | None:
+        args = arguments or {}
+        for key in ("path", "file", "target"):
+            v = args.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        payload = result.payload or {}
+        for key in ("path", "file"):
+            v = payload.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        display = (result.display or "").strip()
+        if display:
+            m = re.search(r"path[=:]\s*(\S+)", display.splitlines()[0])
+            if m:
+                return m.group(1).strip().rstrip(",")
+        return None
+
+    def update_from_tool(
+        self, name: str, arguments: dict | None, result: ToolResult
+    ) -> None:
+        """Incrementally update from a real tool outcome."""
+        path = self._path_from_args_or_payload(arguments, result)
+        display = (result.display or "") or ""
+        disp_l = display.lower()
+
+        if name in _READ_TOOLS and result.success and path:
+            self._add_unique(self.files_read, path)
+
+        if name in _EDIT_TOOLS and result.success and path:
+            self._add_unique(self.files_edited, path)
+            self._add_unique(
+                self.pending_verify,
+                f"verify edit on {path}",
+            )
+
+        if not result.success:
+            if "near_miss" in disp_l or "NEAR_MISS" in display:
+                note = f"NEAR_MISS on {name}" + (f" ({path})" if path else "")
+                self._add_unique(self.open_hypotheses, note, max_keep=12)
+            elif path:
+                self._add_unique(
+                    self.open_hypotheses,
+                    f"{name} failed on {path}",
+                    max_keep=12,
+                )
+
+        if name in ("run_test_structured", "run_tests") and result.success:
+            self.pending_verify = [
+                p for p in self.pending_verify if "test" not in p.lower()
+            ][:8]
+
+    def summary(self, max_lines: int = 28) -> str:
+        """Compact injection text so the model always sees current task state."""
+        lines: list[str] = ["[Working Set]"]
+        lines.append(f"goal: {self.goal[:400] if self.goal else '(none)'}")
+        if self.constraints:
+            lines.append("constraints:")
+            for c in self.constraints[:5]:
+                lines.append(f"  - {c[:120]}")
+        if self.files_read:
+            shown = self.files_read[-10:]
+            lines.append("files_read: " + ", ".join(shown))
+        if self.files_edited:
+            shown = self.files_edited[-8:]
+            lines.append("files_edited: " + ", ".join(shown))
+        if self.open_hypotheses:
+            lines.append("open_hypotheses:")
+            for h in self.open_hypotheses[-5:]:
+                lines.append(f"  - {h[:140]}")
+        if self.pending_verify:
+            lines.append("pending_verify:")
+            for p in self.pending_verify[-5:]:
+                lines.append(f"  - {p[:140]}")
+        if len(lines) > max_lines:
+            lines = lines[: max_lines - 1] + ["  ...(truncated)"]
+        return "\n".join(lines)
+
 
 # 规划/执行阶段注入到 system 的额外指令
 _PLANNING_INSTRUCTION = """
@@ -149,42 +281,131 @@ _CONFIRMATION_TOOLS = {
 }
 
 
-def _compress_messages(messages: list, keep_recent_tools: int = 6) -> list:
+def _is_near_miss_or_fail_content(content: str) -> bool:
+    c = content or ""
+    cl = c.lower()
+    return (
+        "near_miss" in cl
+        or "NEAR_MISS" in c
+        or cl.startswith("fail")
+        or "status: fail" in cl
+        or "failed:" in cl
+    )
+
+
+def _path_mentioned(content: str, paths: set[str]) -> bool:
+    if not paths or not content:
+        return False
+    for p in paths:
+        if p and p in content:
+            return True
+    return False
+
+
+def _summarize_tool_message(name: str, content: str) -> str:
+    """Build a compressed summary for one tool message."""
+    stripped = (content or "").strip()
+    if not stripped:
+        return f"[compressed FACT {name}] "
+    if name in _CONFIRMATION_TOOLS:
+        # Keep first line (usually RESULT: path=... tx=...)
+        first = stripped.splitlines()[0][:160]
+        return f"[compressed FACT {name}] {first}"
+    # content-bearing: keep a modest head
+    lines = stripped.splitlines()
+    kept = lines[:8]
+    body = "\n".join(kept)[:800]
+    truncated = len(lines) > 8 or len(body) < len(stripped)
+    more = (
+        f"\n...[截断，原始长度 {len(stripped)} 字符/{len(lines)} 行]"
+        if truncated
+        else ""
+    )
+    return f"[compressed {name}]\n{body}{more}"
+
+
+def _compress_messages(
+    messages: list,
+    keep_recent_tools: int = 6,
+    working_set: "WorkingSet | None" = None,
+) -> list:
     """Replace older tool results with summaries to curb context rot.
 
-    结果确认型工具压成一行；内容承载型工具保留更大预算（多行+字符上限），
-    避免第20步之后模型"以为看过"实则早被压没了的内容。
+    P1-2 rules (when working_set provided):
+    - Prefer retaining tool results related to goal / files_read / files_edited.
+    - read_file / search_code / str_replace failures especially NEAR_MISS:
+      keep the most recent 2 uncompressed.
+    - Confirmation tools may collapse to one line but must keep path + tx.
+    - Unrelated old tool output is compressed first.
+    - [Working Set] system messages are never dropped or altered.
     """
     if len(messages) < 24:
         return messages
+
     tool_idxs = [i for i, m in enumerate(messages) if getattr(m, "role", None) == "tool"]
     if len(tool_idxs) <= keep_recent_tools:
         return messages
-    drop = set(tool_idxs[:-keep_recent_tools])
+
+    relevant_paths: set[str] = set()
+    if working_set is not None:
+        relevant_paths.update(working_set.files_read or [])
+        relevant_paths.update(working_set.files_edited or [])
+        if working_set.goal:
+            # crude: any path-like tokens already tracked; goal text alone not a path
+            pass
+
+    # Protect recent NEAR_MISS / fail results for key tools (last 2)
+    protect_names = {"read_file", "search_code", "str_replace", "read_file_with_lines"}
+    near_miss_idxs = [
+        i
+        for i in tool_idxs
+        if (getattr(messages[i], "name", None) in protect_names)
+        and _is_near_miss_or_fail_content(getattr(messages[i], "content", None) or "")
+    ]
+    protected = set(near_miss_idxs[-2:])
+
+    # Always keep the most recent keep_recent_tools tool messages
+    recent = set(tool_idxs[-keep_recent_tools:])
+
+    # Prefer not compressing relevant-path tool results when possible
+    relevant_idxs = []
+    if relevant_paths:
+        for i in tool_idxs:
+            if i in recent or i in protected:
+                continue
+            content = getattr(messages[i], "content", None) or ""
+            if _path_mentioned(content, relevant_paths):
+                relevant_idxs.append(i)
+    # Keep up to 4 older relevant results uncompressed
+    protected.update(relevant_idxs[-4:])
+
+    drop = set(tool_idxs) - recent - protected
+
     out = []
     for i, m in enumerate(messages):
+        # Never alter Working Set injection
+        if (
+            getattr(m, "role", None) == "system"
+            and isinstance(getattr(m, "content", None), str)
+            and getattr(m, "content", "").startswith("[Working Set]")
+        ):
+            out.append(m)
+            continue
         if i in drop:
             name = getattr(m, "name", None) or "tool"
-            content = (getattr(m, "content", None) or "")
-            stripped = content.strip()
-            if not stripped:
-                summary = f"[compressed FACT {name}] "
-            elif name in _CONFIRMATION_TOOLS:
-                first = stripped.splitlines()[0][:120]
-                summary = f"[compressed FACT {name}] {first}"
-            else:
-                lines = stripped.splitlines()
-                kept = lines[:8]
-                body = "\n".join(kept)[:800]
-                truncated = len(lines) > 8 or len(body) < len(stripped)
-                more = (
-                    f"\n...[截断，原始长度 {len(stripped)} 字符/{len(lines)} 行]"
-                    if truncated else ""
-                )
-                summary = f"[compressed {name}]\n{body}{more}"
+            content = getattr(m, "content", None) or ""
+            summary = _summarize_tool_message(name, content)
             try:
                 from forge.adapters.base import Message as ForgeMessage
-                out.append(ForgeMessage(role="tool", content=summary, tool_call_id=getattr(m, "tool_call_id", None), name=name))
+
+                out.append(
+                    ForgeMessage(
+                        role="tool",
+                        content=summary,
+                        tool_call_id=getattr(m, "tool_call_id", None),
+                        name=name,
+                    )
+                )
             except Exception:
                 out.append(m)
         else:
@@ -611,8 +832,25 @@ class Runtime:
         assistant_replies: list[str] = []
         half = max(5, MAX_AGENT_STEPS // 2)
         nudged = False
+        # P1-1: task-level Working Set (in-memory for this conversation)
+        working_set = WorkingSet(goal=(task or "").strip()[:800])
+        self._working_set = working_set
         for step_i in range(MAX_AGENT_STEPS):
-            messages = _compress_messages(messages)
+            messages = _compress_messages(messages, working_set=working_set)
+            # Inject compact Working Set so goal/files/hypotheses stay visible
+            ws_text = working_set.summary()
+            if ws_text:
+                # drop previous Working Set system injection if any
+                messages = [
+                    m
+                    for m in messages
+                    if not (
+                        getattr(m, "role", None) == "system"
+                        and isinstance(getattr(m, "content", None), str)
+                        and getattr(m, "content", "").startswith("[Working Set]")
+                    )
+                ]
+                messages.append(ForgeMessage(role="system", content=ws_text))
             if step_i >= half and not nudged:
                 nudge = _todo_nudge_from_tools(self.executor.tools)
                 if nudge:
@@ -659,6 +897,13 @@ class Runtime:
                 tool_calls_n += 1
                 self._last_tool_display = result.display or ""
                 self._last_tool_name = tc.name
+                # P1-1: update Working Set from real tool outcome
+                try:
+                    working_set.update_from_tool(
+                        tc.name, getattr(tc, "arguments", None) or {}, result
+                    )
+                except Exception as e:
+                    print(f"[forge] WorkingSet update failed: {e}", file=sys.stderr)
                 self.emit(
                     Event(
                         EventType.TOOL_CALL_END,

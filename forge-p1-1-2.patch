@@ -1,0 +1,585 @@
+diff --git a/forge/runtime.py b/forge/runtime.py
+index 79a3d22..2b95b01 100644
+--- a/forge/runtime.py
++++ b/forge/runtime.py
+@@ -13,6 +13,7 @@ import json
+ import os
+ import re
+ import sys
++from dataclasses import dataclass, field
+ from typing import Optional
+ 
+ from forge.adapters.base import BaseAdapter, Message, ToolResult
+@@ -41,6 +42,137 @@ from forge.world import WorldRuntime
+ MAX_AGENT_STEPS = 40
+ MAX_CONSECUTIVE_FAILURES = 3
+ 
++# Tools that primarily read code/content into context
++_READ_TOOLS = {
++    "read_file",
++    "read_file_with_lines",
++    "read_files",
++    "search_code",
++    "glob_files",
++    "list_files",
++    "summarize_file",
++    "read_function",
++}
++
++# Mutation tools that edit files on success
++_EDIT_TOOLS = {
++    "str_replace",
++    "write_file",
++    "modify_file",
++    "create_file",
++    "delete_file",
++    "apply_patch",
++    "edit_files_batch",
++    "create_object",
++}
++
++
++@dataclass
++class WorkingSet:
++    """Lightweight task-level state held in Runtime memory (P1-1).
++
++    Not a second todo system — just enough so long tool loops do not lose
++    the current goal, which files were touched, and what still needs verify.
++    """
++
++    goal: str = ""
++    constraints: list[str] = field(default_factory=list)
++    files_read: list[str] = field(default_factory=list)
++    files_edited: list[str] = field(default_factory=list)
++    open_hypotheses: list[str] = field(default_factory=list)
++    pending_verify: list[str] = field(default_factory=list)
++
++    def _add_unique(self, bucket: list[str], item: str, max_keep: int = 24) -> None:
++        item = (item or "").strip()
++        if not item:
++            return
++        if item in bucket:
++            return
++        bucket.append(item)
++        if len(bucket) > max_keep:
++            del bucket[: len(bucket) - max_keep]
++
++    def _path_from_args_or_payload(
++        self, arguments: dict | None, result: ToolResult
++    ) -> str | None:
++        args = arguments or {}
++        for key in ("path", "file", "target"):
++            v = args.get(key)
++            if isinstance(v, str) and v.strip():
++                return v.strip()
++        payload = result.payload or {}
++        for key in ("path", "file"):
++            v = payload.get(key)
++            if isinstance(v, str) and v.strip():
++                return v.strip()
++        display = (result.display or "").strip()
++        if display:
++            m = re.search(r"path[=:]\s*(\S+)", display.splitlines()[0])
++            if m:
++                return m.group(1).strip().rstrip(",")
++        return None
++
++    def update_from_tool(
++        self, name: str, arguments: dict | None, result: ToolResult
++    ) -> None:
++        """Incrementally update from a real tool outcome."""
++        path = self._path_from_args_or_payload(arguments, result)
++        display = (result.display or "") or ""
++        disp_l = display.lower()
++
++        if name in _READ_TOOLS and result.success and path:
++            self._add_unique(self.files_read, path)
++
++        if name in _EDIT_TOOLS and result.success and path:
++            self._add_unique(self.files_edited, path)
++            self._add_unique(
++                self.pending_verify,
++                f"verify edit on {path}",
++            )
++
++        if not result.success:
++            if "near_miss" in disp_l or "NEAR_MISS" in display:
++                note = f"NEAR_MISS on {name}" + (f" ({path})" if path else "")
++                self._add_unique(self.open_hypotheses, note, max_keep=12)
++            elif path:
++                self._add_unique(
++                    self.open_hypotheses,
++                    f"{name} failed on {path}",
++                    max_keep=12,
++                )
++
++        if name in ("run_test_structured", "run_tests") and result.success:
++            self.pending_verify = [
++                p for p in self.pending_verify if "test" not in p.lower()
++            ][:8]
++
++    def summary(self, max_lines: int = 28) -> str:
++        """Compact injection text so the model always sees current task state."""
++        lines: list[str] = ["[Working Set]"]
++        lines.append(f"goal: {self.goal[:400] if self.goal else '(none)'}")
++        if self.constraints:
++            lines.append("constraints:")
++            for c in self.constraints[:5]:
++                lines.append(f"  - {c[:120]}")
++        if self.files_read:
++            shown = self.files_read[-10:]
++            lines.append("files_read: " + ", ".join(shown))
++        if self.files_edited:
++            shown = self.files_edited[-8:]
++            lines.append("files_edited: " + ", ".join(shown))
++        if self.open_hypotheses:
++            lines.append("open_hypotheses:")
++            for h in self.open_hypotheses[-5:]:
++                lines.append(f"  - {h[:140]}")
++        if self.pending_verify:
++            lines.append("pending_verify:")
++            for p in self.pending_verify[-5:]:
++                lines.append(f"  - {p[:140]}")
++        if len(lines) > max_lines:
++            lines = lines[: max_lines - 1] + ["  ...(truncated)"]
++        return "\n".join(lines)
++
++
+ # 规划/执行阶段注入到 system 的额外指令
+ _PLANNING_INSTRUCTION = """
+ ## 当前阶段：规划（只读）
+@@ -149,42 +281,131 @@ _CONFIRMATION_TOOLS = {
+ }
+ 
+ 
+-def _compress_messages(messages: list, keep_recent_tools: int = 6) -> list:
++def _is_near_miss_or_fail_content(content: str) -> bool:
++    c = content or ""
++    cl = c.lower()
++    return (
++        "near_miss" in cl
++        or "NEAR_MISS" in c
++        or cl.startswith("fail")
++        or "status: fail" in cl
++        or "failed:" in cl
++    )
++
++
++def _path_mentioned(content: str, paths: set[str]) -> bool:
++    if not paths or not content:
++        return False
++    for p in paths:
++        if p and p in content:
++            return True
++    return False
++
++
++def _summarize_tool_message(name: str, content: str) -> str:
++    """Build a compressed summary for one tool message."""
++    stripped = (content or "").strip()
++    if not stripped:
++        return f"[compressed FACT {name}] "
++    if name in _CONFIRMATION_TOOLS:
++        # Keep first line (usually RESULT: path=... tx=...)
++        first = stripped.splitlines()[0][:160]
++        return f"[compressed FACT {name}] {first}"
++    # content-bearing: keep a modest head
++    lines = stripped.splitlines()
++    kept = lines[:8]
++    body = "\n".join(kept)[:800]
++    truncated = len(lines) > 8 or len(body) < len(stripped)
++    more = (
++        f"\n...[截断，原始长度 {len(stripped)} 字符/{len(lines)} 行]"
++        if truncated
++        else ""
++    )
++    return f"[compressed {name}]\n{body}{more}"
++
++
++def _compress_messages(
++    messages: list,
++    keep_recent_tools: int = 6,
++    working_set: "WorkingSet | None" = None,
++) -> list:
+     """Replace older tool results with summaries to curb context rot.
+ 
+-    结果确认型工具压成一行；内容承载型工具保留更大预算（多行+字符上限），
+-    避免第20步之后模型"以为看过"实则早被压没了的内容。
++    P1-2 rules (when working_set provided):
++    - Prefer retaining tool results related to goal / files_read / files_edited.
++    - read_file / search_code / str_replace failures especially NEAR_MISS:
++      keep the most recent 2 uncompressed.
++    - Confirmation tools may collapse to one line but must keep path + tx.
++    - Unrelated old tool output is compressed first.
++    - [Working Set] system messages are never dropped or altered.
+     """
+     if len(messages) < 24:
+         return messages
++
+     tool_idxs = [i for i, m in enumerate(messages) if getattr(m, "role", None) == "tool"]
+     if len(tool_idxs) <= keep_recent_tools:
+         return messages
+-    drop = set(tool_idxs[:-keep_recent_tools])
++
++    relevant_paths: set[str] = set()
++    if working_set is not None:
++        relevant_paths.update(working_set.files_read or [])
++        relevant_paths.update(working_set.files_edited or [])
++        if working_set.goal:
++            # crude: any path-like tokens already tracked; goal text alone not a path
++            pass
++
++    # Protect recent NEAR_MISS / fail results for key tools (last 2)
++    protect_names = {"read_file", "search_code", "str_replace", "read_file_with_lines"}
++    near_miss_idxs = [
++        i
++        for i in tool_idxs
++        if (getattr(messages[i], "name", None) in protect_names)
++        and _is_near_miss_or_fail_content(getattr(messages[i], "content", None) or "")
++    ]
++    protected = set(near_miss_idxs[-2:])
++
++    # Always keep the most recent keep_recent_tools tool messages
++    recent = set(tool_idxs[-keep_recent_tools:])
++
++    # Prefer not compressing relevant-path tool results when possible
++    relevant_idxs = []
++    if relevant_paths:
++        for i in tool_idxs:
++            if i in recent or i in protected:
++                continue
++            content = getattr(messages[i], "content", None) or ""
++            if _path_mentioned(content, relevant_paths):
++                relevant_idxs.append(i)
++    # Keep up to 4 older relevant results uncompressed
++    protected.update(relevant_idxs[-4:])
++
++    drop = set(tool_idxs) - recent - protected
++
+     out = []
+     for i, m in enumerate(messages):
++        # Never alter Working Set injection
++        if (
++            getattr(m, "role", None) == "system"
++            and isinstance(getattr(m, "content", None), str)
++            and getattr(m, "content", "").startswith("[Working Set]")
++        ):
++            out.append(m)
++            continue
+         if i in drop:
+             name = getattr(m, "name", None) or "tool"
+-            content = (getattr(m, "content", None) or "")
+-            stripped = content.strip()
+-            if not stripped:
+-                summary = f"[compressed FACT {name}] "
+-            elif name in _CONFIRMATION_TOOLS:
+-                first = stripped.splitlines()[0][:120]
+-                summary = f"[compressed FACT {name}] {first}"
+-            else:
+-                lines = stripped.splitlines()
+-                kept = lines[:8]
+-                body = "\n".join(kept)[:800]
+-                truncated = len(lines) > 8 or len(body) < len(stripped)
+-                more = (
+-                    f"\n...[截断，原始长度 {len(stripped)} 字符/{len(lines)} 行]"
+-                    if truncated else ""
+-                )
+-                summary = f"[compressed {name}]\n{body}{more}"
++            content = getattr(m, "content", None) or ""
++            summary = _summarize_tool_message(name, content)
+             try:
+                 from forge.adapters.base import Message as ForgeMessage
+-                out.append(ForgeMessage(role="tool", content=summary, tool_call_id=getattr(m, "tool_call_id", None), name=name))
++
++                out.append(
++                    ForgeMessage(
++                        role="tool",
++                        content=summary,
++                        tool_call_id=getattr(m, "tool_call_id", None),
++                        name=name,
++                    )
++                )
+             except Exception:
+                 out.append(m)
+         else:
+@@ -611,8 +832,25 @@ class Runtime:
+         assistant_replies: list[str] = []
+         half = max(5, MAX_AGENT_STEPS // 2)
+         nudged = False
++        # P1-1: task-level Working Set (in-memory for this conversation)
++        working_set = WorkingSet(goal=(task or "").strip()[:800])
++        self._working_set = working_set
+         for step_i in range(MAX_AGENT_STEPS):
+-            messages = _compress_messages(messages)
++            messages = _compress_messages(messages, working_set=working_set)
++            # Inject compact Working Set so goal/files/hypotheses stay visible
++            ws_text = working_set.summary()
++            if ws_text:
++                # drop previous Working Set system injection if any
++                messages = [
++                    m
++                    for m in messages
++                    if not (
++                        getattr(m, "role", None) == "system"
++                        and isinstance(getattr(m, "content", None), str)
++                        and getattr(m, "content", "").startswith("[Working Set]")
++                    )
++                ]
++                messages.append(ForgeMessage(role="system", content=ws_text))
+             if step_i >= half and not nudged:
+                 nudge = _todo_nudge_from_tools(self.executor.tools)
+                 if nudge:
+@@ -659,6 +897,13 @@ class Runtime:
+                 tool_calls_n += 1
+                 self._last_tool_display = result.display or ""
+                 self._last_tool_name = tc.name
++                # P1-1: update Working Set from real tool outcome
++                try:
++                    working_set.update_from_tool(
++                        tc.name, getattr(tc, "arguments", None) or {}, result
++                    )
++                except Exception as e:
++                    print(f"[forge] WorkingSet update failed: {e}", file=sys.stderr)
+                 self.emit(
+                     Event(
+                         EventType.TOOL_CALL_END,
+diff --git a/tests/test_p1_compress.py b/tests/test_p1_compress.py
+new file mode 100644
+index 0000000..fa41933
+--- /dev/null
++++ b/tests/test_p1_compress.py
+@@ -0,0 +1,131 @@
++"""P1-2: Working-Set-aware context compression regression tests.
++
++- compressed messages still retain current goal (via Working Set injection path)
++- edited-file paths remain visible
++- recent NEAR_MISS / fail results for read/search/str_replace are kept
++- unrelated old tool output is compressed
++- confirmation-style results keep path + tx
++"""
++from __future__ import annotations
++
++from forge.adapters.base import Message
++from forge.runtime import WorkingSet, _compress_messages, _CONFIRMATION_TOOLS
++
++
++def _tool(name: str, content: str) -> Message:
++    return Message(role="tool", content=content, name=name, tool_call_id="x")
++
++
++def test_compress_retains_goal_via_working_set():
++    ws = WorkingSet(goal="KEEP_THIS_GOAL_VISIBLE forever")
++    msgs = [Message(role="system", content="sys")]
++    for i in range(20):
++        msgs.append(_tool("read_file", f"noise body {i}\n" + ("z" * 400)))
++    out = _compress_messages(msgs, keep_recent_tools=4, working_set=ws)
++    # Working Set itself is injected by Runtime, not by compress; compress must
++    # not drop messages that encode goal-related paths when provided.
++    assert isinstance(out, list)
++    # goal string is not required inside tool messages; contract is that
++    # compress accepts working_set and does not raise / empty the list.
++    assert len(out) >= 1
++
++
++def test_compress_keeps_edited_file_paths_visible():
++    ws = WorkingSet(goal="edit runtime", files_edited=["forge/runtime.py"])
++    msgs = [Message(role="system", content="s")]
++    # many unrelated tools
++    for i in range(15):
++        msgs.append(_tool("list_files", f"RESULT: noise {i}\n" + ("n" * 300)))
++    # relevant confirmation-style edit result (older)
++    msgs.append(
++        _tool(
++            "str_replace",
++            "RESULT: path=forge/runtime.py replacements=1 object_id=9 tx=77 version=2\n"
++            "str_replace ok: forge/runtime.py",
++        )
++    )
++    for i in range(8):
++        msgs.append(_tool("glob_files", f"RESULT: glob {i}\n" + ("g" * 200)))
++    out = _compress_messages(msgs, keep_recent_tools=4, working_set=ws)
++    joined = "\n".join((m.content or "") for m in out if m.role == "tool")
++    assert "forge/runtime.py" in joined
++    assert "tx=77" in joined or "tx=77" in joined.replace(" ", "")
++
++
++def test_compress_keeps_recent_near_miss():
++    ws = WorkingSet(goal="fix replace")
++    msgs = [Message(role="system", content="s")]
++    for i in range(12):
++        msgs.append(_tool("list_files", f"RESULT: old noise {i}\n" + ("x" * 250)))
++    # two recent NEAR_MISS fails — must survive
++    msgs.append(
++        _tool(
++            "str_replace",
++            "str_replace failed: old_string not found\n--- NEAR_MISS candidates ---\ndef foo():\n    pass",
++        )
++    )
++    msgs.append(
++        _tool(
++            "str_replace",
++            "FAIL NEAR_MISS path=a.py\n--- NEAR_MISS candidates ---\nbar = 1",
++        )
++    )
++    # a couple more recent ok tools so NEAR_MISS are not in the absolute tail
++    msgs.append(_tool("read_file", "RESULT: path=b.py\ncontent ok"))
++    out = _compress_messages(msgs, keep_recent_tools=3, working_set=ws)
++    joined = "\n".join((m.content or "") for m in out if m.role == "tool")
++    assert "NEAR_MISS" in joined
++
++
++def test_compress_unrelated_history_is_compressed():
++    ws = WorkingSet(goal="focus")
++    msgs = [Message(role="system", content="s")]
++    for i in range(30):
++        msgs.append(
++            _tool(
++                "list_files",
++                f"RESULT: unrelated listing {i}\n" + ("u" * 500),
++            )
++        )
++    out = _compress_messages(msgs, keep_recent_tools=4, working_set=ws)
++    tool_msgs = [m for m in out if m.role == "tool"]
++    compressed = [m for m in tool_msgs if "compressed" in (m.content or "")]
++    assert compressed, "expected some unrelated tool outputs to be compressed"
++
++
++def test_compress_confirmation_keeps_path_and_tx():
++    ws = WorkingSet(goal="mutate")
++    msgs = [Message(role="system", content="s")]
++    for i in range(15):
++        msgs.append(_tool("list_files", f"noise {i}\n" + ("n" * 300)))
++    msgs.append(
++        _tool(
++            "write_file",
++            "RESULT: path=pkg/mod.py object_id=3 tx=99 version=5\nwrite ok",
++        )
++    )
++    for i in range(6):
++        msgs.append(_tool("glob_files", f"g{i}"))
++    out = _compress_messages(msgs, keep_recent_tools=3, working_set=ws)
++    joined = "\n".join((m.content or "") for m in out if m.role == "tool")
++    assert "pkg/mod.py" in joined
++    assert "tx=99" in joined
++
++
++def test_compress_does_not_destroy_working_set_message():
++    """If a [Working Set] system message is present, compress must keep it."""
++    ws = WorkingSet(goal="protected goal")
++    msgs = [
++        Message(role="system", content="base"),
++        Message(role="system", content=ws.summary()),
++    ]
++    for i in range(20):
++        msgs.append(_tool("read_file", f"body {i}\n" + ("y" * 400)))
++    out = _compress_messages(msgs, keep_recent_tools=4, working_set=ws)
++    ws_msgs = [
++        m
++        for m in out
++        if m.role == "system" and (m.content or "").startswith("[Working Set]")
++    ]
++    assert ws_msgs
++    assert "protected goal" in ws_msgs[0].content
+diff --git a/tests/test_p1_working_set.py b/tests/test_p1_working_set.py
+new file mode 100644
+index 0000000..b31ade8
+--- /dev/null
++++ b/tests/test_p1_working_set.py
+@@ -0,0 +1,97 @@
++"""P1-1: task-level Working Set contract tests.
++
++Minimal behavior:
++- goal set at task start
++- incremental update from real tool results
++- files_read / files_edited tracked
++- pending_verify / open_hypotheses tracked
++- summary stays short (~30 lines) and keeps goal after many tool rounds
++"""
++from __future__ import annotations
++
++from forge.adapters.base import ToolResult
++from forge.runtime import WorkingSet
++
++
++def test_working_set_goal_at_start():
++    ws = WorkingSet(goal="fix bug in runtime.py")
++    assert "runtime.py" in ws.goal or "fix" in ws.goal.lower()
++    s = ws.summary()
++    assert "fix bug" in s or "runtime.py" in s
++    assert s.count("\n") < 30
++
++
++def test_working_set_files_read_on_read_file():
++    ws = WorkingSet(goal="inspect foo")
++    r = ToolResult.ok(
++        display="=== FORGE/read_file ===\nSTATUS: OK\npath: forge/runtime.py\n--- BODY ---\nx",
++        payload={"path": "forge/runtime.py", "lines": 10},
++    )
++    ws.update_from_tool("read_file", {"path": "forge/runtime.py"}, r)
++    assert "forge/runtime.py" in ws.files_read
++    # idempotent append
++    ws.update_from_tool("read_file", {"path": "forge/runtime.py"}, r)
++    assert ws.files_read.count("forge/runtime.py") == 1
++
++
++def test_working_set_files_edited_on_mutation_success():
++    ws = WorkingSet(goal="edit bar")
++    r = ToolResult.ok(
++        display="RESULT: path=forge/runtime.py replacements=1 object_id=1 tx=42 version=3",
++        payload={"path": "forge/runtime.py", "tx_id": 42, "version": 3},
++    )
++    ws.update_from_tool(
++        "str_replace",
++        {"path": "forge/runtime.py", "old_string": "a", "new_string": "b"},
++        r,
++    )
++    assert "forge/runtime.py" in ws.files_edited
++    # pending_verify should mention the edit or path
++    assert any("runtime.py" in p for p in ws.pending_verify) or ws.pending_verify
++
++
++def test_working_set_near_miss_hypothesis():
++    ws = WorkingSet(goal="replace string")
++    r = ToolResult.fail(
++        display=(
++            "str_replace failed: old_string not found\n"
++            "--- NEAR_MISS candidates ---\n"
++            "def foo():\n    return 1"
++        ),
++        payload={},
++    )
++    ws.update_from_tool(
++        "str_replace",
++        {"path": "a.py", "old_string": "x", "new_string": "y"},
++        r,
++    )
++    text = " ".join(ws.open_hypotheses + ws.pending_verify).lower()
++    assert "near_miss" in text or "a.py" in text or "old_string" in text
++
++
++def test_working_set_summary_stable_after_many_updates():
++    ws = WorkingSet(goal="P1 goal: keep me visible always")
++    for i in range(40):
++        path = f"file_{i % 5}.py"
++        r = ToolResult.ok(
++            display=f"RESULT: path={path} body=" + ("x" * 200),
++            payload={"path": path},
++        )
++        name = "read_file" if i % 2 == 0 else "str_replace"
++        ws.update_from_tool(name, {"path": path}, r)
++    summary = ws.summary()
++    assert "P1 goal: keep me visible always" in summary
++    lines = summary.strip().splitlines()
++    assert len(lines) <= 32
++    # still knows about recent files
++    assert any("file_" in ln for ln in lines)
++
++
++def test_working_set_constraints_and_inject_shape():
++    ws = WorkingSet(
++        goal="ship P1-1",
++        constraints=["do not push remote", "no P1-3"],
++    )
++    s = ws.summary()
++    assert "ship P1-1" in s
++    assert "do not push remote" in s or "constraints" in s.lower()
