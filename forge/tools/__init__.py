@@ -118,11 +118,31 @@ def make_tools(
                 report = sync_layer.sync()
                 ok = report.status == IN_SYNC
                 payload = {"mutation": True, **report.to_dict()}
+                display = report.format()
+                # P2-1c: 列出 direct_disk 待对账文件，提醒用户这些磁盘变更已被/需被对账。
+                # 只提示，不在这里额外做任何 fast-forward（对账方向仍由 report 决定）。
+                from forge.tools.session_changes import pending_direct_disk
+
+                pending = pending_direct_disk(sync_layer.project_root)
+                if pending:
+                    paths = []
+                    seen = set()
+                    for e in pending:
+                        p = str(e.get("path") or "").strip()
+                        if p and p not in seen:
+                            seen.add(p)
+                            paths.append(p)
+                    if paths:
+                        display += (
+                            "\n\ndirect_disk 待对账文件（veritasd 不可达期间直写，World 未记录）：\n"
+                            + "\n".join(f"- {p}" for p in paths[:20])
+                            + "\n请确认 forge_sync 已将这些磁盘变更纳入 World（必要时显式决策方向）。"
+                        )
                 if ok:
-                    return ToolResult.ok(display=report.format(), payload=payload)
+                    return ToolResult.ok(display=display, payload=payload)
                 return ToolResult.fail(
                     display=(
-                        report.format()
+                        display
                         + "\n建议: CONFLICT 时请明确决定以 World 还是 Disk/Git 为准，勿自动覆盖。"
                     ),
                     payload=payload,

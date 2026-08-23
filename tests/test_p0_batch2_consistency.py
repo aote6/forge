@@ -73,10 +73,14 @@ def test_forget_paths_success_still_removes_hashes(tmp_path):
     assert str(target) not in state.last_known_file_hashes
 
 
-# ── Case B: ensure_identity failure aborts Runtime init ───────────
+# ── Case B: ensure_identity failure degrades Runtime init (P2-1a) ──
 
-def test_ensure_identity_failure_aborts_runtime_init(tmp_path):
-    """world.ensure_identity 失败时 Runtime 不得以正常状态完成初始化。"""
+def test_ensure_identity_failure_degrades_runtime_not_aborts(tmp_path):
+    """world.ensure_identity 失败时 Runtime 降级启动（direct_disk），不再 raise。
+
+    P2-1a：veritasd 冷启动不在线时，Runtime 仍应能启动，只是文件内容 mutation
+    走 direct_disk 直写；纯 World 操作保持硬失败。锁定为降级而非 abort。
+    """
     from forge.runtime import Runtime
     from forge.workspace import Workspace
     from forge.memory import MemoryStore
@@ -91,10 +95,9 @@ def test_ensure_identity_failure_aborts_runtime_init(tmp_path):
         world._path_map = None
         WR.return_value = world
 
-        with pytest.raises(RuntimeError) as ei:
-            Runtime(adapter, workspace, memory)
+        rt = Runtime(adapter, workspace, memory)
 
-    assert "identity" in str(ei.value).lower() or "Identity" in str(ei.value)
+    assert rt.world_available is False
     world.ensure_identity.assert_called_once()
 
 

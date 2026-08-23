@@ -624,6 +624,45 @@ def _sync_status_system_hint(report) -> str:
     return ""
 
 
+def _direct_disk_reconcile_hint(project_root: str, world_available: bool) -> str:
+    """P2-1c：World 已恢复但存在 direct_disk 待对账文件时，返回提示文本（否则空串）。
+
+    direct_disk 写入不产生 World receipt，恢复 veritasd 后需要 forge_sync 把磁盘
+    变更 FAST_FORWARD 回 World。这里只读持久化的 session_changes 标记，只提示，
+    不自动对账（保持「不自动 merge」原则）。World 仍不可达时返回空串——此时
+    对账无从谈起，`_sync_system_hint` 的 WORLD_UNAVAILABLE 分支已给出指引。
+    """
+    if not world_available:
+        return ""
+    from forge.tools.session_changes import pending_direct_disk
+
+    pending = pending_direct_disk(project_root)
+    if not pending:
+        return ""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for e in pending:
+        p = str(e.get("path") or "").strip()
+        if p and p not in seen:
+            seen.add(p)
+            paths.append(p)
+    if not paths:
+        return ""
+    lines = [
+        "\n\n## direct_disk 待对账（World 已恢复）",
+        "以下文件曾在 veritasd 不可达时以 direct_disk 模式修改，World 未记录：",
+    ]
+    for p in paths[:20]:
+        lines.append(f"- {p}")
+    if len(paths) > 20:
+        lines.append(f"  ... 共 {len(paths)} 个文件")
+    lines.append(
+        "请运行 forge_sync 把磁盘变更 FAST_FORWARD 回 World；"
+        "对账前这些文件的 World 状态与磁盘不一致。"
+    )
+    return "\n".join(lines)
+
+
 # 结果确认型工具：第一行就是精华（RESULT: path=... tx=... 之类），压成一行安全。
 # 其余(默认)按"内容承载型"处理：read_file/str_replace/near_miss/diff 等，
 # 精华常常不在第一行，压缩过头是长会话后期质量下滑的直接原因之一。
@@ -891,13 +930,20 @@ class Runtime:
         self.workspace = workspace
         self.memory = memory
         self.world = WorldRuntime(project_root=workspace.project_root)
-        # Identity 是 mutation / session 的前置条件；失败则 Runtime 不得以正常状态启动。
+        # P2-1a 冷启动降级：Identity 建立失败不再使 Runtime 无法启动，
+        # 而是置 world_available=False，进入 direct_disk 降级模式。
+        # 文件内容 mutation 会在工具层探测到 World 不可达并走直写；
+        # 纯 World 操作（create_object/link_objects 等）保持硬失败。
+        self.world_available = True
         try:
             self.world.ensure_identity()
         except Exception as e:
-            raise RuntimeError(
-                f"Forge Runtime 启动失败：无法建立 World identity: {e}"
-            ) from e
+            self.world_available = False
+            print(
+                f"[forge] World (veritasd) 不可达，Runtime 以降级模式启动：{e}\n"
+                f"        文件内容 mutation 走 direct_disk；纯 World 操作不可用。",
+                file=sys.stderr,
+            )
 
         from forge.sync.state import SyncState
         from forge.sync.sync_layer import SyncLayer
@@ -993,6 +1039,7 @@ class Runtime:
             FAST_FORWARD_WORLD_TO_DISK,
             IN_SYNC,
             NOT_A_GIT_REPO,
+            WORLD_UNAVAILABLE,
         )
 
         report = RecoveryCheck(self.sync_layer).check()
@@ -1001,6 +1048,14 @@ class Runtime:
             return
         if status == NOT_A_GIT_REPO:
             print("[sync] 工作区不是 Git 仓库；跳过同步状态检测。", file=sys.stderr)
+            return
+        if status == WORLD_UNAVAILABLE:
+            print(
+                "[sync] WORLD_UNAVAILABLE：veritasd 不可达，进入降级模式。\n"
+                "       文件内容 mutation 走 direct_disk；纯 World 操作不可用。\n"
+                "       恢复 veritasd 后运行 forge_sync 对账。",
+                file=sys.stderr,
+            )
             return
         if status == CONFLICT:
             print(
@@ -1227,9 +1282,14 @@ class Runtime:
         except Exception:
             mem = ""
         sync_hint = self._sync_system_hint()
+        reconcile_hint = _direct_disk_reconcile_hint(
+            self.workspace.project_root,
+            getattr(self, "world_available", False),
+        )
         return (
             SYSTEM_INSTRUCTION
             + sync_hint
+            + reconcile_hint
             + (extra_system or "")
             + (prior or "")
             + (mem or "")

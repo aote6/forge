@@ -16,11 +16,22 @@ from pathlib import Path
 
 MODE_DIRECT_DISK = "direct_disk"
 
-# veritasd 不可用时仍可继续执行的工具集合。
-# str_replace / write_file：走 direct_disk 本地写盘。
+# veritasd 不可用时仍可继续执行的工具集合（P2-1b 扩到全部文件内容 mutation）。
+# str_replace / write_file / create_file / modify_file / apply_patch /
+# edit_files_batch / delete_file：都有磁盘等价物，走 direct_disk 本地写/删盘。
 # undo_last_tx：本来就只依赖 .forge/tx_shadow，从不触碰 World，
 #               World 不可达时更需要放行（否则直写改错了无法回滚）。
-DIRECT_DISK_TOOLS = frozenset({"str_replace", "write_file", "undo_last_tx"})
+# create_object / link_objects / unlink_objects 无磁盘等价物，仍不在此列。
+DIRECT_DISK_TOOLS = frozenset({
+    "str_replace",
+    "write_file",
+    "undo_last_tx",
+    "create_file",
+    "modify_file",
+    "apply_patch",
+    "edit_files_batch",
+    "delete_file",
+})
 
 
 def world_available(world) -> bool:
@@ -65,3 +76,23 @@ def write_text(project_root: str, path: str, content: str) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content if content is not None else "", encoding="utf-8")
     return str(target)
+
+
+def apply_edit_ops(text: str, machine_ops: list[dict]) -> str:
+    """把冻结的 machine EditOp（0-based 半开区间 + new_lines）应用到文本。
+
+    复用 FileProjection 同源的 PatchEngine.apply_edits，保证 direct_disk 的
+    modify_file / edit_files_batch 与 World 路径落盘结果逐字一致。
+    """
+    from forge.core.patch_engine import EditOp, PatchEngine
+
+    edits = [
+        EditOp(
+            type=op.get("type", "replace"),
+            start_line=op["start_line"],
+            end_line=op["end_line"],
+            new_lines=list(op["new_lines"]),
+        )
+        for op in machine_ops
+    ]
+    return PatchEngine.apply_edits(text, edits)

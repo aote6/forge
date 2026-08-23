@@ -34,6 +34,7 @@ from forge.tools.direct_disk import (
     next_tx_id as next_direct_tx_id,
     world_available,
     write_text as direct_write_text,
+    apply_edit_ops,
 )
 
 
@@ -488,6 +489,61 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             },
         )
 
+    def _finalize_direct_disk(
+        result: ToolResult,
+        before: dict[str, str],
+        tool: str,
+        paths: list[str],
+    ) -> ToolResult:
+        """direct_disk 收尾：shadow undo 记账 + session_changes(direct_disk) + cache invalidate。
+
+        before: path -> 写/删前内容（undo_last_tx 据此恢复磁盘）。
+        这三个副作用本就只依赖磁盘与本地栈，与 Veritas 无关，故可复用。
+        """
+        root = _project_root(world)
+        tx = (result.payload or {}).get("tx_id")
+        if tx:
+            try:
+                record_tx(root, tx, None, before)
+            except Exception as e:
+                _note_side_effect_failure(result, "record_tx", e)
+        for p in before:
+            try:
+                cache_invalidate(root, p)
+            except Exception as e:
+                _note_side_effect_failure(result, f"cache_invalidate:{p}", e)
+        for p in paths:
+            try:
+                record_session_change(
+                    p,
+                    tool=tool,
+                    tx_id=tx,
+                    summary=f"{tool} mode={MODE_DIRECT_DISK}",
+                    project_root=root,
+                    direct_disk=True,
+                )
+            except Exception as e:
+                _note_side_effect_failure(result, "record_session_change", e)
+        return _attach_direct_disk_note(result)
+
+    def _direct_disk_fail(tool: str, path: str, err: BaseException) -> ToolResult:
+        """direct_disk 本地写/删失败 → ToolResult.fail（不产生 success 假象）。"""
+        return ToolResult.fail(
+            display=(
+                f"{tool} direct_disk 失败 path={path} mode={MODE_DIRECT_DISK}: {err}\n"
+                f"veritasd 不可用，Forge 已退到直写路径，但本地磁盘操作本身失败。\n"
+                f"建议: 检查路径/父目录/权限；文件未被修改。"
+            ),
+            payload={
+                "path": path,
+                "mode": MODE_DIRECT_DISK,
+                "direct_disk": True,
+                "world_recorded": False,
+                "mutation": False,
+                "requires_confirmation": False,
+            },
+        )
+
     def _write_content_to_world(path: str, content: str, oid: int | None) -> ToolResult:
         from forge.core.edit_contract import authoring_to_machine_ops
 
@@ -626,6 +682,37 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
     def create_file(path: str, content: str = "") -> ToolResult:
         try:
             path_n = _norm_path(path)
+            # P2-1b: World 不可达 → direct_disk 本地创建（等价于写新文件）。
+            if not world_available(world):
+                payload = content if content != "" else "\n"
+                before = _read_disk(world, path_n) or ""
+                try:
+                    direct_write_text(_project_root(world), path_n, payload)
+                except OSError as e:
+                    return _direct_disk_fail("create_file", path_n, e)
+                tx = next_direct_tx_id()
+                result = ToolResult.ok(
+                    display=(
+                        f"RESULT: path={path_n} mode={MODE_DIRECT_DISK} tx={tx} world=unavailable\n"
+                        f"Created file (direct_disk): {path_n}"
+                    ),
+                    payload={
+                        "path": path_n,
+                        "object_id": None,
+                        "tx_id": tx,
+                        "version": None,
+                        "mutation": True,
+                        "registered": False,
+                        "requires_confirmation": False,
+                        "mode": MODE_DIRECT_DISK,
+                        "direct_disk": True,
+                        "world_recorded": False,
+                    },
+                )
+                result = _finalize_direct_disk(
+                    result, {path_n: before}, "create_file", [path_n]
+                )
+                return _attach_next(result, [path_n])
             payload = content if content != "" else "\n"
             intent = Intent.create_file(path=path_n, content=payload, require_confirm=False)
             receipt, delta = executor.execute(intent)
@@ -672,6 +759,53 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             from forge.core.edit_contract import ensure_machine_ops
 
             path_n = _norm_path(path)
+            # P2-1b: World 不可达 → direct_disk 把 machine ops 应用到本地文件。
+            if not world_available(world):
+                before = _read_disk(world, path_n)
+                if before is None:
+                    return ToolResult.fail(
+                        display=(
+                            f"modify_file failed: 文件不存在 {path_n}\n"
+                            f"建议: write_file 创建，或检查路径。"
+                        )
+                    )
+                try:
+                    machine_ops = ensure_machine_ops(operations)
+                    new_content = apply_edit_ops(before, machine_ops)
+                    direct_write_text(_project_root(world), path_n, new_content)
+                except OSError as e:
+                    return _direct_disk_fail("modify_file", path_n, e)
+                except Exception as e:
+                    return ToolResult.fail(
+                        display=(
+                            f"modify_file failed: 操作格式非法或应用失败: {e}\n"
+                            f"建议: 优先 str_replace。"
+                        )
+                    )
+                tx = next_direct_tx_id()
+                result = ToolResult.ok(
+                    display=(
+                        f"RESULT: path={path_n} mode={MODE_DIRECT_DISK} tx={tx} "
+                        f"ops={len(machine_ops)} world=unavailable\n"
+                        f"Modified file (direct_disk): {path_n}"
+                    ),
+                    payload={
+                        "path": path_n,
+                        "object_id": None,
+                        "tx_id": tx,
+                        "version": None,
+                        "ops": len(machine_ops),
+                        "mutation": True,
+                        "requires_confirmation": False,
+                        "mode": MODE_DIRECT_DISK,
+                        "direct_disk": True,
+                        "world_recorded": False,
+                    },
+                )
+                result = _finalize_direct_disk(
+                    result, {path_n: before}, "modify_file", [path_n]
+                )
+                return _attach_next(result, [path_n])
             oid = _resolve_oid(world, path_n, object_id)
             if oid is None:
                 disk = _read_disk(world, path_n)
@@ -726,6 +860,75 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             return ToolResult.fail(
                 display="edit_files_batch failed: edits 必须是非空列表\n建议: 传入 [{path, operations}, ...]"
             )
+        # P2-1b: World 不可达 → direct_disk 批量应用 machine ops 到本地文件。
+        if not world_available(world):
+            from forge.core.edit_contract import ensure_machine_ops as _emo
+
+            before: dict[str, str] = {}
+            resolved = []
+            for i, item in enumerate(edits):
+                if not isinstance(item, dict):
+                    return ToolResult.fail(display=f"edit_files_batch: edits[{i}] 不是 dict")
+                path = item.get("path")
+                operations = item.get("operations")
+                if not path or operations is None:
+                    return ToolResult.fail(
+                        display=f"edit_files_batch: edits[{i}] 需要 path 与 operations"
+                    )
+                path_n = _norm_path(path)
+                disk = _read_disk(world, path_n)
+                if disk is None:
+                    return ToolResult.fail(
+                        display=(
+                            f"edit_files_batch: 无法解析 path={path_n}\n"
+                            f"建议: 文件须已存在于磁盘，或先 write_file。"
+                        )
+                    )
+                try:
+                    machine_ops = _emo(operations)
+                    new_content = apply_edit_ops(disk, machine_ops)
+                except Exception as e:
+                    return ToolResult.fail(
+                        display=f"edit_files_batch: edits[{i}] 操作非法或应用失败: {e}"
+                    )
+                before[path_n] = disk
+                resolved.append(
+                    {
+                        "path": path_n,
+                        "object_id": None,
+                        "ops": len(machine_ops),
+                        "new_content": new_content,
+                    }
+                )
+            for r in resolved:
+                try:
+                    direct_write_text(_project_root(world), r["path"], r["new_content"])
+                except OSError as e:
+                    return _direct_disk_fail("edit_files_batch", r["path"], e)
+            tx = next_direct_tx_id()
+            summary = ", ".join(r["path"] for r in resolved)
+            result = ToolResult.ok(
+                display=(
+                    f"RESULT: batch={len(resolved)} mode={MODE_DIRECT_DISK} tx={tx} world=unavailable\n"
+                    f"Edited (direct_disk): {summary}"
+                ),
+                payload={
+                    "tx_id": tx,
+                    "version": None,
+                    "edits": [
+                        {"path": r["path"], "object_id": None, "ops": r["ops"]}
+                        for r in resolved
+                    ],
+                    "mutation": True,
+                    "requires_confirmation": False,
+                    "mode": MODE_DIRECT_DISK,
+                    "direct_disk": True,
+                    "world_recorded": False,
+                },
+            )
+            paths = [r["path"] for r in resolved]
+            result = _finalize_direct_disk(result, before, "edit_files_batch", paths)
+            return _attach_next(result, paths)
         try:
             from forge.core.edit_contract import ensure_machine_ops
 
@@ -795,6 +998,53 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
     def delete_file(object_id: int | None = None, path: str = "") -> ToolResult:
         try:
             path_n = _norm_path(path) if path else ""
+            # P2-1b: World 不可达 → direct_disk 本地删除（需 path 定位）。
+            if not world_available(world):
+                if not path_n:
+                    return ToolResult.fail(
+                        display=(
+                            "delete_file failed: direct_disk 删除需要 path 定位本地文件，"
+                            "仅 object_id 无法在 World 不可达时解析。\n"
+                            "建议: 恢复 veritasd 后重试，或提供 path。"
+                        ),
+                        payload={
+                            "mode": MODE_DIRECT_DISK,
+                            "direct_disk": True,
+                            "world_recorded": False,
+                            "mutation": False,
+                        },
+                    )
+                fp = PathLib(_project_root(world)) / path_n
+                if not fp.is_file():
+                    return ToolResult.fail(
+                        display=f"delete_file failed: 文件不存在 {path_n}\n建议: 检查路径。"
+                    )
+                before = _read_disk(world, path_n) or ""
+                try:
+                    fp.unlink()
+                except OSError as e:
+                    return _direct_disk_fail("delete_file", path_n, e)
+                tx = next_direct_tx_id()
+                result = ToolResult.ok(
+                    display=(
+                        f"RESULT: path={path_n} mode={MODE_DIRECT_DISK} tx={tx} world=unavailable\n"
+                        f"Deleted file (direct_disk): {path_n}"
+                    ),
+                    payload={
+                        "path": path_n,
+                        "object_id": object_id,
+                        "tx_id": tx,
+                        "version": None,
+                        "mutation": True,
+                        "requires_confirmation": False,
+                        "mode": MODE_DIRECT_DISK,
+                        "direct_disk": True,
+                        "world_recorded": False,
+                    },
+                )
+                return _finalize_direct_disk(
+                    result, {path_n: before}, "delete_file", [path_n]
+                )
             oid = object_id
             if oid is None and path_n:
                 oid = _resolve_oid(world, path_n, None)
@@ -1117,6 +1367,44 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                         f"建议: 检查 unified diff 格式（--- / +++ / @@）。"
                     )
                 )
+            # P2-1b: World 不可达 → direct_disk 直接把 patch 落到本地文件。
+            if not world_available(world):
+                before = {}
+                paths = []
+                for item in plan["files"]:
+                    p = _norm_path(item["path"])
+                    before[p] = item["old_content"]
+                    paths.append(p)
+                for item in plan["files"]:
+                    p = _norm_path(item["path"])
+                    try:
+                        direct_write_text(root, p, item["new_content"])
+                    except OSError as e:
+                        return _direct_disk_fail("apply_patch", p, e)
+                tx = next_direct_tx_id()
+                summary = ", ".join(paths)
+                result = ToolResult.ok(
+                    display=(
+                        f"RESULT: apply_patch files={len(paths)} mode={MODE_DIRECT_DISK} "
+                        f"tx={tx} world=unavailable\n"
+                        f"Patched (direct_disk): {summary}"
+                    ),
+                    payload={
+                        "tx_id": tx,
+                        "version": None,
+                        "files": [
+                            {"path": p, "object_id": None, "mode": MODE_DIRECT_DISK}
+                            for p in paths
+                        ],
+                        "mutation": True,
+                        "requires_confirmation": False,
+                        "mode": MODE_DIRECT_DISK,
+                        "direct_disk": True,
+                        "world_recorded": False,
+                    },
+                )
+                result = _finalize_direct_disk(result, before, "apply_patch", paths)
+                return _attach_next(result, paths)
             results_meta = []
             results: list = []
             # Apply each file via _write_content_to_world sequentially but we want one tx

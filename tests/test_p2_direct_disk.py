@@ -324,7 +324,7 @@ def test_verify_guard_still_blocks_when_world_offline():
 
 def test_external_guard_allows_direct_disk_tools_when_world_offline():
     rt = _rt_offline()
-    for name in ("str_replace", "write_file", "undo_last_tx"):
+    for name in sorted(DIRECT_DISK_TOOLS):
         assert rt._guard_external_change(name) is None, name
 
 
@@ -362,8 +362,23 @@ def test_external_guard_unchanged_when_world_online():
     assert "外部磁盘/Git 变化" in (r.display or "")
 
 
-def test_direct_disk_tool_set_is_minimal():
-    assert DIRECT_DISK_TOOLS == frozenset({"str_replace", "write_file", "undo_last_tx"})
+def test_direct_disk_tool_set_covers_file_mutations_only():
+    """P2-1b：DIRECT_DISK_TOOLS 扩到全部文件内容 mutation + undo，仍不含 World object 操作。"""
+    assert DIRECT_DISK_TOOLS == frozenset(
+        {
+            "str_replace",
+            "write_file",
+            "undo_last_tx",
+            "create_file",
+            "modify_file",
+            "apply_patch",
+            "edit_files_batch",
+            "delete_file",
+        }
+    )
+    # World object 操作仍不得伪装成 direct_disk。
+    for name in ("create_object", "link_objects", "unlink_objects"):
+        assert name not in DIRECT_DISK_TOOLS
 
 
 def test_offline_create_object_does_not_fake_direct_disk(tmp_path):
@@ -408,3 +423,201 @@ def test_direct_disk_failure_then_undo_has_nothing_to_undo(tmp_path):
     tools["write_file"](path="adir", content="boom\n")
     undo = tools["undo_last_tx"]()
     assert undo.success is False
+
+
+# --------------------------------------------------------------------------- #
+# I. P2-1b：其余文件 mutation 的 direct_disk 直写
+# --------------------------------------------------------------------------- #
+
+
+def test_direct_disk_create_file_writes_disk(tmp_path):
+    tools, executor, _ = _offline_tools(tmp_path)
+    r = tools["create_file"](path="new/deep/c.py", content="x = 1\n")
+
+    assert r.success is True
+    assert r.payload.get("mode") == MODE_DIRECT_DISK
+    assert r.payload.get("direct_disk") is True
+    assert r.payload.get("world_recorded") is False
+    assert (tmp_path / "new" / "deep" / "c.py").read_text(encoding="utf-8") == "x = 1\n"
+    executor.execute.assert_not_called()
+
+
+def test_direct_disk_modify_file_applies_ops(tmp_path):
+    target = tmp_path / "m.py"
+    target.write_text("a = 1\nb = 2\n", encoding="utf-8")
+    tools, executor, _ = _offline_tools(tmp_path)
+
+    r = tools["modify_file"](
+        path="m.py",
+        operations=[{"type": "replace", "start_line": 1, "end_line": 1, "new_text": "a = 9\n"}],
+    )
+
+    assert r.success is True
+    assert r.payload.get("mode") == MODE_DIRECT_DISK
+    assert target.read_text(encoding="utf-8") == "a = 9\nb = 2\n"
+    executor.execute.assert_not_called()
+
+
+def test_direct_disk_modify_file_missing_file_fails(tmp_path):
+    tools, executor, _ = _offline_tools(tmp_path)
+    r = tools["modify_file"](
+        path="nope.py",
+        operations=[{"type": "replace", "start_line": 1, "end_line": 1, "new_text": "x\n"}],
+    )
+    assert r.success is False
+    executor.execute.assert_not_called()
+
+
+def test_direct_disk_apply_patch_writes_disk(tmp_path):
+    target = tmp_path / "m.py"
+    target.write_text("a = 1\nb = 2\n", encoding="utf-8")
+    tools, executor, _ = _offline_tools(tmp_path)
+
+    patch = "--- a/m.py\n+++ b/m.py\n@@ -1 +1 @@\n-a = 1\n+a = 9\n"
+    r = tools["apply_patch"](patch=patch)
+
+    assert r.success is True
+    assert r.payload.get("mode") == MODE_DIRECT_DISK
+    assert target.read_text(encoding="utf-8") == "a = 9\nb = 2\n"
+    executor.execute.assert_not_called()
+    executor.execute_batch.assert_not_called()
+
+
+def test_direct_disk_edit_files_batch_writes_disk(tmp_path):
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("a = 1\n", encoding="utf-8")
+    b.write_text("b = 1\n", encoding="utf-8")
+    tools, executor, _ = _offline_tools(tmp_path)
+
+    r = tools["edit_files_batch"](
+        edits=[
+            {"path": "a.py", "operations": [{"type": "replace", "start_line": 1, "end_line": 1, "new_text": "a = 2\n"}]},
+            {"path": "b.py", "operations": [{"type": "replace", "start_line": 1, "end_line": 1, "new_text": "b = 2\n"}]},
+        ]
+    )
+
+    assert r.success is True
+    assert r.payload.get("mode") == MODE_DIRECT_DISK
+    assert a.read_text(encoding="utf-8") == "a = 2\n"
+    assert b.read_text(encoding="utf-8") == "b = 2\n"
+    executor.execute.assert_not_called()
+    executor.execute_batch.assert_not_called()
+
+    # 批量编辑共享一个 shadow 条目，undo 一次恢复两个文件。
+    tools["undo_last_tx"]()
+    assert a.read_text(encoding="utf-8") == "a = 1\n"
+    assert b.read_text(encoding="utf-8") == "b = 1\n"
+
+
+def test_direct_disk_delete_file_removes_disk_and_undo_restores(tmp_path):
+    target = tmp_path / "d.py"
+    target.write_text("d = 1\n", encoding="utf-8")
+    tools, executor, _ = _offline_tools(tmp_path)
+
+    r = tools["delete_file"](path="d.py")
+    assert r.success is True
+    assert r.payload.get("mode") == MODE_DIRECT_DISK
+    assert not target.exists()
+    executor.execute.assert_not_called()
+
+    tools["undo_last_tx"]()
+    assert target.read_text(encoding="utf-8") == "d = 1\n"
+
+
+def test_direct_disk_delete_file_requires_path(tmp_path):
+    tools, executor, _ = _offline_tools(tmp_path)
+    r = tools["delete_file"](object_id=123)
+    assert r.success is False
+    assert "path" in (r.display or "")
+    executor.execute.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# J. P2-1c：direct_disk 待对账标记 + 复线对账提示
+# --------------------------------------------------------------------------- #
+
+
+def test_direct_disk_mutation_marks_session_change(tmp_path):
+    tools, _, _ = _offline_tools(tmp_path)
+    tools["create_file"](path="k.py", content="k = 1\n")
+
+    changes = sc.list_changes()
+    assert len(changes) == 1
+    assert changes[0]["direct_disk"] is True
+    assert MODE_DIRECT_DISK in changes[0]["summary"]
+
+
+def test_pending_direct_disk_reads_persisted_entries(tmp_path):
+    # 跨进程视角：直接读持久化文件，不依赖进程内 _LOG。
+    sc.record(
+        "a.py", tool="write_file", tx_id="direct-1",
+        summary="write_file mode=direct_disk",
+        project_root=str(tmp_path), direct_disk=True,
+    )
+    sc.record(
+        "b.py", tool="str_replace", tx_id="tx-2",
+        summary="str_replace mode=overwrite",
+        project_root=str(tmp_path),
+    )
+
+    pending = sc.pending_direct_disk(str(tmp_path))
+    assert len(pending) == 1
+    assert pending[0]["path"] == "a.py"
+
+
+def test_reconcile_hint_when_world_available(tmp_path):
+    from forge.runtime import _direct_disk_reconcile_hint
+
+    sc.record("a.py", tool="write_file", tx_id="direct-1",
+             summary="mode=direct_disk", project_root=str(tmp_path), direct_disk=True)
+
+    hint = _direct_disk_reconcile_hint(str(tmp_path), True)
+    assert "direct_disk 待对账" in hint
+    assert "a.py" in hint
+    assert "forge_sync" in hint
+
+
+def test_reconcile_hint_empty_when_world_unavailable(tmp_path):
+    from forge.runtime import _direct_disk_reconcile_hint
+
+    sc.record("a.py", tool="write_file", tx_id="direct-1",
+             summary="mode=direct_disk", project_root=str(tmp_path), direct_disk=True)
+    assert _direct_disk_reconcile_hint(str(tmp_path), False) == ""
+
+
+def test_reconcile_hint_empty_when_no_pending(tmp_path):
+    from forge.runtime import _direct_disk_reconcile_hint
+
+    assert _direct_disk_reconcile_hint(str(tmp_path), True) == ""
+
+
+def test_forge_sync_appends_reconcile_hint(tmp_path):
+    from forge.workspace import Workspace
+    from forge.tools import make_tools
+
+    sc.record("a.py", tool="write_file", tx_id="direct-1",
+             summary="mode=direct_disk", project_root=str(tmp_path), direct_disk=True)
+
+    workspace = Workspace(project_root=str(tmp_path))
+    world = MagicMock()
+    projections = MagicMock()
+    sync_layer = MagicMock()
+    sync_layer.project_root = str(tmp_path)
+    report = MagicMock()
+    report.status = "IN_SYNC"
+    report.format.return_value = "sync_status: IN_SYNC"
+    report.to_dict.return_value = {"status": "IN_SYNC"}
+    sync_layer.sync.return_value = report
+
+    tools, _, _ = make_tools(
+        workspace=workspace,
+        world_runtime=world,
+        projections=projections,
+        allow_mutation=True,
+        sync_layer=sync_layer,
+    )
+    r = tools["forge_sync"]()
+    assert r.success is True
+    assert "direct_disk 待对账" in (r.display or "")
+    assert "a.py" in (r.display or "")

@@ -732,3 +732,71 @@ mutation 或不知道下一步该做什么。
 2. `_EDIT_TOOLS` / `_VERIFY_GUARDED_MUTATIONS` 均不含 post_toot / delete_toot，故
    VERIFY_REQUIRED 硬拦截与 Working Set 的 files_edited 记账不受本轮影响，保持正确。
 3. 未 commit、未 push（按本轮要求）。
+
+## P2-1 补全：冷启动降级 + 其余 mutation 直写 + 复线对账（2026-08-23）
+
+上一轮 P2-1 只覆盖了 str_replace / write_file / undo_last_tx 的直写；本轮补完
+1a / 1b / 1c 三个遗留项。基线实测 **372 passed / 10 skipped**（任务给出的 382 与
+本仓实际 HEAD 基线不符，同「测试质量 Batch 1」记录的 376 vs 366 现象；以实际为准）。
+
+### P2-1a 冷启动降级
+
+- **原问题**：`Runtime.__init__` 里 `world.ensure_identity()` 失败仍 `raise`，veritasd
+  从一开始就起不来时 Runtime 无法启动，direct_disk 只覆盖「会话中途掉线」。
+- **是否改了既有测试**：是。`tests/test_p0_batch2_consistency.py::
+  test_ensure_identity_failure_aborts_runtime_init` 原语义（必须 raise）已过时——冷启动
+  降级才是正确行为。改为 `test_ensure_identity_failure_degrades_runtime_not_aborts`：
+  断言不 raise 且 `rt.world_available is False`。
+- **修复方式**：`Runtime.__init__` 中 `ensure_identity` 失败不再 raise，置
+  `self.world_available = False` 并 stderr 提示降级；`_startup_sync_check` 补
+  `WORLD_UNAVAILABLE` 分支（此前该分支缺失，会把 WORLD_UNAVAILABLE 误报成
+  FAST_FORWARD，降级落地后此路径才真正被走到）。
+- **测试变化**：改 1 个测试的语义（raise → 降级），测试数量不变。
+
+### P2-1b 其余文件 mutation 的直写
+
+`DIRECT_DISK_TOOLS` 从 3 项扩到 8 项（新增 create_file / modify_file / apply_patch /
+edit_files_batch / delete_file；create_object/link_objects/unlink_objects 无磁盘等价物，
+仍不在此列）。每个工具的 direct_disk 等价语义：
+
+- `create_file` = 本地写新文件（`write_text`）。
+- `modify_file` = 把 machine ops 应用到本地文件（新增 `direct_disk.apply_edit_ops`，
+  复用 FileProjection 同源的 `PatchEngine.apply_edits`，落盘结果与 World 路径逐字一致）。
+- `edit_files_batch` = 逐文件应用 machine ops，共享一个 shadow undo 条目（undo 一次恢复全部）。
+- `apply_patch` = 把 unified diff 直接落到本地文件（复用 `apply_unified_patch_to_files`
+  已算出的 `old_content/new_content`，无需 machine ops）。
+- `delete_file` = 本地删文件（需 `path`；仅 object_id 无法离线解析 → 硬失败）。
+
+共享 `_finalize_direct_disk` 收尾：shadow undo 记账（写前内容，undo_last_tx 可回滚，
+含 delete 恢复）+ session_changes（direct_disk=True 标记）+ cache invalidate +
+`_attach_direct_disk_note` 置顶 mode=direct_disk。display 均带 `mode=direct_disk`，
+payload 带 `direct_disk=True / world_recorded=False`。World 可达时行为逐字不变。
+
+### P2-1c 复线对账
+
+- `session_changes.record` 新增 `direct_disk: bool = False` 结构化字段；新增
+  `pending_direct_disk(project_root)` 读持久化 `.forge/session_changes.jsonl` 过滤
+  direct_disk 条目（跨进程/重启可用）。
+- `runtime._direct_disk_reconcile_hint(project_root, world_available)`：World 已恢复且
+  存在待对账文件时返回提示文本（列出文件 + 提示 forge_sync）；World 不可达或无待对账
+  返回空串。`_initial_system` 首轮 system 注入该提示。
+- `forge_sync`（tools/__init__.py）结果追加「direct_disk 待对账文件」清单。
+- **只提示，不自动 fast-forward**：保持「不自动 merge」原则，对账方向仍由显式
+  forge_sync 的 SyncReport 决定。
+
+### 测试结果
+
+- `tests/test_p2_direct_disk.py`：27 → **40 passed**（+13：P2-1b 七项 + P2-1c 六项）。
+- 全量：**385 passed，10 skipped**（基线 372 + 13 新增，无回归）。
+
+### 遗留（本轮不做，避免扩大范围）
+
+1. `pending_direct_disk` 的标记**永不清除**：direct_disk 的 session_changes 条目会永久
+   保留，导致每次启动/forge_sync 都重复提示已对账过的文件。本轮未引入「已对账」清账
+   状态（P2-1c 只要求「记录 + 提示」，不新增状态系统），后续可在 forge_sync 成功把磁盘
+   FAST_FORWARD 回 World 后清掉对应 direct_disk 标记。
+2. `delete_file` direct_disk 用 path 定位；`apply_patch` 新文件（`--- /dev/null`）的
+   shadow undo 前内容是空串，undo 会写成空文件而非删除该文件——与 write_file 新建文件
+   的既有 undo 行为一致，可接受。
+3. direct_disk 探测仍每次 `get_version()` 往返（与 guard 探测重复），量级小，未加缓存。
+4. 未 commit、未 push（按本轮要求）。
