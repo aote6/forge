@@ -47,19 +47,21 @@ def test_compress_keeps_edited_file_paths_visible():
     for i in range(15):
         msgs.append(_tool("list_files", f"RESULT: noise {i}\n" + ("n" * 300)))
     # relevant confirmation-style edit result (older)
-    msgs.append(
-        _tool(
-            "str_replace",
-            "RESULT: path=forge/runtime.py replacements=1 object_id=9 tx=77 version=2\n"
-            "str_replace ok: forge/runtime.py",
-        )
+    edit_result = (
+        "RESULT: path=forge/runtime.py replacements=1 object_id=9 tx=77 version=2\n"
+        "str_replace ok: forge/runtime.py"
     )
+    msgs.append(_tool("str_replace", edit_result))
     for i in range(8):
         msgs.append(_tool("glob_files", f"RESULT: glob {i}\n" + ("g" * 200)))
     out = _compress_messages(msgs, keep_recent_tools=4, working_set=ws)
-    joined = "\n".join((m.content or "") for m in out if m.role == "tool")
-    assert "forge/runtime.py" in joined
-    assert "tx=77" in joined or "tx=77" in joined.replace(" ", "")
+    tool_msgs = [m for m in out if m.role == "tool"]
+    # 必须真的触发了压缩：存在被摘要的无关消息，否则"保留 path"无从谈起。
+    assert any((m.content or "").startswith("[compressed") for m in tool_msgs)
+    # 承载 files_edited path 的 str_replace 结果逐字保留：不压缩、不改写、不截断。
+    str_replace_msgs = [m for m in tool_msgs if m.name == "str_replace"]
+    assert len(str_replace_msgs) == 1
+    assert str_replace_msgs[0].content == edit_result
 
 
 def test_compress_keeps_recent_near_miss():
@@ -130,19 +132,26 @@ def test_compress_confirmation_keeps_path_and_tx():
 
 
 def test_compress_does_not_destroy_working_set_message():
-    """If a [Working Set] system message is present, compress must keep it."""
+    """If a [Working Set] system message is present, compress must keep it verbatim."""
     ws = WorkingSet(goal="protected goal")
+    ws_summary = ws.summary()
     msgs = [
         Message(role="system", content="base"),
-        Message(role="system", content=ws.summary()),
+        Message(role="system", content=ws_summary),
     ]
-    for i in range(20):
+    # 30 条工具消息（>= 24）确保真正触发压缩；<24 会提前 return，测不到压缩路径。
+    for i in range(30):
         msgs.append(_tool("read_file", f"body {i}\n" + ("y" * 400)))
     out = _compress_messages(msgs, keep_recent_tools=4, working_set=ws)
+    # 必须真的触发了压缩：存在被摘要的工具消息。
+    tool_msgs = [m for m in out if m.role == "tool"]
+    assert any((m.content or "").startswith("[compressed") for m in tool_msgs)
+    # [Working Set] system 消息逐字保留：数量、内容都不变。
     ws_msgs = [
         m
         for m in out
         if m.role == "system" and (m.content or "").startswith("[Working Set]")
     ]
-    assert ws_msgs
+    assert len(ws_msgs) == 1
+    assert ws_msgs[0].content == ws_summary
     assert "protected goal" in ws_msgs[0].content

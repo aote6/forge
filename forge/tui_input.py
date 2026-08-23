@@ -244,15 +244,17 @@ def _read_loop(
 
 
 def read_multiline_input(
-    prompt: str = "> ", key_source=None, write=None
+    prompt: str = "> ", key_source=None, write=None, width: int | None = None
 ) -> str | None:
     """读取一条（可能多行）输入，返回 str；EOF / Ctrl+D 空输入返回 None。
 
     key_source / write 仅供测试注入；默认从终端读取。
+    width 为 None 时用真实终端宽度（_get_terminal_width()），否则强制指定
+    折行宽度（供窄屏测试与固定宽度场景使用）。纯透传，不改变算法。
     """
     if key_source is not None:
         result, _submitted = _read_loop(
-            prompt, key_source, write or (lambda s: None)
+            prompt, key_source, write or (lambda s: None), width=width
         )
         return result
 
@@ -279,7 +281,7 @@ def read_multiline_input(
 
     _wr(_BP_ENABLE)
     try:
-        result, submitted = _read_loop(prompt, _ks, _wr)
+        result, submitted = _read_loop(prompt, _ks, _wr, width=width)
         if submitted:
             if not (result or "").endswith("\n"):
                 _wr("\r\n")  # 结束本行，让后续输出从新行开始

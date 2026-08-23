@@ -7,7 +7,7 @@ import os
 import unicodedata
 
 from forge import tui_input
-from forge.tui_input import _display_lines, _read_key, _read_loop, read_multiline_input
+from forge.tui_input import _display_lines, _read_key, read_multiline_input
 
 
 class Feed:
@@ -250,6 +250,18 @@ def test_narrow_termux_width_no_duplicate():
     assert (vt.cy, vt.cx) == _cursor_pos("💬 > " + text, 64)
 
 
+def test_read_multiline_input_width_passthrough():
+    """公开 API 的 width 透传：直接指定窄屏宽度，折行重绘无重复、不截断。"""
+    vt = MiniVT(10)
+    text = "你好世界，测试"  # 7 个宽字符 = 14 列 > 10，必然折行
+    out = read_multiline_input(
+        prompt="> ", key_source=feed(text, "\r"), write=vt.write, width=10
+    )
+    assert out == text
+    assert "".join(vt.screen()) == "> " + text
+    assert (vt.cy, vt.cx) == _cursor_pos("> " + text, 10)
+
+
 def _cursor_pos(text, width):
     """按终端折行模型算出 text 末尾的光标位置 (行, 列)。
 
@@ -274,13 +286,14 @@ def _cursor_pos(text, width):
 
 
 def _run_input(vt, prompt, *chunks):
-    """用 vt 的终端宽度驱动核心输入状态机，返回提交结果。
+    """用 vt 的终端宽度驱动公开 API，返回提交结果。
 
-    read_multiline_input 不暴露 width，这里直接走 _read_loop 并注入
-    width=vt.width，保证 _render 的折行宽度与 MiniVT 模拟的终端宽度一致。
+    通过 read_multiline_input 的 width 透传注入 vt.width，保证 _render 的
+    折行宽度与 MiniVT 模拟的终端宽度一致。
     """
-    result, _submitted = _read_loop(prompt, feed(*chunks), vt.write, width=vt.width)
-    return result
+    return read_multiline_input(
+        prompt=prompt, key_source=feed(*chunks), write=vt.write, width=vt.width
+    )
 
 
 # ---- P2-4 回归测试：折行 / 重绘行为锁死（只补测试，不改实现） ----

@@ -609,3 +609,65 @@ mutation 或不知道下一步该做什么。
   `test_compress_keeps_edited_file_paths_visible`（25 条，仅 substring 断言）仍偏弱，
   但不在此次列出的 4 项 weak 清单内，未动。
 - 未 commit、未 push（按本轮要求）。
+
+## 测试质量统一修复 Batch 2（2026-08-23）
+
+纯测试修复 + 一处公开 API 补充（`read_multiline_input` 加 `width` 透传，不改算法）。
+处理 Batch 1 遗留的 2 项 weak 断言 + 1 项 API 补充。
+
+### 处理的 3 项
+
+1. **compress 测试-1（`test_compress_does_not_destroy_working_set_message`）**
+   - 原问题：22 条消息（2 system + 20 tool）< 24，`_compress_messages` 提前
+     `return messages`，压缩根本没触发。测试名说「压缩不摧毁 WS 消息」，实际
+     只是验证「未压缩列表里 WS 消息还在」，恒真。
+   - 强契约：消息数改到 30（≥24）确保真正触发压缩；新增断言「确有工具消息被
+     摘要」（`[compressed` 前缀）；`[Working Set]` system 消息逐字保留（数量 ==1、
+     内容 == ws.summary()、goal 子串在）。反例：压缩错删 WS 消息 → `len==1`
+     或逐字等值立即失败。
+
+2. **compress 测试-2（`test_compress_keeps_edited_file_paths_visible`）**
+   - 原问题：25 条消息 ≥24，压缩确实触发，但断言是 substring（`"forge/runtime.py"
+     in joined`、`"tx=77" in joined`）。即使 str_replace 被摘要成 `[compressed
+     str_replace]\nRESULT: path=... tx=77 ...`（内容型摘要保留前 8 行），断言照样过。
+   - 强契约：抽出 `edit_result` 精确原文，断言「确有无关消息被压缩」+「str_replace
+     结果逐字保留」（`content == edit_result`，数量 ==1）。反例：相关 path 保护失效
+     → str_replace 被压缩 → 逐字等值失败（已用 monkeypatch `_path_mentioned=False`
+     验证：此时 content 前缀为 `[compressed str_replace]\n...`，等值必 False）。
+
+3. **`read_multiline_input` 加 `width` 透传（`forge/tui_input.py`）**
+   - 原问题：公开 API 不暴露 `width`，窄屏测试只能绕过它直接调 `_read_loop`。
+   - 改动：签名 `read_multiline_input(prompt="> ", key_source=None, write=None,
+     width=None)`，`width=None` 时行为完全不变（`_read_loop` 内部走
+     `_get_terminal_width()`）；`width` 有值时透传给 `_read_loop`（测试注入路径 +
+     tty 路径都透传）。纯 API 补充，不改算法。
+
+### 是否修改生产代码
+
+- `forge/tui_input.py`：**是，但仅为 API 补充** —— 给 `read_multiline_input` 增加
+  `width=None` 关键字参数并透传，不改变任何既有逻辑/算法；`width=None`（现有调用方
+  的默认）行为与改动前逐字节一致。
+- `forge/runtime.py` 等其它实现文件：未动。
+
+### 测试数量
+
+- 修改（非新增）：`test_p1_compress.py` 2 个测试重写为强契约。
+- 新增 1 个：`test_tui_input.py` 新增 `test_read_multiline_input_width_passthrough`
+  （直接调公开 API `width=10` 验证窄屏折行 + 光标位置）。
+- `_run_input` helper 简化：从直接调 `_read_loop` 改为走 `read_multiline_input(width=...)`，
+  断言保持不变（精确等值）；`_read_loop` 从测试 import 移除。
+
+### 专项与全量结果
+
+- 专项：`tests/test_p1_compress.py` + `tests/test_tui_input.py` = 35 passed。
+- 全量：**367 passed，10 skipped**（基线 366 + 新增 1 个 width 透传测试）。
+
+### 是否发现新的真实 bug
+
+未发现。生产实现正确，本轮只补测试锁死既有行为 + 纯 API 透传。
+
+### 遗留（不在本轮范围）
+
+- write_file 覆盖提示死代码（下一轮）。
+- P2-1a/1b/1c、P3-1 ~ P3-6：未动。
+- 未 commit、未 push（按本轮要求）。
