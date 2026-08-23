@@ -61,6 +61,29 @@
 - "重试prompt携带结构化拒绝原因"：现有 STOP_HINT 已从纯计数升级为
   reason分类（type_mismatch/exception/logic），基本满足原始诉求。
 
+## P3-1 第一批：裸 except Exception 清理（2026-08-23）
+
+只清第一批 10 处纯 `pass`（完全静默），不碰 P3-2~P3-6，不推远程，未 commit。
+
+### 清理的 10 处（`except Exception: pass` → stderr 日志）
+1. `forge/tui_input.py:295` — 关闭 bracketed-paste 终端转义失败
+2. `forge/adapters/mastodon.py:109` — 读取限流状态 JSON 失败
+3. `forge/adapters/mastodon.py:123` — 写入限流状态失败
+4. `forge/intents/executor.py:52` — 事务 abort 失败（原异常仍 re-raise）
+5. `forge/tools/local_tools.py:123` — read_files cache_put 失败
+6. `forge/tools/local_tools.py:802` — summarize_file 读取缓存失败
+7. `forge/tools/local_tools.py:899` — read_file cache_put 失败
+8. `forge/tools/local_tools.py:1152` — run_command 学习 test_command 失败
+9. `forge/world/runtime.py:211` — close() 时 session abort 失败
+10. `forge/world/adapter.py:127` — close() 时 terminate/kill 子进程失败
+
+每处只加 `print(..., file=sys.stderr)`，不动控制流、不改返回语义、不抛新异常。
+
+### 结果
+- 纯 `pass`（完全静默）：12 → 2
+- 剩余 2 处：`checkpoint.py:51` / `sync/state.py:65`（`.broken` 重命名失败，主 load 失败已打日志，属冗余兜底，留待后续）
+- 全量测试：395 passed，10 skipped
+
 ## P0-1/P0-2 投影失败检查（已修复）
 - 根因：mutation 主路径在 `projections.project()` 后不检查 `success`，与
   `confirm_fn`（失败→ToolResult.fail）语义不一致；模型会把 disk=FAIL 当成功。
@@ -71,8 +94,9 @@
 - 说明：World 事务已提交无法自动回滚；失败文案引导 `forge_sync` 对账。
 
 ## 已知技术债（未处理）
-- 全库约 147 处 `except Exception`（非裸 `except:`；旧记录「47 处」已过时），
-  建议按关键路径分批清理（local_tools / intent_tools / runtime / file_projection / sync_layer）
+- 全库 158 处 `except Exception`（非裸 `except:`）；P3-1 第一批已清 10 处纯 `pass`，
+  剩 2 处纯 `pass`（checkpoint.py:51 / sync/state.py:65，`.broken` 重命名，主失败已日志），
+  其余有日志/返回默认值/continue，留待 P3-2~P3-6 分批
 - ~~`forge: tx=NN v=NN` 自动commit与人类feature commit混线~~ 已解决：
   自动事务提交已停用（git_projection.apply() 不再 commit），历史中的
   `forge: tx=` 提交已通过 filter-branch 全部移除

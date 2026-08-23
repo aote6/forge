@@ -208,6 +208,7 @@ class WorldRuntime:
         if self._current_session and not self._current_session.closed:
             try:
                 self._current_session.abort()
-            except Exception:
-                pass
+            except Exception as e:
+                import sys
+                print(f"[runtime] close: abort session failed: {e}", file=sys.stderr)
         self._adapter.close()

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -124,8 +125,8 @@ class WorldAdapter:
                     self._process.wait(timeout=3)
                 except Exception:
                     self._process.kill()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[adapter] close: terminate failed: {e}", file=sys.stderr)
             self._process = None
 
     # ---- commands ----

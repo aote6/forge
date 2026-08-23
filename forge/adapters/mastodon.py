@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -106,8 +107,8 @@ def rate_limit_ok(min_interval_sec: int = 300, max_per_day: int = 12) -> bool:
     if _STATE_PATH.exists():
         try:
             st = json.loads(_STATE_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[mastodon] 读取限流状态失败: {e}", file=sys.stderr)
     if st.get("day") != day:
         st = {"last": 0.0, "day": day, "count": 0}
     if now - float(st.get("last") or 0) < min_interval_sec:
@@ -120,8 +121,8 @@ def rate_limit_ok(min_interval_sec: int = 300, max_per_day: int = 12) -> bool:
     try:
         _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         _STATE_PATH.write_text(json.dumps(st), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[mastodon] 写入限流状态失败: {e}", file=sys.stderr)
     return True
 
 

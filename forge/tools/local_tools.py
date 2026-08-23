@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -120,8 +121,8 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
                         if no_range:
                             try:
                                 cache_put(workspace.project_root, path, content)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                print(f"[local_tools] cache_put failed: {e}", file=sys.stderr)
                     header = f"--- {path}"
                     if start_line or end_line:
                         header += f" (lines {start_line or 1}-{end_line or 'end'})"
@@ -799,8 +800,8 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
                         _log("summarize_file", {"path": path, "cached": True}, True)
                         display = f"[缓存] {path} 摘要:\n" + json.dumps(cached["summary"], ensure_ascii=False, indent=2)
                         return ToolResult.ok(display=display, payload={"mutation": False, "cached": True, "summary": cached["summary"]})
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[local_tools] summarize_file 读取缓存失败: {e}", file=sys.stderr)
 
             with open(target, "r", encoding="utf-8") as f:
                 code = f.read()
@@ -896,8 +897,8 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
                 total = len(lines)
                 try:
                     cache_put(workspace.project_root, path, raw)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[local_tools] cache_put failed: {e}", file=sys.stderr)
             start = int(start) if start else 1
             end = int(end) if end else 0
 
@@ -1149,8 +1150,8 @@ def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None
             if "pytest" in cmd or "npm test" in cmd or "cargo test" in cmd:
                 try:
                     update_memory(workspace.project_root, test_command=cmd.strip())
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[local_tools] update_memory failed: {e}", file=sys.stderr)
             return ToolResult.ok(
                 display=format_block(
                     "run_command",

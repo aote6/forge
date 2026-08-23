@@ -8,6 +8,7 @@ IntentExecutor 是事务编排器（Transaction Orchestrator）。
 from __future__ import annotations
 
 import json
+import sys
 from typing import Optional
 
 from forge.intents.intent import Intent, IntentType
@@ -49,8 +50,8 @@ class IntentExecutor:
         except Exception:
             try:
                 session.abort()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[intents] abort session failed: {e}", file=sys.stderr)
             raise
         receipt, delta = self._world.commit_session()
         # Collect deleted_paths from delete intents for Projection.

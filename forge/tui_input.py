@@ -292,6 +292,6 @@ def read_multiline_input(
     finally:
         try:
             _wr(_BP_DISABLE)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[tui_input] 关闭 bracketed-paste 失败: {e}", file=sys.stderr)
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
