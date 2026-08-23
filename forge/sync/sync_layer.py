@@ -552,6 +552,17 @@ class SyncLayer:
         except Exception:
             return False
 
+    def disk_change_detected(self) -> bool:
+        """纯磁盘侧：磁盘/Git 相对已知状态是否发生了外部变化。
+
+        与 World 是否可达无关。P2-1 direct_disk 路径需要在 World 不可达时
+        仍然执行这一半检查——不能因为绕过 Veritas 就把外部变更 guard 一起绕过。
+        """
+        if not is_git_repo(self.project_root):
+            return False
+        disk_advanced, _ = self._disk_advanced()
+        return disk_advanced
+
     def external_change_detected(self) -> bool:
         """运行期间：World 不可达，或磁盘/Git 相对已知状态发生了变化。
 
@@ -560,7 +571,4 @@ class SyncLayer:
         """
         if not self.world_available():
             return True
-        if not is_git_repo(self.project_root):
-            return False
-        disk_advanced, _ = self._disk_advanced()
-        return disk_advanced
+        return self.disk_change_detected()

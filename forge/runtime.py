@@ -28,6 +28,7 @@ from forge.projections.git_projection import GitProjection
 from forge.projections.index_projection import IndexProjection
 from forge.system_prompt import SYSTEM_INSTRUCTION
 from forge.tools import make_tools
+from forge.tools.direct_disk import DIRECT_DISK_TOOLS
 from forge.tools.schemas import (
     TOOL_DECLARATIONS,
     READ_ONLY_TOOL_DECLARATIONS,
@@ -836,8 +837,9 @@ class Runtime:
         """运行期间外部变更守卫：变更工具执行前检测外部磁盘/Git 变化。
 
         契约 §7：持锁写入期间发现外部磁盘变化 → 立即停止继续写入，重新对账。
-        World 不可达时同样 STOP：Forge 写盘不会产生 World receipt，
-        会产生无痕分叉，必须先恢复 veritasd。
+        World 不可达时：文件内容 mutation 走 P2-1 direct_disk 直写路径（放行，
+        由工具自己标注 mode=direct_disk）；World object 操作没有磁盘等价物，
+        继续 STOP，不得伪装成 direct_disk。
         """
         if tool_name not in MUTATION_TOOL_NAMES:
             return None
@@ -848,10 +850,22 @@ class Runtime:
             if self.sync_layer is not None:
                 if not self.sync_layer.world_available():
                     from forge.adapters.base import ToolResult
+                    if tool_name in DIRECT_DISK_TOOLS:
+                        # P2-1: 放行到 direct_disk，但磁盘侧外部变更 guard 不放弃。
+                        if self.sync_layer.disk_change_detected():
+                            return ToolResult.fail(
+                                display=(
+                                    "⛔ veritasd 不可达，且检测到外部磁盘/Git 变化：已停止继续写入。\n"
+                                    "direct_disk 直写不解决磁盘分叉；请先运行 forge_sync 重新对账。"
+                                )
+                            )
+                        return None
                     return ToolResult.fail(
                         display=(
                             "⛔ 无法访问 World（veritasd）：已停止继续写入。\n"
                             "Forge 写盘会产生 World 无法记录的变化，禁止在不可达时继续。\n"
+                            f"该操作只存在于 World，没有磁盘等价物（可用: "
+                            f"{', '.join(sorted(DIRECT_DISK_TOOLS))}）。\n"
                             "请先恢复 veritasd 后重试。"
                         )
                     )

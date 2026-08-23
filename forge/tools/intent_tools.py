@@ -29,6 +29,12 @@ from forge.tools.near_miss import (
 from forge.tools.errors import decorate_fail_message
 from forge.tools.read_cache import invalidate as cache_invalidate
 from forge.tools.session_changes import record as record_session_change
+from forge.tools.direct_disk import (
+    MODE_DIRECT_DISK,
+    next_tx_id as next_direct_tx_id,
+    world_available,
+    write_text as direct_write_text,
+)
 
 
 def _projection_warnings(results) -> list[str]:
@@ -272,6 +278,26 @@ def _attach_diff(result: ToolResult, path: str, old: str, new: str, tool: str = 
     return result
 
 
+def _attach_direct_disk_note(result: ToolResult) -> ToolResult:
+    """P2-1: direct_disk 结果置顶标注模式与 World 未记录的事实。
+
+    `_attach_diff` 会用 format_block 重建 display（kv 渲染成 `mode: direct_disk`），
+    所以这里显式再给一行含 `mode=direct_disk` 的说明，保证无论 display 被谁重建，
+    模式标识都稳定可见、不被 diff 块淹没。
+    """
+    if (result.payload or {}).get("mode") != MODE_DIRECT_DISK:
+        return result
+    if "DIRECT_DISK:" in (result.display or ""):
+        return result
+    note = (
+        f"DIRECT_DISK: mode={MODE_DIRECT_DISK} — veritasd 不可用，已直接写入磁盘；"
+        f"本次变更 World 未记录。\n"
+        f"恢复 veritasd 后运行 forge_sync 对账；undo_last_tx 仍可回滚本次磁盘修改。"
+    )
+    result.display = note + "\n" + (result.display or "")
+    return result
+
+
 def _attach_next(result: ToolResult, paths: list[str] | None = None) -> ToolResult:
     if result.success and result.display is not None:
         if "NEXT:" not in result.display:
@@ -407,11 +433,62 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             path_map.set(oid, path_n)
         return oid, receipt, delta
 
+    def _direct_disk_write(path_n: str, content: str) -> ToolResult:
+        """P2-1: veritasd 不可用时的一等直写路径。
+
+        只写磁盘，不产生 World receipt、不动 path_map。调用方（str_replace /
+        write_file）随后照常记录 shadow undo 与 session_changes —— 那两者本来
+        就只依赖磁盘与本地栈，与 Veritas 无关。
+        """
+        root = _project_root(world)
+        try:
+            direct_write_text(root, path_n, content)
+        except OSError as e:
+            return ToolResult.fail(
+                display=(
+                    f"direct_disk 写入失败 path={path_n} mode={MODE_DIRECT_DISK}: {e}\n"
+                    f"veritasd 不可用，Forge 已退到直写路径，但磁盘写入本身失败。\n"
+                    f"建议: 检查路径/父目录/权限；文件未被修改。"
+                ),
+                payload={
+                    "path": path_n,
+                    "mode": MODE_DIRECT_DISK,
+                    "direct_disk": True,
+                    "world_recorded": False,
+                    "mutation": False,
+                    "requires_confirmation": False,
+                },
+            )
+        tx = next_direct_tx_id()
+        return ToolResult.ok(
+            display=(
+                f"RESULT: path={path_n} mode={MODE_DIRECT_DISK} tx={tx} world=unavailable\n"
+                f"Wrote file (direct_disk): {path_n}"
+            ),
+            payload={
+                "path": path_n,
+                "object_id": None,
+                "tx_id": tx,
+                "version": None,
+                "mutation": True,
+                "registered": False,
+                "requires_confirmation": False,
+                "mode": MODE_DIRECT_DISK,
+                "direct_disk": True,
+                "world_recorded": False,
+            },
+        )
+
     def _write_content_to_world(path: str, content: str, oid: int | None) -> ToolResult:
         from forge.core.edit_contract import authoring_to_machine_ops
 
         path_n = _norm_path(path)
         registered_now = False
+
+        # P2-1: Veritas 不可用 → 一等直写路径，而不是硬失败。
+        # Veritas 可用时这里不做任何事，下面的 World 事务路径完全不变。
+        if not world_available(world):
+            return _direct_disk_write(path_n, content)
 
         if oid is None:
             # Auto-register: create World object for this path with target content
@@ -893,8 +970,10 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             if result.success:
                 reps = n if replace_all else 1
                 reg = result.payload.get("registered")
+                mode_v = result.payload.get("mode")
+                mode_part = f" mode={mode_v}" if mode_v else ""
                 result.display = (
-                    f"RESULT: path={path_n} replacements={reps} "
+                    f"RESULT: path={path_n} replacements={reps}{mode_part} "
                     f"object_id={result.payload.get('object_id')} "
                     f"tx={result.payload.get('tx_id')} version={result.payload.get('version')}"
                     f"{' registered=true' if reg else ''}\n"
@@ -923,7 +1002,10 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                         path_n,
                         tool="str_replace",
                         tx_id=(result.payload or {}).get("tx_id"),
-                        summary=f"replacements={(result.payload or {}).get('replacements')}",
+                        summary=(
+                            f"replacements={(result.payload or {}).get('replacements')}"
+                            + (f" mode={mode_v}" if mode_v else "")
+                        ),
                         project_root=_project_root(world),
                     )
                 except Exception as e:
@@ -933,6 +1015,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 result = _attach_warnings(
                     result, list((result.payload or {}).get("side_effect_warnings", []))
                 )
+                result = _attach_direct_disk_note(result)
             return result
         except Exception as e:
             return ToolResult.fail(
@@ -948,7 +1031,12 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
             new_content = content if content is not None else ""
             result = _write_content_to_world(path_n, new_content, oid)
             if result.success:
-                mode = "overwrite" if oid is not None else "create_or_register"
+                # direct_disk 路径已在 payload 里定了 mode；World 路径沿用原判定。
+                mode = (result.payload or {}).get("mode") or (
+                    "overwrite" if oid is not None else "create_or_register"
+                )
+                if result.payload is not None:
+                    result.payload["mode"] = mode
                 overwrite_hint = ""
                 if mode == "overwrite" and old_content.strip() and old_content != new_content:
                     old_lines = old_content.count("\n") + 1
@@ -983,7 +1071,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                         path_n,
                         tool="write_file",
                         tx_id=(result.payload or {}).get("tx_id"),
-                        summary="write_file",
+                        summary=f"write_file mode={mode}",
                         project_root=_project_root(world),
                     )
                 except Exception as e:
@@ -993,6 +1081,7 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 result = _attach_warnings(
                     result, list((result.payload or {}).get("side_effect_warnings", []))
                 )
+                result = _attach_direct_disk_note(result)
             return result
         except Exception as e:
             return ToolResult.fail(

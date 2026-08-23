@@ -349,3 +349,56 @@ Checkpoint 拆成两套水位，避免"消费进度"和"磁盘真实同步进度
 1. `post_toot` 有副作用（外部发帖）但分类在 READ_ONLY_TOOL_DECLARATIONS，规划阶段也暴露；`delete_toot` 却在 MUTATION。分类不一致，后续可修
 2. `TOOL_DECLARATIONS = list(READ_ONLY_TOOL_DECLARATIONS)` 命名误导——实际只含只读面，且未被生产代码使用。死常量/易混淆，后续清理
 3. `subagent.py` 顶部 `from typing import Any, Callable` 为历史遗留未使用导入，后续清理
+
+## P2-1 完成：无 Veritas 时的一等直写路径（direct_disk）（2026-08-23）
+
+### 问题
+veritasd 不可用时体验断崖：`Runtime._guard_external_change` 对所有 mutation 硬 STOP，
+连纯文本编辑都做不了。而 str_replace/write_file 的语义本来就不依赖 World 事务。
+
+### 实现
+- 新增 `forge/tools/direct_disk.py`：`world_available()`（探测口径与
+  `SyncLayer.world_available` 一致，走 `get_version()`；对象不可探测时**默认 True**，
+  保证既有 Veritas 路径与既有 fixture 行为不变）、`next_tx_id()`（合成
+  `direct-<ns>-<seq>`，供 shadow 栈与 session_changes 追溯）、`write_text()`。
+- `intent_tools._write_content_to_world`：World 事务前先判可用性，不可用 → `_direct_disk_write`
+  只写磁盘，payload 带 `mode=direct_disk / direct_disk=True / world_recorded=False`。
+- str_replace / write_file：display 的 RESULT 行带 `mode=`，session_changes summary 带 mode，
+  成功后 `_attach_direct_disk_note` 置顶一行 `DIRECT_DISK: mode=direct_disk …`
+  （因为 `_attach_diff` 会用 format_block 重建 display，标识必须重新置顶）。
+- shadow undo / session_changes 语义完全复用：两者本来只依赖磁盘 + 本地栈，
+  合成 tx_id 让 `undo_last_tx` 在直写下照常回滚。
+- `SyncLayer` 拆出 `disk_change_detected()`（纯磁盘侧），`external_change_detected()`
+  改为 `not world_available() or disk_change_detected()`——行为不变，只是可分开调用。
+- `Runtime._guard_external_change`：World 不可达时，`DIRECT_DISK_TOOLS`
+  (`str_replace`/`write_file`/`undo_last_tx`) 放行到直写，**但仍执行磁盘侧外部变更检查**；
+  其余 mutation（create_object/link_objects/... 这些只存在于 World、无磁盘等价物）继续硬 STOP。
+
+### 边界（不要扩大）
+- direct_disk 只解决"无 Veritas 时的文件写入"。World object 操作不得伪装成 direct_disk。
+- Veritas 可用时不触发任何新分支，事务路径逐字不变。
+- VERIFY_REQUIRED guard 在工具循环里先于 external-change guard 执行，direct_disk 不绕过它。
+- 未改 Planner/Intent/WRI/Veritas，未引入新架构概念。
+
+### 测试
+- `tests/test_p2_direct_disk.py` 27 个契约测试（覆盖 A~H 全部要求）
+- 全量：**327 passed, 10 skipped**
+
+### 已知边界 / 剩余 P2
+- **P2-2 启动期降级**：`Runtime.__init__` 里 `world.ensure_identity()` 失败仍然 raise
+  （由 `tests/test_p0_batch2_consistency.py::test_ensure_identity_failure_aborts_runtime_init`
+  锁定）。所以本轮的 direct_disk 覆盖的是"会话中途 veritasd 掉线"，
+  不覆盖"veritasd 从一开始就起不来"。要做冷启动降级需要单独一轮并改那条既有契约测试。
+- **P2-3 其余文件 mutation 的直写**：`create_file` / `modify_file` / `apply_patch` /
+  `edit_files_batch` / `delete_file` 目前在 World 不可达时仍硬 STOP。
+  write_file 已能覆盖创建与整体覆写，故未纳入本轮最小范围。
+- **P2-4 复线对账**：direct_disk 写入不产生 receipt，恢复 veritasd 后需要 `forge_sync`
+  把磁盘变更 FAST_FORWARD 回 World；目前只在 display 里提示，没有自动提醒/记账。
+- 每次 str_replace/write_file 会多一次 `get_version()` 探测往返（与 guard 的探测重复）。
+  量级很小，若成为热点再加进程内短 TTL 缓存。
+
+### 顺带发现的既有缺陷（P2-1 未修，避免扩大范围）
+- `write_file` 的「覆盖了已存在文件(N行)…建议用 str_replace」提示是**死代码**：
+  它写进 `result.display` 后，紧接着 `_attach_diff` 用 `format_block` 整体重建了 display，
+  提示被丢弃。**World 路径与 direct_disk 路径都一样**，即该 P1 提示从未真正到达模型。
+  修法是把它并进 `_attach_diff` 的 body/hint，属独立一小轮，不在 P2-1 内。
