@@ -20,7 +20,12 @@ from forge.tools.display import format_block, snippet_around
 from forge.tools.tx_shadow import record_tx, undo_last as shadow_undo_last
 from forge.tools.project_memory import update_memory
 from forge.tools.related_tests import format_related_hint, symbols_from_edit
-from forge.tools.near_miss import find_near_misses
+from forge.tools.near_miss import (
+    find_near_misses,
+    diagnose_mismatch,
+    suggest_old_string,
+    find_occurrence_lines,
+)
 from forge.tools.errors import decorate_fail_message
 from forge.tools.read_cache import invalidate as cache_invalidate
 from forge.tools.session_changes import record as record_session_change
@@ -231,6 +236,33 @@ def _attach_diff(result: ToolResult, path: str, old: str, new: str, tool: str = 
     if related:
         body = body + "\n" + related
     result.display = format_block(tool, "OK", kv, body, hint=hint, clip=clip)
+    # P1-4: when related tests exist, force VERIFY_REQUIRED at top of display
+    if related and "RELATED_TESTS" in related and "(none found)" not in related:
+        target = None
+        for line in related.splitlines():
+            if "run_test_structured(target=" in line:
+                import re as _re
+                m = _re.search(r"target=([^)\s]+)", line)
+                if m:
+                    target = m.group(1).strip().strip("'\"")
+                    break
+        if not target:
+            # fallback: first path-like token after RELATED_TESTS
+            for line in related.splitlines():
+                if line.startswith("RELATED_TESTS"):
+                    parts = line.replace(",", " ").split()
+                    for tok in parts:
+                        if tok.endswith(".py"):
+                            target = tok
+                            break
+        tgt_expr = repr(target) if target else "'tests/'"
+        verify_line = (
+            f"VERIFY_REQUIRED: run_test_structured(target={tgt_expr}) "
+            f"— 验证完成前不要开始无关重构"
+        )
+        result.display = verify_line + "\n" + (result.display or "")
+        pl["verify_required"] = True
+        pl["verify_target"] = target
     pl["diff"] = diff
     pl["before_snippet"] = before
     pl["after_snippet"] = after
@@ -805,23 +837,48 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                     old_string = needle2
                     n = text.count(old_string)
             if n == 0:
+                body_parts = ["old_string 未找到"]
+                diag = diagnose_mismatch(text, old_string)
+                if diag:
+                    kinds = ", ".join(diag.get("kinds") or [])
+                    body_parts.append(f"差异类型: {kinds}")
+                    if diag.get("hint"):
+                        body_parts.append(f"提示: {diag['hint']}")
+                    if diag.get("match_line"):
+                        body_parts.append(f"近似位置: L{diag['match_line']}")
+                suggestion = suggest_old_string(text, old_string)
+                if suggestion and suggestion.get("text"):
+                    body_parts.append(
+                        f"--- SUGGESTED old_string (L{suggestion['line']}, 可直接复制) ---\n"
+                        f"{suggestion['text']}"
+                    )
                 misses = find_near_misses(text, old_string)
-                body = "old_string 未找到"
                 if misses:
-                    body = body + "\n--- NEAR_MISS candidates ---\n" + "\n----\n".join(misses)
+                    body_parts.append(
+                        "--- NEAR_MISS candidates ---\n" + "\n----\n".join(misses)
+                    )
+                body = "\n".join(body_parts)
+                hint = (
+                    "使用 SUGGESTED old_string 原样重试；或扩大上下文使匹配唯一"
+                    if suggestion
+                    else "复制 NEAR_MISS 片段作为 old_string，或 read_function 后再改"
+                )
                 return ToolResult.fail(
                     display=format_block(
                         "str_replace",
                         "FAIL",
                         {"path": path_n, "reason": "old_string not found"},
                         body,
-                        hint="复制 NEAR_MISS 片段作为 old_string，或 read_function 后再改",
+                        hint=hint,
                     )
                 )
             if n > 1 and not replace_all:
+                occ_lines = find_occurrence_lines(text, old_string)[:3]
+                lines_txt = ", ".join(f"L{ln}" for ln in occ_lines) if occ_lines else "(未知)"
                 return ToolResult.fail(
                     display=(
                         f"str_replace failed: old_string 出现 {n} 次，拒绝歧义替换\n"
+                        f"命中行号(前3处): {lines_txt}\n"
                         f"建议: 扩大 old_string 上下文使其唯一，或设 replace_all=true。"
                     )
                 )

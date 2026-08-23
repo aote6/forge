@@ -281,3 +281,26 @@ Checkpoint 拆成两套水位，避免"消费进度"和"磁盘真实同步进度
 - path 提取依赖 display/payload 格式，非标准工具可能漏记
 - open_hypotheses / pending_verify 未与 todo 双向同步清账
 - 未推远程（按本轮要求）
+
+## P1-3 + P1-4 完成（2026-08-23）
+
+### P1-3 str_replace 失败反馈强化
+- near_miss.py 新增 diagnose_mismatch（indent/whitespace/quotes 差异识别）、suggest_old_string（唯一模糊匹配 + 行号 + 可复制片段）、find_occurrence_lines（多命中行号）
+- str_replace 失败时展示：差异类型、SUGGESTED old_string、NEAR_MISS 候选
+- 多命中未 replace_all：列出前 3 处行号
+
+### P1-4 编辑后验证闭环
+- _attach_diff 有 related tests 时 display 顶部加 VERIFY_REQUIRED
+- WorkingSet 扩展 failure_context / verify_targets
+- run_test_structured 失败写 failure_context，成功清空 pending_verify / verify_targets / failure_context
+- summary 注入 VERIFY_REQUIRED + failure_context
+
+### 测试
+- P1-3: 5 个专项测试，全过
+- P1-4: 6 个专项测试，全过
+- 全量：270 passed
+
+### 遗留问题（后期统一解决）
+1. VERIFY_REQUIRED 靠模型遵守 Working Set / display 提示，Runtime 未硬拦截后续无关 mutation。若要硬拦截需在 Runtime 层加状态机，当前选择软提示
+2. suggest_old_string 对复杂多候选可能不唯一，此时只给 NEAR_MISS 列表（不确定时不给错误建议比给错建议更安全）
+3. pending_verify 在测试成功时整表清空。多文件并行编辑时可能一次清掉多项未验证项。精确做法是只清与本次测试相关的 pending_verify，但需要额外相关性判断逻辑

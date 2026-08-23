@@ -81,6 +81,8 @@ class WorkingSet:
     files_edited: list[str] = field(default_factory=list)
     open_hypotheses: list[str] = field(default_factory=list)
     pending_verify: list[str] = field(default_factory=list)
+    failure_context: list = field(default_factory=list)
+    verify_targets: list[str] = field(default_factory=list)
 
     def _add_unique(self, bucket: list[str], item: str, max_keep: int = 24) -> None:
         item = (item or "").strip()
@@ -129,22 +131,46 @@ class WorkingSet:
                 self.pending_verify,
                 f"verify edit on {path}",
             )
+            # Capture VERIFY_REQUIRED target from display / payload
+            pl = result.payload or {}
+            if pl.get("verify_target"):
+                self._add_unique(self.verify_targets, str(pl["verify_target"]), max_keep=8)
+            for line in display.splitlines():
+                if "VERIFY_REQUIRED" in line and "run_test_structured" in line:
+                    m = re.search(r"target=([^\s)]+)", line)
+                    if m:
+                        tgt = m.group(1).strip().strip("'\"")
+                        self._add_unique(self.verify_targets, tgt, max_keep=8)
 
         if not result.success:
             if "near_miss" in disp_l or "NEAR_MISS" in display:
                 note = f"NEAR_MISS on {name}" + (f" ({path})" if path else "")
                 self._add_unique(self.open_hypotheses, note, max_keep=12)
-            elif path:
+            elif path and name not in ("run_test_structured", "run_tests"):
                 self._add_unique(
                     self.open_hypotheses,
                     f"{name} failed on {path}",
                     max_keep=12,
                 )
 
-        if name in ("run_test_structured", "run_tests") and result.success:
-            self.pending_verify = [
-                p for p in self.pending_verify if "test" not in p.lower()
-            ][:8]
+        if name in ("run_test_structured", "run_tests"):
+            payload = result.payload or {}
+            if result.success:
+                # Clear verify queue and failure context on green tests
+                self.pending_verify = []
+                self.verify_targets = []
+                self.failure_context = []
+            else:
+                fc = payload.get("failure_context") or payload.get("contexts") or []
+                if fc:
+                    self.failure_context = list(fc)[:8]
+                fails = payload.get("failed_tests") or payload.get("failures") or []
+                for f in fails[:5]:
+                    self._add_unique(
+                        self.open_hypotheses,
+                        f"test failed: {f}"[:140],
+                        max_keep=12,
+                    )
 
     def summary(self, max_lines: int = 28) -> str:
         """Compact injection text so the model always sees current task state."""
@@ -168,6 +194,21 @@ class WorkingSet:
             lines.append("pending_verify:")
             for p in self.pending_verify[-5:]:
                 lines.append(f"  - {p[:140]}")
+        if self.verify_targets:
+            lines.append(
+                "VERIFY_REQUIRED: run_test_structured(target="
+                + repr(self.verify_targets[0])
+                + ") — 验证完成前不要开始无关重构"
+            )
+        if self.failure_context:
+            lines.append("failure_context:")
+            for c in self.failure_context[:3]:
+                if isinstance(c, dict):
+                    loc = f"{c.get('file', '?')}:{c.get('line', '?')}"
+                    src = (c.get("source") or c.get("snippet") or "")[:80]
+                    lines.append(f"  - {loc} {src}")
+                else:
+                    lines.append(f"  - {str(c)[:120]}")
         if len(lines) > max_lines:
             lines = lines[: max_lines - 1] + ["  ...(truncated)"]
         return "\n".join(lines)
