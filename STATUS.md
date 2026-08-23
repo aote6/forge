@@ -301,6 +301,31 @@ Checkpoint 拆成两套水位，避免"消费进度"和"磁盘真实同步进度
 - 全量：270 passed
 
 ### 遗留问题（后期统一解决）
-1. VERIFY_REQUIRED 靠模型遵守 Working Set / display 提示，Runtime 未硬拦截后续无关 mutation。若要硬拦截需在 Runtime 层加状态机，当前选择软提示
-2. suggest_old_string 对复杂多候选可能不唯一，此时只给 NEAR_MISS 列表（不确定时不给错误建议比给错建议更安全）
-3. pending_verify 在测试成功时整表清空。多文件并行编辑时可能一次清掉多项未验证项。精确做法是只清与本次测试相关的 pending_verify，但需要额外相关性判断逻辑
+1. ~~VERIFY_REQUIRED 靠模型遵守 Working Set / display 提示，Runtime 未硬拦截后续无关 mutation~~ → 已由 P1-6 解决
+2. suggest_old_string 对复杂多候选可能不唯一，此时只给 NEAR_MISS 列表（不确定时不给错误建议比给错建议更安全）→ 仍保留
+3. ~~pending_verify 在测试成功时整表清空。多文件并行编辑时可能一次清掉多项未验证项~~ → 已由 P1-5 解决
+
+## P1-5 + P1-6 完成（2026-08-23）
+
+### P1-5 pending_verify 精确清账
+- WorkingSet 新增 `verify_map`（path → set(verify_target)）与 `failure_target` 两个内部字段
+- 编辑成功时同时记录 path→target 关联；测试成功只清与本次 target 相关的
+  pending_verify / verify_targets / failure_context（broad target `tests/` / `.` 覆盖一切）
+- 测试失败保留 pending_verify / verify_targets，记录 failure_context + failure_target
+- 无关联测试的编辑（无 verify_target）只被全量通过清除；多文件编辑验证 A 不再误清 B
+- 测试：`tests/test_p1_verify_precision.py` 8 个契约测试，全过
+
+### P1-6 VERIFY_REQUIRED 最小 Runtime guard
+- 新增 `Runtime._guard_pending_verify`：verify_targets 非空时，对文件内容 mutation
+  （str_replace / write_file / create_file / modify_file / edit_files_batch / apply_patch / delete_file）
+  硬拦截「编辑非 pending 文件」
+- 放行：read/diagnostic/test 工具、undo_last_tx、forge_sync、编辑仍在验证的文件
+- 验证通过（verify_targets 清空）后自动恢复；不做权限系统/状态机
+- 测试：`tests/test_p1_verify_guard.py` 14 个契约测试，全过
+
+### 结果
+- 全量 pytest：282 passed，10 skipped（veritasd 缺失，环境问题；基线 270 = 本环境 260 passed + 10 veritasd）
+
+### 遗留
+- `verify_map` / `failure_target` 仅进程内内存，跨 Runtime 实例不恢复（同 P1-1 Working Set）
+- guard 拦截的 mutation 会作为一次失败尝试记入 open_hypotheses（可接受，非 bug）

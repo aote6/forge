@@ -66,6 +66,54 @@ _EDIT_TOOLS = {
     "create_object",
 }
 
+# P1-6: 待验证状态下需要硬拦截的"文件内容 mutation"工具（最小集合）。
+# 不含 undo_last_tx / forge_sync（修正/对账，必须放行），也不含 create_object/
+# link_objects/unlink_objects/post_toot/delete_toot（非文件编辑，不在此 guard 范畴）。
+_VERIFY_GUARDED_MUTATIONS = {
+    "str_replace",
+    "write_file",
+    "create_file",
+    "modify_file",
+    "edit_files_batch",
+    "apply_patch",
+    "delete_file",
+}
+
+
+def _norm_path(p: str) -> str:
+    """归一化相对路径：统一分隔符、去 ./、去尾部 /，便于比较。"""
+    p = (p or "").strip().replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p.rstrip("/")
+
+
+def _mutation_target_paths(tool_name: str, arguments: dict | None) -> list[str]:
+    """从 mutation 工具参数里提取其将要改动的文件路径集合。"""
+    args = arguments or {}
+    paths: list[str] = []
+    for key in ("path", "file", "target"):
+        v = args.get(key)
+        if isinstance(v, str) and v.strip():
+            paths.append(v.strip())
+    edits = args.get("edits")
+    if isinstance(edits, list):
+        for e in edits:
+            if isinstance(e, dict):
+                p = e.get("path") or e.get("file")
+                if isinstance(p, str) and p.strip():
+                    paths.append(p.strip())
+    patch = args.get("patch")
+    if isinstance(patch, str):
+        for line in patch.splitlines():
+            if line.startswith("+++ "):
+                p = line[4:].strip()
+                if p.startswith("b/"):
+                    p = p[2:]
+                if p and p != "/dev/null":
+                    paths.append(p)
+    return paths
+
 
 @dataclass
 class WorkingSet:
@@ -83,6 +131,11 @@ class WorkingSet:
     pending_verify: list[str] = field(default_factory=list)
     failure_context: list = field(default_factory=list)
     verify_targets: list[str] = field(default_factory=list)
+    # path -> set(verify_target)：某次编辑的待验证 target 关联。
+    # 供 P1-5 精确清账（只清与本次测试相关的项）与 P1-6 待验证 guard（哪些文件在验证中）使用。
+    verify_map: dict = field(default_factory=dict)
+    # 最近一次"产生失败上下文"的测试目标，用于成功时精确清除 failure_context。
+    failure_target: Optional[str] = None
 
     def _add_unique(self, bucket: list[str], item: str, max_keep: int = 24) -> None:
         item = (item or "").strip()
@@ -114,6 +167,49 @@ class WorkingSet:
                 return m.group(1).strip().rstrip(",")
         return None
 
+    _PENDING_PREFIX = "verify edit on "
+
+    def _pending_entry_path(self, entry: str) -> str:
+        """从 pending_verify 条目里取回 source path（条目由本类生成，格式固定）。"""
+        e = (entry or "").strip()
+        if e.startswith(self._PENDING_PREFIX):
+            return e[len(self._PENDING_PREFIX):].strip()
+        return e
+
+    def _is_broad_target(self, target: str) -> bool:
+        """全量/近全量 pytest target：`.` / `tests` / `test` / 空 视为覆盖一切。"""
+        t = (target or "").strip().rstrip("/")
+        return t in ("", ".", "./", "tests", "test", "all")
+
+    def _target_covers(self, ran: str, required: str) -> bool:
+        """一次 pytest 运行 target=ran 是否覆盖某个待验证 target=required。"""
+        ran = (ran or "").strip()
+        required = (required or "").strip()
+        if self._is_broad_target(ran):
+            return True
+        if not required:
+            # required 未知：只有 broad 运行才算覆盖
+            return False
+        if ran == required:
+            return True
+        # ran 是 required 的父目录：跑 tests/ 覆盖 tests/test_x.py
+        return required.startswith(ran.rstrip("/") + "/")
+
+    def _verified_paths(self, ran_target: str) -> set[str]:
+        """本次成功测试运行真正覆盖到的 source path 集合。"""
+        cleared: set[str] = set()
+        for entry in self.pending_verify:
+            path = self._pending_entry_path(entry)
+            targets = self.verify_map.get(path) or set()
+            if not targets:
+                # 无关联测试的编辑：只有 broad 运行才清
+                if self._is_broad_target(ran_target):
+                    cleared.add(path)
+                continue
+            if any(self._target_covers(ran_target, t) for t in targets):
+                cleared.add(path)
+        return cleared
+
     def update_from_tool(
         self, name: str, arguments: dict | None, result: ToolResult
     ) -> None:
@@ -131,16 +227,20 @@ class WorkingSet:
                 self.pending_verify,
                 f"verify edit on {path}",
             )
-            # Capture VERIFY_REQUIRED target from display / payload
+            # Capture VERIFY_REQUIRED target(s) from display / payload，并建立
+            # path -> target 关联（P1-5 精确清账 / P1-6 待验证 guard 共用）。
+            targets: set[str] = set()
             pl = result.payload or {}
             if pl.get("verify_target"):
-                self._add_unique(self.verify_targets, str(pl["verify_target"]), max_keep=8)
+                targets.add(str(pl["verify_target"]))
             for line in display.splitlines():
                 if "VERIFY_REQUIRED" in line and "run_test_structured" in line:
                     m = re.search(r"target=([^\s)]+)", line)
                     if m:
-                        tgt = m.group(1).strip().strip("'\"")
-                        self._add_unique(self.verify_targets, tgt, max_keep=8)
+                        targets.add(m.group(1).strip().strip("'\""))
+            for t in targets:
+                self._add_unique(self.verify_targets, t, max_keep=8)
+                self.verify_map.setdefault(path, set()).add(t)
 
         if not result.success:
             if "near_miss" in disp_l or "NEAR_MISS" in display:
@@ -155,15 +255,33 @@ class WorkingSet:
 
         if name in ("run_test_structured", "run_tests"):
             payload = result.payload or {}
+            ran_target = (arguments or {}).get("target") or "tests/"
             if result.success:
-                # Clear verify queue and failure context on green tests
-                self.pending_verify = []
-                self.verify_targets = []
-                self.failure_context = []
+                # 只清与本次测试运行相关的验证状态（多文件编辑不误清其它项）。
+                cleared = self._verified_paths(ran_target)
+                self.pending_verify = [
+                    p for p in self.pending_verify
+                    if self._pending_entry_path(p) not in cleared
+                ]
+                self.verify_targets = [
+                    v for v in self.verify_targets
+                    if not self._target_covers(ran_target, v)
+                ]
+                # failure_context 只在本次运行覆盖了上次失败目标时才清，保持三者一致。
+                # failure_target 为 None（旧数据/手工构造）时按"已解决"对待，兼容旧行为。
+                if self.failure_target is None or self._target_covers(
+                    ran_target, self.failure_target
+                ):
+                    self.failure_context = []
+                    self.failure_target = None
+                for p in cleared:
+                    self.verify_map.pop(p, None)
             else:
+                # 失败：保留 pending_verify / verify_targets，记录失败上下文与目标。
                 fc = payload.get("failure_context") or payload.get("contexts") or []
                 if fc:
                     self.failure_context = list(fc)[:8]
+                    self.failure_target = ran_target
                 fails = payload.get("failed_tests") or payload.get("failures") or []
                 for f in fails[:5]:
                     self._add_unique(
@@ -749,6 +867,44 @@ class Runtime:
             import sys
             print(f"[sync] external-change guard failed: {e}", file=sys.stderr)
         return None
+
+    def _guard_pending_verify(self, tool_name: str, arguments: dict | None):
+        """P1-6 最小硬拦截：待验证状态下阻止无关文件编辑。
+
+        触发条件：WorkingSet.verify_targets 非空（存在 VERIFY_REQUIRED 待验证 target）。
+        放行：read/diagnostic/test 工具、undo_last_tx、forge_sync、以及编辑
+        verify_map 中仍在验证的文件（修复失败测试）。验证通过(verify_targets 清空)后自动恢复。
+
+        不做权限系统/状态机：只对文件内容 mutation 做单一拦截。
+        """
+        ws = getattr(self, "_working_set", None)
+        if ws is None or not ws.verify_targets:
+            return None
+        if tool_name not in _VERIFY_GUARDED_MUTATIONS:
+            return None
+        pending_paths = {_norm_path(p) for p in ws.verify_map.keys()}
+        targets = _mutation_target_paths(tool_name, arguments)
+        if not targets:
+            # 无法识别目标文件的 mutation → 视为无关，保守拦截
+            return ToolResult.fail(
+                display=(
+                    "⛔ 有待验证的改动尚未通过验证，禁止开始无关的新编辑。\n"
+                    "请先 run_test_structured(target=...) 验证；验证通过后自动恢复。"
+                )
+            )
+        unrelated = [t for t in targets if _norm_path(t) not in pending_paths]
+        if unrelated:
+            required = ", ".join(sorted(str(v) for v in ws.verify_targets))
+            return ToolResult.fail(
+                display=(
+                    f"⛔ 有待验证的改动尚未通过验证，禁止编辑无关文件: {', '.join(unrelated)}。\n"
+                    f"待验证 target: {required or '(见 pending_verify)'}\n"
+                    "请先 run_test_structured(target=...) 验证；若需修复当前改动，"
+                    "编辑 pending 中的文件仍被允许；验证通过后自动恢复。"
+                )
+            )
+        return None
+
     def on(self, event_type: EventType, handler):
         self._handlers[event_type].append(handler)
 
@@ -933,7 +1089,11 @@ class Runtime:
                 self.emit(
                     Event(EventType.TOOL_CALL_START, {"name": tc.name, "args": tc.arguments})
                 )
-                guard = self._guard_external_change(tc.name)
+                guard = self._guard_pending_verify(
+                    tc.name, getattr(tc, "arguments", None) or {}
+                )
+                if guard is None:
+                    guard = self._guard_external_change(tc.name)
                 result = guard if guard is not None else self.executor.execute(tc)
                 tool_calls_n += 1
                 self._last_tool_display = result.display or ""
