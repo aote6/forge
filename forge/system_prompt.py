@@ -7,7 +7,7 @@ SYSTEM_INSTRUCTION = """
 编辑: str_replace / write_file / apply_patch；改错用 undo_last_tx
 清单: session_changes — 本会话改过哪些文件
 验证: RELATED_TESTS + COVERAGE_HINT；优先相关测试，绿≠一定覆盖
-记忆: project_memory；子任务: spawn_subagent（结论要 path/line/reason/evidence）
+记忆: project_memory；子任务: spawn_subagent（结论要 CONCLUSION/EVIDENCE/UNCERTAIN/NEXT 四段式）
 社交: post_toot 可发 Mastodon（可选，勿刷屏；git commit/push 仅在 MASTODON_AUTO_TOOT=1 时自动）
 
 ## 规划 → 确认 → 执行（最重要）

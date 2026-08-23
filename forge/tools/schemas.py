@@ -435,6 +435,37 @@ TOOL_DECLARATIONS = list(READ_ONLY_TOOL_DECLARATIONS)
 MUTATION_TOOL_NAMES = frozenset(d["name"] for d in MUTATION_TOOL_DECLARATIONS)
 
 # ---------------------------------------------------------------------------
+# 工具面分类（对齐 schemas.py ↔ make_tools 实际暴露面）
+#
+#   LLM/schema 可见 = READ_ONLY_TOOL_DECLARATIONS ∪ MUTATION_TOOL_DECLARATIONS
+#                    （另有 submit_plan 规划阶段专用；spawn_subagent 由 Runtime
+#                     注册，forge_sync 由 make_tools 在带 sync_layer 时注册）。
+#   runtime/internal = INTERNAL_TOOL_NAMES —— 仍被 make_local_tools 注册为可调用
+#                     实现（测试/兼容/内部辅助用），但刻意不出现在任何 schema 里，
+#                     因此不会暴露给 Planner/LLM。不要为了"面一致"把它们升格为公开。
+# ---------------------------------------------------------------------------
+INTERNAL_TOOL_NAMES = frozenset({
+    "read_file_with_lines",
+    "preview_line_mutation",
+    "get_symbol_line_range",
+    "get_call_chain",
+    "get_diff_summary",
+    "extract_code_skeleton",
+    "git_status_enhanced",
+    "list_tests",
+    "read_git_version",
+    "summarize_file",
+    "read_files",
+    "run_diagnostics",
+    "get_context_budget",
+    "inspect_last_intent",
+    "list_files",
+    "git_log",
+    "run_single_test",
+    "rebuild_symbol_index",
+})
+
+# ---------------------------------------------------------------------------
 # 规划阶段专用 —— 模型探索后提交计划，触发运行时回到「待用户确认」。
 # 只出现在规划阶段；执行阶段不提供，模型直接动手即可。
 # ---------------------------------------------------------------------------
