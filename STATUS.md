@@ -119,6 +119,49 @@
 - `return {}`（无日志）：`tools/project_memory.py:20`
 - 纯 `pass` 剩余 2 处（第一批遗留）：`checkpoint.py:51`、`sync/state.py:65`
 
+## P3-1 第三批：静默 return False/{} + 剩余 pass 清理（2026-08-23）
+
+P3-1 收尾。只清最后 7 处，不碰 P3-2~P3-6，不推远程，未 commit。
+
+### 清理的 7 处（`except Exception` 无日志 → 加 stderr 日志）
+`return False`（4 处）：
+1. `forge/core/backup_manager.py:28` `BackupManager.restore` — 补顶层 `import sys`
+2. `forge/projections/git_projection.py:43` `_is_git_repo` — 补 `import sys`
+3. `forge/tools/direct_disk.py:52` `world_available` probe — 补 `import sys`
+4. `forge/sync/sync_layer.py:556` `SyncLayer.world_available`（文件已有 sys）
+
+`return {}`（1 处）：
+5. `forge/tools/project_memory.py:20` `load_memory` — 补 `import sys`
+
+纯 `pass`（2 处，`.broken` 重命名兜底，主 load 失败已打日志）：
+6. `forge/projections/checkpoint.py:51`（`sys` 已在 `_load` 内局部 import，作用域覆盖）
+7. `forge/sync/state.py:65`（同上）
+
+每处只加 `print(f"[模块] 操作名 failed: {e}", file=sys.stderr)`，保留原
+`return False` / `return {}` / `pass`，不改控制流、不改返回语义、不把 pass 改成 raise。
+
+### 结果
+- 全量测试：395 passed，10 skipped（无回归）
+
+## P3-1 全部完成（三批共 29 处）
+
+| 批次 | 类型 | 数量 |
+|------|------|------|
+| 第一批 | 纯 `pass`（完全静默） | 10 |
+| 第二批 | `return ""` / `return None` / `continue`（静默默认值） | 12 |
+| 第三批 | `return False` ×4 + `return {}` ×1 + 纯 `pass` ×2 | 7 |
+| **合计** | | **29** |
+
+P3-1 目标（清完裸 `except Exception` 中完全静默 / 无日志的默认值）达成。
+三批全量测试均 395 passed / 10 skipped，无回归。
+
+### 真实遗留问题（属 P3-2~P3-6，未动）
+- `local_tools.py:81/539/561` 的 `skipped.append(f"{rel_path}: {e}")`：错误已记入
+  skipped 列表回显，非静默。
+- `session_changes.py:97` 的 `out.append(line)`：无法解析的行原样保留（有意），非静默。
+- 全库其余 `except Exception` 中的非静默形态（有日志 / 返回默认值 / continue）按
+  P3-2~P3-6 分批。
+
 ## P0-1/P0-2 投影失败检查（已修复）
 - 根因：mutation 主路径在 `projections.project()` 后不检查 `success`，与
   `confirm_fn`（失败→ToolResult.fail）语义不一致；模型会把 disk=FAIL 当成功。

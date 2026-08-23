@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from forge.projections.base import Projection, ProjectionResult, TransactionDelta
@@ -39,7 +40,8 @@ class GitProjection(Projection):
                 timeout=5,
             )
             return result.returncode == 0
-        except Exception:
+        except Exception as e:
+            print(f"[git] _is_git_repo failed: {e}", file=sys.stderr)
             return False
 
     def _paths_from_delta(self, delta: TransactionDelta) -> list[str]:

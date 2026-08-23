@@ -48,7 +48,8 @@ class ProjectionCheckpoint:
             try:
                 broken = self._file.with_suffix('.json.broken')
                 self._file.rename(broken)
-            except Exception:
+            except Exception as e:
+                print(f"[checkpoint] rename to .broken failed: {e}", file=sys.stderr)
                 pass
 
     def _save(self) -> None:

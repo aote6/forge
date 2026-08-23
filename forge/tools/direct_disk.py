@@ -11,6 +11,7 @@ result/display 必须显式标注 mode=direct_disk，并引导恢复 veritasd �
 """
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -48,7 +49,8 @@ def world_available(world) -> bool:
         try:
             probe()
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[direct_disk] world_available probe failed: {e}", file=sys.stderr)
             return False
     online = getattr(world, "online", None)
     if isinstance(online, bool):

@@ -552,7 +552,8 @@ class SyncLayer:
         try:
             self._world.get_version()
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[sync] world_available failed: {e}", file=sys.stderr)
             return False
 
     def disk_change_detected(self) -> bool:

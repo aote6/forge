@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,8 @@ def load_memory(project_root: str) -> dict[str, Any]:
         return {}
     try:
         return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        print(f"[project_memory] load_memory failed: {e}", file=sys.stderr)
         return {}
 
 

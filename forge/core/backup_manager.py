@@ -1,6 +1,7 @@
 """备份管理器"""
 import os
 import shutil
+import sys
 import datetime
 from pathlib import Path
 from typing import Optional
@@ -24,7 +25,8 @@ class BackupManager:
         try:
             shutil.copy2(backup_path, target_path)
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[backup] restore failed: {e}", file=sys.stderr)
             return False
 
     def restore_latest(self, target_path: str) -> bool:
