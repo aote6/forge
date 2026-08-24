@@ -14,7 +14,6 @@ from forge.intents.executor import IntentExecutor
 
 def make_tools(
     workspace,
-    safe_mode: str = "blacklist",
     world_runtime=None,
     projections=None,
     *,
@@ -28,7 +27,7 @@ def make_tools(
     create_file, link_objects, ...). Production Runtime uses allow_mutation=True;
     mutations stay transactional via IntentExecutor + Veritas.
     """
-    tools = make_local_tools(workspace, safe_mode=safe_mode, world_runtime=world_runtime)
+    tools = make_local_tools(workspace, world_runtime=world_runtime)
     if allow_mutation and world_runtime is not None and projections is not None:
         executor = IntentExecutor(world_runtime)
         tools.update(make_intent_tools(executor, projections))

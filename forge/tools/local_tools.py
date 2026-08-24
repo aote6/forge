@@ -36,7 +36,7 @@ __all__ = [
 ]
 
 
-def make_local_tools(workspace, safe_mode: str = "blacklist", world_runtime=None) -> dict:
+def make_local_tools(workspace, world_runtime=None) -> dict:
     """组装所有只读/查询工具。按功能分组后合并，返回的 key 集合与原实现一致。"""
     tools: dict = {}
     tools.update(make_read_tools(workspace))

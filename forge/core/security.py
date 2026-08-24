@@ -1,8 +1,8 @@
-"""安全策略：路径黑名单 + 命令黑名单 + Git 保护 + 白名单模式
+"""安全策略：路径黑名单 + 命令黑名单 + Git 保护
 
 设计原则：
 - 路径：先 expanduser + resolve（跟随 symlink），再 relative_to 防逃逸，再黑名单
-- 命令：黑名单兜底危险操作；敏感读操作尽量拦；白名单仅作提示/宽松模式用
+- 命令：黑名单兜底危险操作；敏感读操作尽量拦
 - 无法 100% 防住所有 shell 技巧，关键是多层（路径层 + 命令层 + 输出脱敏）
 """
 from __future__ import annotations
@@ -123,22 +123,6 @@ GIT_CONFIRM_COMMANDS = [
     r"\bgit\s+branch\s+-[dD]\b",
 ]
 
-ALLOWED_COMMAND_PATTERNS = [
-    r"^cargo\s", r"^make\s", r"^cmake\s", r"^ninja\s",
-    r"^pytest\s", r"^python3?\s+-m\s+pytest\s", r"^cargo\s+test\s",
-    r"^grep\s", r"^rg\s", r"^find\s",
-    r"^git\s+status\b", r"^git\s+log\b", r"^git\s+diff\b", r"^git\s+show\b",
-    r"^git\s+branch\b(?!\s+-[dD])",
-    r"^ls\b", r"^cat\b", r"^head\b", r"^tail\b", r"^wc\b",
-    r"^file\b", r"^stat\b", r"^du\b", r"^df\b",
-    r"^python3?\s+--version$", r"^node\s+--version$", r"^rustc\s+--version$",
-    r"^which\s", r"^type\s", r"^uname\b", r"^whoami\b",
-    r"^python3?\s+\S+\.py\b",
-    r"^mkdir\s", r"^cd\s", r"^pwd\b",
-    r"^pip3?\s+list\b", r"^pip3?\s+show\b", r"^npm\s+list\b", r"^npm\s+view\b",
-]
-
-
 def is_blocked_path(path: str) -> str | None:
     """返回命中的规则字符串，未命中返回 None。使用 expanduser + resolve 跟随符号链接。"""
     try:
@@ -174,13 +158,6 @@ def needs_git_confirmation(cmd: str) -> str | None:
         if re.search(pattern, cmd):
             return pattern
     return None
-
-
-def is_allowed_command(cmd: str) -> bool:
-    for pattern in ALLOWED_COMMAND_PATTERNS:
-        if re.search(pattern, cmd):
-            return True
-    return False
 
 
 class PathSecurityError(PermissionError):
