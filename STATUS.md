@@ -1,5 +1,31 @@
 # Forge 状态
 
+## P0：Verify State Continuity（2026-08-24）
+
+### 问题
+P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_verify guard），
+但 `WorkingSet.to_dict()` 未持久化 path→target 关联。Runtime 重启后
+`verify_targets` 仍在、`verify_map` 为空 → guard 失去 pending 路径集合，
+跨会话控制语义与进程内不一致。
+
+### 实现
+- **canonical 验证关联事实**：`verify_map`（path → set/list of targets）
+- `to_dict`：序列化 `verify_map`（targets 为 sorted list）与 `failure_target`
+- `from_dict`：容错解析 map；有 map 时 `_sync_verify_views_from_map()` 同步
+  `pending_verify` / `verify_targets` 表达层；无 map 的旧 task_state 保持原字段、不伪造
+- 空 target 集不写入 JSON；非法 path/target 丢弃
+- `failure_target` 一并持久化（与已持久化的 `failure_context` 配套，供成功测试精确清失败上下文）
+
+### 测试
+- `tests/test_p0_verify_state_continuity.py`：跨 Runtime 恢复 map、guard 一致、
+  精确清账、清账后再恢复、坏输入、旧快照无 map
+- 既有 `test_p1_verify_*` / `test_p1_working_set` roundtrip 同步更新
+
+### 明确不再成立的旧描述
+- ~~`verify_map` / `failure_target` 仅进程内内存，跨 Runtime 不恢复~~ → 已可恢复
+
+---
+
 ## P3-4 + P3-5 + P3-6：detect 缓存 + undo 文档化 + openai_compat 429 重试（2026-08-23）
 
 只做这三项，不推远程，未 commit。
@@ -105,7 +131,7 @@
 
 ### 真实遗留问题
 1. `confirmation.py` 仍保留 `is_confirm`/`is_cancel`（计划确认流程使用），并非整文件废弃。
-2. `verify_map` / `failure_target` 两个内部字段未持久化：恢复后 pending_verify/verify_targets 在、但 path→target 关联丢失；broad 运行仍可清账，精确关联需重建（任务范围限定 8 字段，有意为之）。
+2. ~~`verify_map` / `failure_target` 两个内部字段未持久化~~ → 已由 **P0 Verify State Continuity** 解决：二者写入 `task_state.json`，恢复后 guard / 精确清账语义连续。
 3. 每次工具调用（含只读 read_file 等）都触发一次写盘；JSON 很小成本可忽略，严格可优化为「状态变化时才写」。
 4. `task_state.json` 位于 `.forge/`（已 gitignore），不会污染 git。
 
@@ -540,8 +566,9 @@ Checkpoint 拆成两套水位，避免"消费进度"和"磁盘真实同步进度
 - 全量 pytest：282 passed，10 skipped（veritasd 缺失，环境问题；基线 270 = 本环境 260 passed + 10 veritasd）
 
 ### 遗留
-- `verify_map` / `failure_target` 仅进程内内存，跨 Runtime 实例不恢复（同 P1-1 Working Set）
+- ~~`verify_map` / `failure_target` 仅进程内内存，跨 Runtime 实例不恢复~~ → 已由 **P0 Verify State Continuity** 解决（见文首）
 - guard 拦截的 mutation 会作为一次失败尝试记入 open_hypotheses（可接受，非 bug）
+
 
 ## 编号调整说明（2026-08-23）
 

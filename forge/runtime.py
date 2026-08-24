@@ -339,12 +339,80 @@ class WorkingSet:
             lines = lines[: max_lines - 1] + ["  ...(truncated)"]
         return "\n".join(lines)
 
+    @staticmethod
+    def _normalize_verify_map(raw) -> dict:
+        """JSON/dict → path -> set(str)；非法条目丢弃，空 target 集不保留。"""
+        out: dict = {}
+        if not isinstance(raw, dict):
+            return out
+        for path, targets in raw.items():
+            p = str(path or "").strip()
+            if not p:
+                continue
+            if isinstance(targets, (set, list, tuple)):
+                cleaned = {str(t).strip() for t in targets if str(t).strip()}
+            elif targets is None:
+                cleaned = set()
+            else:
+                s = str(targets).strip()
+                cleaned = {s} if s else set()
+            if cleaned:
+                out[p] = cleaned
+        return out
+
+
+    def _sync_verify_views_from_map(self) -> None:
+        """以 verify_map 为权威行为事实，同步 pending_verify / verify_targets。
+
+        - guard 与精确清账只读 verify_map（及由 map 派生的视图）
+        - 表达层字段由此集中生成，避免三字段各自漂移
+        - map 为空时不清空已有 pending/targets（兼容无 map 的旧 task_state）
+        """
+        if not self.verify_map:
+            return
+        # Drop empty sets if any leaked in-memory
+        self.verify_map = {
+            p: set(ts) for p, ts in self.verify_map.items() if p and ts
+        }
+        paths = list(self.verify_map.keys())
+        # pending_verify: 保留已有合法条目顺序，补齐 map 中缺失 path
+        existing_paths = {
+            self._pending_entry_path(e) for e in self.pending_verify
+        }
+        new_pending = [
+            e
+            for e in self.pending_verify
+            if self._pending_entry_path(e) in self.verify_map
+        ]
+        for p in paths:
+            if p not in existing_paths:
+                new_pending.append(f"{self._PENDING_PREFIX}{p}")
+        self.pending_verify = new_pending
+        # verify_targets: 合并 map 中全部 target，保序去重
+        seen: set[str] = set()
+        targets: list[str] = []
+        for p in paths:
+            for t in sorted(self.verify_map.get(p) or ()):
+                if t not in seen:
+                    seen.add(t)
+                    targets.append(t)
+        self.verify_targets = targets[:8]
+
     def to_dict(self) -> dict:
         """把持久化字段序列化为 JSON-safe dict（P2-4 WorkingSet 持久化）。
 
-        只序列化 8 个跨会话字段；verify_map / failure_target 属会话内瞬态，
-        不持久化（恢复后按空处理，见 from_dict）。
+        验证关联以 verify_map 为权威行为事实（path → sorted target list），
+        跨 Runtime 恢复后保持 guard / 精确清账语义。failure_target 与
+        failure_context 一并恢复，以便成功测试时精确清除失败上下文。
         """
+        vmap = {}
+        for path, targets in (self.verify_map or {}).items():
+            p = str(path or "").strip()
+            if not p:
+                continue
+            ts = sorted({str(t).strip() for t in (targets or ()) if str(t).strip()})
+            if ts:
+                vmap[p] = ts
         return {
             "goal": self.goal,
             "constraints": list(self.constraints),
@@ -354,6 +422,8 @@ class WorkingSet:
             "pending_verify": list(self.pending_verify),
             "verify_targets": list(self.verify_targets),
             "failure_context": list(self.failure_context),
+            "verify_map": vmap,
+            "failure_target": self.failure_target,
         }
 
     @classmethod
@@ -369,7 +439,11 @@ class WorkingSet:
                     out.append(s)
             return out
 
-        return cls(
+        ft = d.get("failure_target")
+        if ft is not None:
+            ft = str(ft).strip() or None
+
+        ws = cls(
             goal=str(d.get("goal") or ""),
             constraints=_str_list(d.get("constraints")),
             files_read=_str_list(d.get("files_read")),
@@ -378,7 +452,13 @@ class WorkingSet:
             pending_verify=_str_list(d.get("pending_verify")),
             verify_targets=_str_list(d.get("verify_targets")),
             failure_context=list(d.get("failure_context") or []),
+            verify_map=cls._normalize_verify_map(d.get("verify_map")),
+            failure_target=ft,
         )
+        # 有 map 时以其为权威同步表达字段；无 map 的旧快照保持原 pending/targets
+        ws._sync_verify_views_from_map()
+        return ws
+
 
 
 # --------------------------------------------------------------------------- #

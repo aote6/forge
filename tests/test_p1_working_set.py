@@ -109,6 +109,8 @@ def test_working_set_to_from_dict_roundtrip():
         pending_verify=["verify edit on b.py"],
         verify_targets=["tests/test_b.py"],
         failure_context=[{"file": "b.py", "line": 3}],
+        verify_map={"b.py": {"tests/test_b.py"}},
+        failure_target="tests/test_b.py",
     )
     ws2 = WorkingSet.from_dict(ws.to_dict())
     assert ws2.goal == "g"
@@ -119,6 +121,12 @@ def test_working_set_to_from_dict_roundtrip():
     assert ws2.pending_verify == ["verify edit on b.py"]
     assert ws2.verify_targets == ["tests/test_b.py"]
     assert ws2.failure_context == [{"file": "b.py", "line": 3}]
+    assert ws2.verify_map == {"b.py": {"tests/test_b.py"}}
+    assert ws2.failure_target == "tests/test_b.py"
+    # JSON 形态：set → sorted list
+    d = ws.to_dict()
+    assert d["verify_map"] == {"b.py": ["tests/test_b.py"]}
+    assert d["failure_target"] == "tests/test_b.py"
 
 
 def test_working_set_from_dict_tolerates_bad_input():
