@@ -1,3 +1,0 @@
-line one
-line TWO CHANGED
-line three

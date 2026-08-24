@@ -12,3 +12,12 @@ wal_*.log
 *.bak-*
 .claude/
 gap1_gap4b_fix.patch
+
+# 补丁与临时测试产物（勿提交）
+forge-*.patch
+forge_*.zip
+test_auto_register.txt
+test_diff.txt
+test_fmt.txt
+test_proj.txt
+test_echo.py
