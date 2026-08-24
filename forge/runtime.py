@@ -673,7 +673,13 @@ _TASK_STATE_FILENAME = "task_state.json"
 
 
 def _save_task_state(project_root: str, ws: "WorkingSet") -> None:
-    """把 WorkingSet 写到 .forge/task_state.json（best-effort，不阻塞会话）。"""
+    """把 WorkingSet 写到 .forge/task_state.json（best-effort，不阻塞会话）。
+
+    失败语义：按产品裁定 task_state 本应 DEGRADED，但当前无机器消费端
+    （下次启动仅 best-effort 加载，失败则静默重建 WorkingSet），因此先按
+    WARN 处理——只打日志，不挂 runtime.degraded_components。若日后 Guard
+    或启动路径读取 is_degraded("task_state")，再升级为 DEGRADED。
+    """
     from pathlib import Path as _P
     try:
         log_dir = _P(project_root) / ".forge"
@@ -684,7 +690,8 @@ def _save_task_state(project_root: str, ws: "WorkingSet") -> None:
             encoding="utf-8",
         )
     except Exception as e:
-        print(f"[forge] _save_task_state failed: {e}", file=sys.stderr)
+        # WARN only — no degraded_components consumer yet (see docstring).
+        print(f"[forge] _save_task_state failed (WARN): {e}", file=sys.stderr)
 
 
 def _load_task_state(project_root: str) -> dict | None:
@@ -1292,6 +1299,37 @@ class Runtime:
             print(f"[sync] external-change guard failed: {e}", file=sys.stderr)
         return None
 
+    def _guard_path_map_degraded(self, tool_name: str):
+        """Intercept file mutations when path_map is degraded.
+
+        path_map 不可信时禁止文件内容 mutation，要求先恢复/重建映射。
+        forge_sync / undo_last_tx 放行以便对账与修复。
+        """
+        if tool_name not in _VERIFY_GUARDED_MUTATIONS:
+            return None
+        world = getattr(self, "world", None) or getattr(
+            getattr(self, "executor", None), "_world", None
+        )
+        if world is None:
+            return None
+        is_deg = False
+        if hasattr(world, "is_degraded"):
+            is_deg = bool(world.is_degraded("path_map"))
+        elif getattr(world, "_path_map_degraded", False):
+            is_deg = True
+        elif "path_map" in getattr(world, "degraded_components", ()):
+            is_deg = True
+        if not is_deg:
+            return None
+        return ToolResult.fail(
+            display=(
+                "⛔ path_map 处于 DEGRADED 状态：路径↔对象映射不可信，禁止文件 mutation。\n"
+                "请先恢复 veritasd / 重建 path_map（重启 WorldRuntime 或 forge_sync 对账），"
+                "确认 is_degraded(\"path_map\") 为 False 后再编辑。"
+            ),
+            payload={"degraded": ["path_map"], "blocked_by": "path_map_degraded"},
+        )
+
     def _guard_pending_verify(self, tool_name: str, arguments: dict | None):
         """P1-6 最小硬拦截：待验证状态下阻止无关文件编辑。
 
@@ -1560,9 +1598,11 @@ class Runtime:
                 self.emit(
                     Event(EventType.TOOL_CALL_START, {"name": tc.name, "args": tc.arguments})
                 )
-                guard = self._guard_pending_verify(
-                    tc.name, getattr(tc, "arguments", None) or {}
-                )
+                guard = self._guard_path_map_degraded(tc.name)
+                if guard is None:
+                    guard = self._guard_pending_verify(
+                        tc.name, getattr(tc, "arguments", None) or {}
+                    )
                 if guard is None:
                     guard = self._guard_external_change(tc.name)
                 result = guard if guard is not None else self.executor.execute(tc)

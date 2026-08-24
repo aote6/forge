@@ -34,6 +34,9 @@ class WorldRuntime:
         self._object_id: Optional[int] = None
         self._current_session: Optional[WorldSession] = None
         self._online = False
+        # Runtime-level degraded components (machine-consumable).
+        # path_map: receipt rebuild or delta update failed → mapping untrusted.
+        self.degraded_components: set[str] = set()
         try:
             self._online = self._adapter.ping()
         except Exception:
@@ -47,6 +50,10 @@ class WorldRuntime:
         Depends on durable WAL: receipts_since(0) must return historical
         commits when veritasd was started with VERITAS_WAL.
         """
+        # Tests may construct via object.__new__ without __init__;
+        # never assume degraded_components was already set.
+        if not hasattr(self, "degraded_components"):
+            self.degraded_components = set()
         try:
             from forge.projections.object_path import ObjectPathMap
         except ImportError:
@@ -59,12 +66,14 @@ class WorldRuntime:
                 f"[world] path_map rebuild failed: get_receipts_since(0) raised: {e}",
                 file=sys.stderr,
             )
-            self._path_map_degraded = True
+            self.degraded_components.add("path_map")
+            self._path_map_degraded = True  # compat; prefer is_degraded("path_map")
             return
         if not hasattr(self, "_path_map"):
             self._path_map = ObjectPathMap()
         # 重建是 best-effort：单条 delta 失败不应丢掉其余历史映射，
         # 但必须可观测，不能假装 path map 与 World 完全一致。
+        self.degraded_components.discard("path_map")
         self._path_map_degraded = False
         for receipt in receipts:
             delta = getattr(receipt, "delta", None)
@@ -78,6 +87,7 @@ class WorldRuntime:
                         f"(receipt version={getattr(receipt, 'version', '?')}): {e}",
                         file=sys.stderr,
                     )
+                    self.degraded_components.add("path_map")
                     self._path_map_degraded = True
 
     @property
@@ -166,7 +176,34 @@ class WorldRuntime:
             return
         if not hasattr(self, "_path_map"):
             self._path_map = ObjectPathMap()
-        self._path_map.update_from_delta(delta)
+        try:
+            self._path_map.update_from_delta(delta)
+        except Exception:
+            self.degraded_components.add("path_map")
+            self._path_map_degraded = True
+            raise
+
+    def is_degraded(self, component: str) -> bool:
+        """Return True if the named runtime component is in a degraded state."""
+        if not hasattr(self, "degraded_components"):
+            self.degraded_components = set()
+        return component in self.degraded_components
+
+    def mark_degraded(self, component: str) -> None:
+        """Mark a runtime component as degraded (machine-consumable)."""
+        if not hasattr(self, "degraded_components"):
+            self.degraded_components = set()
+        self.degraded_components.add(component)
+        if component == "path_map":
+            self._path_map_degraded = True
+
+    def clear_degraded(self, component: str) -> None:
+        """Clear degraded flag after successful recovery/rebuild."""
+        if not hasattr(self, "degraded_components"):
+            self.degraded_components = set()
+        self.degraded_components.discard(component)
+        if component == "path_map":
+            self._path_map_degraded = False
 
     def get_receipts_since(self, since_version: int) -> list:
         """从 Veritas 获取 version > since_version 的历史 receipt。"""

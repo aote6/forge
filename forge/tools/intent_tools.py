@@ -315,30 +315,101 @@ def _attach_next(result: ToolResult, paths: list[str] | None = None) -> ToolResu
     return result
 
 
+# Side-effect severity classification (do not expand without product ruling):
+# DEGRADED: path_map, mark_disk_synced / sync_watermark, task_state
+# WARN:     record_tx, cache_invalidate, abort, record_session_change, other
+_DEGRADED_PREFIXES = (
+    "path_map",
+    "_update_path_map",
+    "update_from_delta",
+    "mark_disk_synced",
+    "sync_watermark",
+    "task_state",
+)
+
+
+def _classify_side_effect(tag: str) -> str:
+    """Return 'degraded' or 'warn' for a side-effect failure tag."""
+    t = (tag or "").lower()
+    for p in _DEGRADED_PREFIXES:
+        if t.startswith(p.lower()) or f"/{p.lower()}" in t or f":{p.lower()}" in t:
+            return "degraded"
+        if p.lower() in t:
+            return "degraded"
+    return "warn"
+
+
 def _note_side_effect_failure(result: ToolResult, name: str, err: BaseException) -> None:
-    """主操作已成功时的附属副作用失败：可观测，但不把 success 改成 False。"""
+    """主操作已成功时的附属副作用失败：可观测，但不把 success 改成 False。
+
+    DEGRADED → payload["degraded"]；WARN → payload["warnings"]。
+    旧字段 side_effect_warnings 仍写入以兼容；SIDE_EFFECT_WARN display 保留给人读。
+    """
     import sys
     print(f"[forge] side-effect {name} failed: {err}", file=sys.stderr)
     if result.payload is None:
         result.payload = {}
-    warns = result.payload.setdefault("side_effect_warnings", [])
     msg = f"{name}: {err}"
-    if msg not in warns:
-        warns.append(msg)
+    level = _classify_side_effect(name)
+    if level == "degraded":
+        bucket = result.payload.setdefault("degraded", [])
+        # machine field: component name only when possible
+        comp = name.split(":")[0].split("/")[0]
+        if comp.startswith("_"):
+            comp = "path_map" if "path_map" in name else comp
+        if "path_map" in name or name.startswith("_update_path_map") or name.startswith("update_from_delta"):
+            comp = "path_map"
+        elif "mark_disk_synced" in name or "sync" in name.lower():
+            comp = "sync_watermark"
+        elif "task_state" in name:
+            comp = "task_state"
+        if comp not in bucket:
+            bucket.append(comp)
+        # also keep human-readable in side_effect_warnings for migration
+        legacy = result.payload.setdefault("side_effect_warnings", [])
+        if msg not in legacy:
+            legacy.append(msg)
+    else:
+        warns = result.payload.setdefault("warnings", [])
+        if msg not in warns:
+            warns.append(msg)
+        legacy = result.payload.setdefault("side_effect_warnings", [])
+        if msg not in legacy:
+            legacy.append(msg)
     if result.success and result.display is not None and "SIDE_EFFECT_WARN:" not in result.display:
         result.display = result.display.rstrip() + f"\nSIDE_EFFECT_WARN: {msg}"
 
 
 def _attach_warnings(result: ToolResult, warns: list[str]) -> ToolResult:
-    """把告警列表挂到 ToolResult payload + display（success 不变）。"""
+    """把告警列表挂到 ToolResult payload + display（success 不变）。
+
+    按标签分类写入 degraded 或 warnings；兼容 side_effect_warnings。
+    """
     if not warns:
         return result
     if result.payload is None:
         result.payload = {}
-    existing = result.payload.setdefault("side_effect_warnings", [])
+    existing_legacy = result.payload.setdefault("side_effect_warnings", [])
     for w in warns:
-        if w not in existing:
-            existing.append(w)
+        if w not in existing_legacy:
+            existing_legacy.append(w)
+        level = _classify_side_effect(w)
+        if level == "degraded":
+            bucket = result.payload.setdefault("degraded", [])
+            if "path_map" in w or "_update_path_map" in w or "update_from_delta" in w:
+                comp = "path_map"
+            elif "mark_disk_synced" in w or "sync_watermark" in w:
+                comp = "sync_watermark"
+            elif "task_state" in w:
+                comp = "task_state"
+            else:
+                comp = w.split(":")[0].split("/")[0]
+            if comp not in bucket:
+                bucket.append(comp)
+        else:
+            wb = result.payload.setdefault("warnings", [])
+            if w not in wb:
+                wb.append(w)
     if result.success and result.display is not None and "SIDE_EFFECT_WARN:" not in result.display:
         result.display = result.display.rstrip() + "\nSIDE_EFFECT_WARN: " + "; ".join(warns)
     return result
@@ -347,8 +418,7 @@ def _attach_warnings(result: ToolResult, warns: list[str]) -> ToolResult:
 def _attach_projection_warnings(result: ToolResult, results) -> ToolResult:
     """把投影层的非致命告警（mark_disk_synced 失败等）挂到 ToolResult 上。
 
-    磁盘已写成功，success 保持 True；但同步水位未推进，必须让 agent 看到，
-    与 _note_side_effect_failure 同属「成功后的附属失败可观测但不翻转成功」。
+    磁盘已写成功，success 保持 True；同步水位未推进 → DEGRADED (sync_watermark)。
     """
     return _attach_warnings(result, _projection_warnings(results))
 
@@ -386,6 +456,15 @@ def make_intent_tools(executor: IntentExecutor, projections: ProjectionManager) 
                 import sys
                 print(f"[forge] path_map update_from_delta failed: {e}", file=sys.stderr)
                 errors.append(f"update_from_delta: {e}")
+        if errors:
+            # Runtime-level degraded: Guard must see is_degraded("path_map")
+            if hasattr(world, "mark_degraded"):
+                world.mark_degraded("path_map")
+            else:
+                if not hasattr(world, "degraded_components"):
+                    world.degraded_components = set()
+                world.degraded_components.add("path_map")
+                world._path_map_degraded = True
         return "; ".join(errors) if errors else None
 
     def _register_path(path: str, content: str) -> tuple[int, Receipt | None, TransactionDelta | None]:
