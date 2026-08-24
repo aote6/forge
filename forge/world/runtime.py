@@ -53,7 +53,13 @@ class WorldRuntime:
             return
         try:
             receipts = self.get_receipts_since(0)
-        except Exception:
+        except Exception as e:
+            import sys
+            print(
+                f"[world] path_map rebuild failed: get_receipts_since(0) raised: {e}",
+                file=sys.stderr,
+            )
+            self._path_map_degraded = True
             return
         if not hasattr(self, "_path_map"):
             self._path_map = ObjectPathMap()

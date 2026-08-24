@@ -126,3 +126,24 @@ def test_path_map_rebuild_failure_sets_degraded_flag():
             rt._rebuild_path_map()
 
     assert getattr(rt, "_path_map_degraded", False) is True
+
+
+def test_path_map_rebuild_receipts_fetch_failure_sets_degraded_flag(capsys):
+    """get_receipts_since(0) 抛异常 → 不再静默 return，标记 degraded 并打 stderr。"""
+    from forge.world.runtime import WorldRuntime
+    from forge.projections.object_path import ObjectPathMap
+
+    rt = object.__new__(WorldRuntime)
+    rt.project_root = "/tmp"
+    rt._adapter = MagicMock()
+    rt._path_map = ObjectPathMap()
+    # 明确初始为 False，确认失败路径会置位
+    rt._path_map_degraded = False
+
+    with patch.object(rt, "get_receipts_since", side_effect=RuntimeError("veritas unavailable")):
+        rt._rebuild_path_map()
+
+    assert rt._path_map_degraded is True
+    err = capsys.readouterr().err
+    assert "path_map rebuild failed" in err
+    assert "get_receipts_since" in err
