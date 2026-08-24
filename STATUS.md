@@ -1,142 +1,5 @@
 # Forge 状态
 
-## P0：Verify State Continuity（2026-08-24）
-
-### 问题
-P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_verify guard），
-但 `WorkingSet.to_dict()` 未持久化 path→target 关联。Runtime 重启后
-`verify_targets` 仍在、`verify_map` 为空 → guard 失去 pending 路径集合，
-跨会话控制语义与进程内不一致。
-
-### 实现
-- **canonical 验证关联事实**：`verify_map`（path → set/list of targets）
-- `to_dict`：序列化 `verify_map`（targets 为 sorted list）与 `failure_target`
-- `from_dict`：容错解析 map；有 map 时 `_sync_verify_views_from_map()` 同步
-  `pending_verify` / `verify_targets` 表达层；无 map 的旧 task_state 保持原字段、不伪造
-- 空 target 集不写入 JSON；非法 path/target 丢弃
-- `failure_target` 一并持久化（与已持久化的 `failure_context` 配套，供成功测试精确清失败上下文）
-
-### 测试
-- `tests/test_p0_verify_state_continuity.py`：跨 Runtime 恢复 map、guard 一致、
-  精确清账、清账后再恢复、坏输入、旧快照无 map
-- 既有 `test_p1_verify_*` / `test_p1_working_set` roundtrip 同步更新
-
-### 明确不再成立的旧描述
-- ~~`verify_map` / `failure_target` 仅进程内内存，跨 Runtime 不恢复~~ → 已可恢复
-
----
-
-## P3-4 + P3-5 + P3-6：detect 缓存 + undo 文档化 + openai_compat 429 重试（2026-08-23）
-
-只做这三项，不推远程，未 commit。
-
-### P3-4：Sync detect 缓存
-- 问题：detect() 每次全量扫 receipt 历史（get_receipts_since(0)），receipt 量级增长后变慢。
-- 方案：SyncLayer 记录 `last_detect_version` + 缓存上次 `SyncReport`。detect() 先取廉价磁盘侧
-  指纹（git HEAD + 已知文件实时 hash + git untracked 状态）+ 同步水位（disk_synced_version /
-  last_known_commit / last_known_file_hashes）构成完整缓存键 `_detect_cache_key`；键不变时直接
-  返回上次报告的浅拷贝（`_clone_report`），跳过全量 receipt 扫描。
-- 三态判定语义完全不变：任一输入（World version / 同步水位 / 磁盘侧）变化即失效重算。
-  特别处理了 sync() 后第二次 detect 的场景——external_sync 重算 hash、mark_disk_synced 推进
-  水位都会改变缓存键，不会误命中旧报告（这些字段都进了键）。
-- git status 失败（GitError）仍返回 WORLD_UNAVAILABLE：指纹里的 git status 调用单独守卫，
-  保持 P0-batch5「git status 故障不得伪装 IN_SYNC」语义。
-- 测试：新增 3 个（缓存命中不重复扫 receipt / World 前进失效 / 磁盘编辑失效）。
-
-### P3-5：undo_last_tx 语义文档化
-- 在 tx_shadow.py（模块 docstring + undo_last docstring）与 intent_tools.py（undo_last_tx
-  docstring）里明确文档化：undo 只从 shadow 恢复磁盘，不回滚 World 账本、不写 external_sync
-  receipt、不推进/回退 disk_synced_version；undo 后 World 账本可能仍较新，以磁盘 read 为准，
-  待 veritasd 恢复后 forge_sync 对账。
-- display 提示已足够清晰（无需改）：undo_last_tx 的 body 已写「mode=file_shadow_revert；World
-  账本可能仍较新，以磁盘 read 为准」，kv 标注 world=may_lag / disk=restored。
-- 不实现「undo 写 external_sync receipt」（超范围，维持 MVP 语义）。
-- 测试：新增 2 个（undo_last 纯磁盘不写 receipt / undo_last_tx display 明示 may_lag）。
-
-### P3-6：openai_compat 429 重试
-- 对齐 deepseek.py 重试策略：指数退避 `2**attempt`（1/2/4s），最多 3 次。
-- 判定更精确：`_is_retryable_error` 优先看 `status_code`，仅 429 与 5xx 重试；其它 4xx
-  （400/401/404/422...）立即抛出不重试。无 status_code 的传输层错误（连接/超时）按网络抖动处理。
-- 响应格式完全不变（retry 只包住 create 调用，成功路径照旧走 choices 解析）。
-- 测试：新增 4 个（429 重试后成功 / 5xx 重试后成功 / 其它 4xx 不重试 / 3 次耗尽后抛出）。
-
-### 验证
-- 全量 pytest：**404 passed，10 skipped**（基线 395 + 新增 9，无回归）。
-
-### 真实遗留问题
-1. detect 缓存是进程内内存缓存，不落盘；新进程首次 detect 仍要冷启动一次全量 receipt 扫描。
-2. detect() 里 `world_version` 与报告分支里的 `_world_version()` 是两次 `get_version()` 调用；
-  理论上 World 在两调用间前进会短暂不一致（下一次 detect 即重算自愈），非本轮范围。
-3. openai_compat 对无 status_code 的传输层错误（连接/超时）靠字符串关键词判定，与 deepseek 一致，
-   仍属启发式；若需更强可改判 `openai.APIConnectionError` / `APITimeoutError` 具体类型。
-
-## P3-2 + P3-3：local_tools 拆模块 + get_call_chain 优化（2026-08-23）
-
-只做这两项，不做 P3-4/5/6，不推远程，未 commit。
-
-### P3-2：local_tools.py 拆模块（1526 → 48 行）
-- `forge/tools/local_tools.py` 从 1526 行拆成 8 个文件，工具函数体一字不改：
-  - `_common.py`（37 行）：`LOG_PATH` / `MAX_OUTPUT_CHARS` / `_log` / `_truncate` / `_truncate_head`
-  - `read_tools.py`（494 行）：read_file / read_function / read_files / read_file_with_lines / preview_line_mutation / get_symbol_line_range / extract_code_skeleton / summarize_file / get_repo_map / list_files / get_context_budget
-  - `search_tools.py`（322 行）：search_code / glob_files / find_symbol_definition / get_call_chain / rebuild_symbol_index / search_history / inspect_last_intent
-  - `git_tools.py`（154 行）：git_diff / git_log / git_status_enhanced / get_diff_summary / read_git_version
-  - `test_tools.py`（260 行）：run_test_structured / run_type_check / run_single_test / run_diagnostics / list_tests
-  - `world_tools.py`（120 行）：world_info / list_world_objects / get_world_object / list_world_links / resolve_path_object
-  - `meta_tools.py`（264 行）：todo_write / todo_list / web_fetch / project_memory / session_changes / run_command / post_toot / delete_toot
-- `local_tools.py` 保留 `make_local_tools` 组装入口，再导出 `_log` / `_truncate` / `MAX_OUTPUT_CHARS` 等以保持 `test_truncate_keeps_tail` 兼容。
-- 各子模块的 factory（`make_read_tools(workspace)` 等）仍以闭包方式定义工具，`workspace` / `world_runtime` / `_todo_items` 通过闭包捕获，函数体不变。
-- 返回 key 集合不变（41 个），schema 不变。
-
-### P3-3：get_call_chain 优化
-- 原实现：两遍全仓 AST 遍历（第一遍找定义+收集被调用者，第二遍找调用者），每次调用都重新 parse 每个 .py。
-- 优化后：
-  1. 定义定位改走 `forge.core.symbol_index.lookup_symbol`（只认 `kind in ("function","class")`，与原实现只匹配 ClassDef/FunctionDef/AsyncFunctionDef 对齐，避免误报变量），命中则跳过第一遍全仓遍历。
-  2. 被调用者只解析定义所在文件（去重）。
-  3. 调用者仍需一遍全仓遍历（符号索引不存调用点），但用模块级 `_AST_CACHE`（键含 mtime_ns+size，上限 256，超限整体清空）缓存已解析 AST，跨调用复用。
-  4. 索引未命中时回退到原全仓找定义逻辑（复用已缓存 AST，几乎零额外成本）。
-- 返回 display / payload 格式完全不变。
-- 性能（300 个 .py 合成项目，索引已预热）：原实现 ≈1966ms → 优化后冷 ≈1584ms、热（AST 缓存命中）≈1447ms，稳态约 26% 提升；定义定位从全仓遍历降为索引 O(1) 查询。
-
-### 验证
-- 全量 pytest：**395 passed，10 skipped**（与基线一致，无回归）。
-
-### 真实遗留问题
-1. `get_call_chain` 的「调用者」仍需一遍全仓遍历——`symbol_index` 只索引符号定义、不索引调用点（call sites）。若要进一步提速，需扩展 `symbol_index` 存反向调用图（每个名字→调用它的位置），属更大改动，未在本轮做。
-2. `_AST_CACHE` 是进程内内存缓存，不落盘；长会话内多次调用同一/不同符号可复用，但新进程首次调用仍要冷启动一次全仓 parse（索引本身已落盘 `.forge/symbols.json`，可省「找定义」一遍）。
-3. `make_local_tools` 的 `safe_mode` 参数自始未被任何工具使用（拆分前即是如此），本轮未动，仅保留签名兼容。
-
-## runtime 结构层清理第 1 轮（2026-08-23）
-
-只做 3 项，不碰 P3，不推远程，未 commit。
-
-### 1. 删除 run_legacy 废弃链
-- 删除 `Runtime.run_legacy`、`Runtime._update_phase_from_result`、`self.phase`、`self._confirm_fn`/`self._abort_fn`
-- 删除 `forge/agent_state.py`（AgentPhase 仅被上述死代码使用）
-- `make_tools` 移除 `confirm_fn`/`abort_fn` 闭包，返回值从 3 元组改为单值 `tools`；同步更新全部 ~20 处测试调用点（`tools, _, _ = make_tools(...)` → `tools = make_tools(...)`）
-- **纠正原判断**：`forge/confirmation.py` 未整删——`is_confirm`/`is_cancel` 仍被生产路径 `Runtime._handle_plan_reply`（计划确认流程）使用，只删了无人引用的 `extract_confirmation`。原「同属废弃链」结论对 confirmation.py 不完全成立。
-
-### 2. WorkingSet 持久化（.forge/task_state.json）
-- `WorkingSet` 新增 `to_dict()` / `from_dict()`，序列化 8 字段：goal / constraints / files_read / files_edited / open_hypotheses / pending_verify / verify_targets / failure_context
-- runtime 新增 `_save_task_state` / `_load_task_state`（纯 JSON 全量存取，不做增量同步/版本迁移）
-- `_run_conversation` 启动时加载上次 task_state（goal 以本次 task 为准，其余字段恢复）；每次 `update_from_tool` 后保存
-- JSON 缺失/损坏/非对象 → 静默返回 None 重建，不阻塞启动
-- 新增测试 3 个（`test_p1_working_set.py`）：roundtrip / 坏输入容错 / 存取+损坏处理
-
-### 3. create_object 从 `_EDIT_TOOLS` 移除
-- `_EDIT_TOOLS` 去掉 `create_object`（纯 World 对象操作，非文件编辑），消除其成功后触发一次空 checkpoint 的问题
-- 影响面：`update_from_tool` 本就因无 path 不记 files_edited；唯一行为变化是 `mutation_pending` 不再被 create_object 置位（P2-3 checkpoint 触发判定）
-
-### 验证
-- 全量 pytest：**395 passed，10 skipped**（基线 392 + 新增 3，无回归）
-
-### 真实遗留问题
-1. `confirmation.py` 仍保留 `is_confirm`/`is_cancel`（计划确认流程使用），并非整文件废弃。
-2. ~~`verify_map` / `failure_target` 两个内部字段未持久化~~ → 已由 **P0 Verify State Continuity** 解决：二者写入 `task_state.json`，恢复后 guard / 精确清账语义连续。
-3. 每次工具调用（含只读 read_file 等）都触发一次写盘；JSON 很小成本可忽略，严格可优化为「状态变化时才写」。
-4. `task_state.json` 位于 `.forge/`（已 gitignore），不会污染 git。
-
----
-
 ## recovery 分叉问题（今天发现，已修复 120eee2）
 - 问题：启动 recovery 重放 receipt 时无条件用 World 内容覆盖磁盘，
   会冲掉用户手动修改的文件（数据丢失风险）。
@@ -566,7 +429,7 @@ Checkpoint 拆成两套水位，避免"消费进度"和"磁盘真实同步进度
 - 全量 pytest：282 passed，10 skipped（veritasd 缺失，环境问题；基线 270 = 本环境 260 passed + 10 veritasd）
 
 ### 遗留
-- ~~`verify_map` / `failure_target` 仅进程内内存，跨 Runtime 实例不恢复~~ → 已由 **P0 Verify State Continuity** 解决（见文首）
+- ~~`verify_map` / `failure_target` 仅进程内内存，跨 Runtime 实例不恢复~~ → 已由 **P0 Verify State Continuity** 解决（见文末）
 - guard 拦截的 mutation 会作为一次失败尝试记入 open_hypotheses（可接受，非 bug）
 
 
@@ -1107,6 +970,8 @@ payload 带 `direct_disk=True / world_recorded=False`。World 可达时行为逐
 ### 状态
 P3-1 的"消除完全静默"目标已完成（29 处）。但原始清单还要求"改成具体异常 + 日志"，目前只做了"加日志"，大部分 `except Exception` 仍是宽泛捕获。
 
+**更新（2026-08-24）**：`_rebuild_path_map` 里 `get_receipts_since(0)` 抛异常静默 return 的「红区」已修（标记 degraded + 打 stderr，并接入 DEGRADED guard）；但「改成具体异常类型」的全量清理仍暂缓。
+
 ### 剩余工作
 - 约 100+ 处宽泛 `except Exception` 可改为具体异常类型（如 `except OSError`、`except json.JSONDecodeError`）
 - 需要逐处读上下文判断该用哪个具体异常
@@ -1131,10 +996,171 @@ P3-1 的"消除完全静默"目标已完成（29 处）。但原始清单还要�
 2. 模型倾向"直接写代码更可控"，而非信任注册工具
 3. 工具发现效率低：post_toot 在 meta_tools.py，但模型先搜 mastodon.py 导致 read_function 失败
 
-### 改进方向（暂缓）
-- 强化 post_toot / delete_toot 的 schema 描述（明确参数、默认值、用途）
-- system prompt 增加约束："外部操作优先用注册工具，不要绕过工具层跑脚本"
-- 工具发现：模型搜 "post_toot" 时应能快速定位到 meta_tools.py 而非误搜 mastodon.py
+### 改进方向
+- ✅ 强化 post_toot 的 schema 描述（明确参数、默认值、用途）——已由 post_toot 工具发现增强解决（2026-08-24）
+- ✅ system prompt 增加约束——已解决：改为「发 Mastodon 用 post_toot 工具，参数 text 是正文」
+- 工具发现：模型搜 "post_toot" 时应能快速定位到 meta_tools.py 而非误搜 mastodon.py（仍未单独处理，可选优化）
 
 ### 状态
-未处理，记入工程债。全量测试不受影响。
+✅ 已由 post_toot 工具发现增强解决（2026-08-24）：`schemas.py` 明确 post_toot 为「已注册的 Mastodon 发帖工具，直接调用即可」，`system_prompt.py` 改为「发 Mastodon 用 post_toot 工具」。根因（schema 描述模糊 + prompt 措辞弱）已消除，模型不再需要绕道 run_command。
+
+## runtime 结构层清理第 1 轮（2026-08-23）
+
+只做 3 项，不碰 P3，不推远程，未 commit。
+
+### 1. 删除 run_legacy 废弃链
+- 删除 `Runtime.run_legacy`、`Runtime._update_phase_from_result`、`self.phase`、`self._confirm_fn`/`self._abort_fn`
+- 删除 `forge/agent_state.py`（AgentPhase 仅被上述死代码使用）
+- `make_tools` 移除 `confirm_fn`/`abort_fn` 闭包，返回值从 3 元组改为单值 `tools`；同步更新全部 ~20 处测试调用点（`tools, _, _ = make_tools(...)` → `tools = make_tools(...)`）
+- **纠正原判断**：`forge/confirmation.py` 未整删——`is_confirm`/`is_cancel` 仍被生产路径 `Runtime._handle_plan_reply`（计划确认流程）使用，只删了无人引用的 `extract_confirmation`。原「同属废弃链」结论对 confirmation.py 不完全成立。
+
+### 2. WorkingSet 持久化（.forge/task_state.json）
+- `WorkingSet` 新增 `to_dict()` / `from_dict()`，序列化 8 字段：goal / constraints / files_read / files_edited / open_hypotheses / pending_verify / verify_targets / failure_context
+- runtime 新增 `_save_task_state` / `_load_task_state`（纯 JSON 全量存取，不做增量同步/版本迁移）
+- `_run_conversation` 启动时加载上次 task_state（goal 以本次 task 为准，其余字段恢复）；每次 `update_from_tool` 后保存
+- JSON 缺失/损坏/非对象 → 静默返回 None 重建，不阻塞启动
+- 新增测试 3 个（`test_p1_working_set.py`）：roundtrip / 坏输入容错 / 存取+损坏处理
+
+### 3. create_object 从 `_EDIT_TOOLS` 移除
+- `_EDIT_TOOLS` 去掉 `create_object`（纯 World 对象操作，非文件编辑），消除其成功后触发一次空 checkpoint 的问题
+- 影响面：`update_from_tool` 本就因无 path 不记 files_edited；唯一行为变化是 `mutation_pending` 不再被 create_object 置位（P2-3 checkpoint 触发判定）
+
+### 验证
+- 全量 pytest：**395 passed，10 skipped**（基线 392 + 新增 3，无回归）
+
+### 真实遗留问题
+1. `confirmation.py` 仍保留 `is_confirm`/`is_cancel`（计划确认流程使用），并非整文件废弃。
+2. ~~`verify_map` / `failure_target` 两个内部字段未持久化~~ → 已由 **P0 Verify State Continuity** 解决：二者写入 `task_state.json`，恢复后 guard / 精确清账语义连续。
+3. 每次工具调用（含只读 read_file 等）都触发一次写盘；JSON 很小成本可忽略，严格可优化为「状态变化时才写」。
+4. `task_state.json` 位于 `.forge/`（已 gitignore），不会污染 git。
+
+---
+
+## P3-2 + P3-3：local_tools 拆模块 + get_call_chain 优化（2026-08-23）
+
+只做这两项，不做 P3-4/5/6，不推远程，未 commit。
+
+### P3-2：local_tools.py 拆模块（1526 → 48 行）
+- `forge/tools/local_tools.py` 从 1526 行拆成 8 个文件，工具函数体一字不改：
+  - `_common.py`（37 行）：`LOG_PATH` / `MAX_OUTPUT_CHARS` / `_log` / `_truncate` / `_truncate_head`
+  - `read_tools.py`（494 行）：read_file / read_function / read_files / read_file_with_lines / preview_line_mutation / get_symbol_line_range / extract_code_skeleton / summarize_file / get_repo_map / list_files / get_context_budget
+  - `search_tools.py`（322 行）：search_code / glob_files / find_symbol_definition / get_call_chain / rebuild_symbol_index / search_history / inspect_last_intent
+  - `git_tools.py`（154 行）：git_diff / git_log / git_status_enhanced / get_diff_summary / read_git_version
+  - `test_tools.py`（260 行）：run_test_structured / run_type_check / run_single_test / run_diagnostics / list_tests
+  - `world_tools.py`（120 行）：world_info / list_world_objects / get_world_object / list_world_links / resolve_path_object
+  - `meta_tools.py`（264 行）：todo_write / todo_list / web_fetch / project_memory / session_changes / run_command / post_toot / delete_toot
+- `local_tools.py` 保留 `make_local_tools` 组装入口，再导出 `_log` / `_truncate` / `MAX_OUTPUT_CHARS` 等以保持 `test_truncate_keeps_tail` 兼容。
+- 各子模块的 factory（`make_read_tools(workspace)` 等）仍以闭包方式定义工具，`workspace` / `world_runtime` / `_todo_items` 通过闭包捕获，函数体不变。
+- 返回 key 集合不变（41 个），schema 不变。
+
+### P3-3：get_call_chain 优化
+- 原实现：两遍全仓 AST 遍历（第一遍找定义+收集被调用者，第二遍找调用者），每次调用都重新 parse 每个 .py。
+- 优化后：
+  1. 定义定位改走 `forge.core.symbol_index.lookup_symbol`（只认 `kind in ("function","class")`，与原实现只匹配 ClassDef/FunctionDef/AsyncFunctionDef 对齐，避免误报变量），命中则跳过第一遍全仓遍历。
+  2. 被调用者只解析定义所在文件（去重）。
+  3. 调用者仍需一遍全仓遍历（符号索引不存调用点），但用模块级 `_AST_CACHE`（键含 mtime_ns+size，上限 256，超限整体清空）缓存已解析 AST，跨调用复用。
+  4. 索引未命中时回退到原全仓找定义逻辑（复用已缓存 AST，几乎零额外成本）。
+- 返回 display / payload 格式完全不变。
+- 性能（300 个 .py 合成项目，索引已预热）：原实现 ≈1966ms → 优化后冷 ≈1584ms、热（AST 缓存命中）≈1447ms，稳态约 26% 提升；定义定位从全仓遍历降为索引 O(1) 查询。
+
+### 验证
+- 全量 pytest：**395 passed，10 skipped**（与基线一致，无回归）。
+
+### 真实遗留问题
+1. `get_call_chain` 的「调用者」仍需一遍全仓遍历——`symbol_index` 只索引符号定义、不索引调用点（call sites）。若要进一步提速，需扩展 `symbol_index` 存反向调用图（每个名字→调用它的位置），属更大改动。**状态：暂缓**。
+2. `_AST_CACHE` 是进程内内存缓存，不落盘；长会话内多次调用同一/不同符号可复用，但新进程首次调用仍要冷启动一次全仓 parse（索引本身已落盘 `.forge/symbols.json`，可省「找定义」一遍）。
+3. ~~`make_local_tools` 的 `safe_mode` 参数自始未被任何工具使用（拆分前即是如此），本轮未动，仅保留签名兼容。~~ → 已删除（2026-08-24）：`safe_mode` 死参数及 `security.py` 的 `ALLOWED_COMMAND_PATTERNS` / `is_allowed_command` 白名单一并移除（白名单从未实现，黑名单仍是唯一策略）。
+
+## P3-4 + P3-5 + P3-6：detect 缓存 + undo 文档化 + openai_compat 429 重试（2026-08-23）
+
+只做这三项，不推远程，未 commit。
+
+### P3-4：Sync detect 缓存
+- 问题：detect() 每次全量扫 receipt 历史（get_receipts_since(0)），receipt 量级增长后变慢。
+- 方案：SyncLayer 记录 `last_detect_version` + 缓存上次 `SyncReport`。detect() 先取廉价磁盘侧
+  指纹（git HEAD + 已知文件实时 hash + git untracked 状态）+ 同步水位（disk_synced_version /
+  last_known_commit / last_known_file_hashes）构成完整缓存键 `_detect_cache_key`；键不变时直接
+  返回上次报告的浅拷贝（`_clone_report`），跳过全量 receipt 扫描。
+- 三态判定语义完全不变：任一输入（World version / 同步水位 / 磁盘侧）变化即失效重算。
+  特别处理了 sync() 后第二次 detect 的场景——external_sync 重算 hash、mark_disk_synced 推进
+  水位都会改变缓存键，不会误命中旧报告（这些字段都进了键）。
+- git status 失败（GitError）仍返回 WORLD_UNAVAILABLE：指纹里的 git status 调用单独守卫，
+  保持 P0-batch5「git status 故障不得伪装 IN_SYNC」语义。
+- 测试：新增 3 个（缓存命中不重复扫 receipt / World 前进失效 / 磁盘编辑失效）。
+
+### P3-5：undo_last_tx 语义文档化
+- 在 tx_shadow.py（模块 docstring + undo_last docstring）与 intent_tools.py（undo_last_tx
+  docstring）里明确文档化：undo 只从 shadow 恢复磁盘，不回滚 World 账本、不写 external_sync
+  receipt、不推进/回退 disk_synced_version；undo 后 World 账本可能仍较新，以磁盘 read 为准，
+  待 veritasd 恢复后 forge_sync 对账。
+- display 提示已足够清晰（无需改）：undo_last_tx 的 body 已写「mode=file_shadow_revert；World
+  账本可能仍较新，以磁盘 read 为准」，kv 标注 world=may_lag / disk=restored。
+- 不实现「undo 写 external_sync receipt」（超范围，维持 MVP 语义）。
+- 测试：新增 2 个（undo_last 纯磁盘不写 receipt / undo_last_tx display 明示 may_lag）。
+
+### P3-6：openai_compat 429 重试
+- 对齐 deepseek.py 重试策略：指数退避 `2**attempt`（1/2/4s），最多 3 次。
+- 判定更精确：`_is_retryable_error` 优先看 `status_code`，仅 429 与 5xx 重试；其它 4xx
+  （400/401/404/422...）立即抛出不重试。无 status_code 的传输层错误（连接/超时）按网络抖动处理。
+- 响应格式完全不变（retry 只包住 create 调用，成功路径照旧走 choices 解析）。
+- 测试：新增 4 个（429 重试后成功 / 5xx 重试后成功 / 其它 4xx 不重试 / 3 次耗尽后抛出）。
+
+### 验证
+- 全量 pytest：**404 passed，10 skipped**（基线 395 + 新增 9，无回归）。
+
+### 真实遗留问题
+1. detect 缓存是进程内内存缓存，不落盘；新进程首次 detect 仍要冷启动一次全量 receipt 扫描。
+2. detect() 里 `world_version` 与报告分支里的 `_world_version()` 是两次 `get_version()` 调用；
+  理论上 World 在两调用间前进会短暂不一致（下一次 detect 即重算自愈），非本轮范围。
+3. openai_compat 对无 status_code 的传输层错误（连接/超时）靠字符串关键词判定，与 deepseek 一致，
+   仍属启发式；若需更强可改判 `openai.APIConnectionError` / `APITimeoutError` 具体类型。
+
+## P0：Verify State Continuity（2026-08-24）
+
+### 问题
+P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_verify guard），
+但 `WorkingSet.to_dict()` 未持久化 path→target 关联。Runtime 重启后
+`verify_targets` 仍在、`verify_map` 为空 → guard 失去 pending 路径集合，
+跨会话控制语义与进程内不一致。
+
+### 实现
+- **canonical 验证关联事实**：`verify_map`（path → set/list of targets）
+- `to_dict`：序列化 `verify_map`（targets 为 sorted list）与 `failure_target`
+- `from_dict`：容错解析 map；有 map 时 `_sync_verify_views_from_map()` 同步
+  `pending_verify` / `verify_targets` 表达层；无 map 的旧 task_state 保持原字段、不伪造
+- 空 target 集不写入 JSON；非法 path/target 丢弃
+- `failure_target` 一并持久化（与已持久化的 `failure_context` 配套，供成功测试精确清失败上下文）
+
+### 测试
+- `tests/test_p0_verify_state_continuity.py`：跨 Runtime 恢复 map、guard 一致、
+  精确清账、清账后再恢复、坏输入、旧快照无 map
+- 既有 `test_p1_verify_*` / `test_p1_working_set` roundtrip 同步更新
+
+### 明确不再成立的旧描述
+- ~~`verify_map` / `failure_target` 仅进程内内存，跨 Runtime 不恢复~~ → 已可恢复
+
+---
+
+## post_toot 工具发现增强（2026-08-24）
+
+- 问题：发嘟任务里模型绕过已注册的 `post_toot` 工具，改用 `run_command` 直接调 MastodonClient 发帖——根因是 schema 描述模糊（"可选，非强制"）且 system prompt 称"可发 Mastodon（可选"。
+- 修复：`schemas.py` 强化 post_toot 描述为「已注册的 Mastodon 发帖工具，需要发嘟时直接调用，无需搜索实现或手写脚本」，明确 text 参数 / visibility 默认值与所需环境变量；`system_prompt.py` 改为「发 Mastodon 用 post_toot 工具，参数 text 是正文」。纯正向引导，无 run_command 黑名单、无安全改动。
+- 测试：421 passed（无新增用例，test_tool_surface_alignment 保持绿）。
+
+## safe_mode 死参数 + ALLOWED_COMMAND_PATTERNS 白名单清理（2026-08-24）
+
+- 问题：`make_tools` / `make_local_tools` 的 `safe_mode` 参数自始未被任何工具使用；`security.py` 的 `ALLOWED_COMMAND_PATTERNS` + `is_allowed_command` 白名单从未实现（仅黑名单生效）。
+- 修复：删除 `safe_mode` 死参数与白名单常量/函数，docstring 同步（黑名单仍是唯一策略）。
+- 测试：421 passed（纯删除，无回归）。
+
+## path_map 重建静默失败修复（2026-08-24）
+
+- 问题：`WorldRuntime._rebuild_path_map` 里 `get_receipts_since(0)` 抛异常时静默 return，path_map 重建失败不可观测。
+- 修复：失败时置 `_path_map_degraded = True` 并打 stderr 日志（`[world] path_map rebuild failed...`），不再静默。
+- 测试：新增 1 个回归用例（断言 degraded 置位 + stderr 含关键词）；全量 422 passed。
+
+## DEGRADED/WARN 统一语义 + path_map guard 消费端（2026-08-24）
+
+- 问题：工具成功后的附属副作用失败只有 `side_effect_warnings` 一种可观测，无法区分「关键状态不可信（DEGRADED）」与「附属失败（WARN）」，且 path_map 降级无机器消费端。
+- 修复：`ToolResult.payload` 新增 `degraded` / `warnings` 机器字段（旧 `side_effect_warnings` 保留兼容）；intent_tools 按标签分类——path_map / sync_watermark / task_state 记 DEGRADED，cache / record 记 WARN；`WorldRuntime` 新增 `degraded_components` + `is_degraded` / `mark_degraded` / `clear_degraded`；`Runtime._guard_path_map_degraded` 在 path_map 不可信时拦截文件 mutation（forge_sync / undo_last_tx 放行）。`_save_task_state` 暂按 WARN 处理（无消费端，已文档化）。
+- 测试：422 passed。
