@@ -15,3 +15,11 @@
   - 影响：工具调用数 9 次，违背工具描述「直接调用本工具，无需搜索实现或手写脚本」。
   - 建议：考虑将 post_toot 移入 RECONCILIATION 或新建 ACTION_TOOL_DECLARATIONS（用户明确指令可直接执行的副作用操作），让 Planning 阶段可见。
   - 优先级：P1（用户高频操作被破坏）
+
+## 工具分类设计待议（明天解决）
+
+- [ ] 当前工具分类三层（READ_ONLY / RECONCILIATION / MUTATION）+ 两阶段（Planning / Execution）规则过多，模型容易绕路。
+  - 发现场景：发嘟文时模型在 Planning 阶段看不到 post_toot，绕路用 run_command；forge_sync 因「安全对账」被单独分类，但规则不统一。
+  - 待议：是否简化为两层（READ / WRITE），所有非只读操作统一走「计划 → 确认 → 执行」；forge_sync 是否也应先确认再执行。
+  - 关联：post_toot Planning 阶段不可见（P1）与 forge_sync RECONCILIATION 分类是否保留，一并解决。
+  - 优先级：P0（设计层面，影响后续所有工具分类）
