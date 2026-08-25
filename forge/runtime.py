@@ -24,6 +24,7 @@ from forge.projections.file_projection import FileProjection
 from forge.projections.git_projection import GitProjection
 from forge.projections.index_projection import IndexProjection
 from forge.system_prompt import SYSTEM_INSTRUCTION
+from forge.core.sanitizer import sanitize_and_redact
 from forge.tools import make_tools
 from forge.tools.direct_disk import DIRECT_DISK_TOOLS
 from forge.tools.schemas import (
@@ -1634,9 +1635,12 @@ class Runtime:
                     )
                 )
 
+                # Untrusted tool text → LLM context: redact secrets + mark
+                # injection-like phrasing. Soft mitigation only; not a hard boundary.
+                llm_tool_content = sanitize_and_redact(result.display or "")
                 messages.append(ForgeMessage(
                     role="tool",
-                    content=result.display,
+                    content=llm_tool_content,
                     tool_call_id=tc.id,
                     name=tc.name
                 ))

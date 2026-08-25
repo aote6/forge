@@ -230,14 +230,21 @@ def make_test_tools(workspace) -> dict:
             return ToolResult.fail(display=f"list_tests 失败: {e}")
 
     def run_single_test(path: str, timeout: int = 60) -> ToolResult:
-        """Run a single pytest file or test node."""
+        """Run a single pytest file or test node (argv list, no shell)."""
         try:
-            cmd = f"python3 -m pytest {path} -v --tb=short"
+            # path is one pytest target (file or node id). Pass as a single argv
+            # element so shell metacharacters are never interpreted.
+            argv = ["python3", "-m", "pytest", str(path), "-v", "--tb=short"]
             result = subprocess.run(
-                cmd, shell=True, cwd=workspace.project_root,
-                capture_output=True, text=True, timeout=timeout,
+                argv,
+                shell=False,
+                cwd=workspace.project_root,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
             )
-            display = f"$ {cmd}\n[exit {result.returncode}]\n"
+            cmd_display = " ".join(argv)
+            display = f"$ {cmd_display}\n[exit {result.returncode}]\n"
             if result.stdout:
                 display += f"--- stdout ---\n{result.stdout}\n"
             if result.stderr:

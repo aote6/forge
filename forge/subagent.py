@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from forge.adapters.base import BaseAdapter, Message, ToolCall, ToolResult
+from forge.core.sanitizer import sanitize_and_redact
 
 SUBAGENT_MAX_STEPS = 15
 
@@ -139,7 +140,7 @@ def run_subagent(
             messages.append(
                 Message(
                     role="tool",
-                    content=result.display or "",
+                    content=sanitize_and_redact(result.display or ""),
                     tool_call_id=getattr(tc, "id", None),
                     name=tc.name,
                 )
