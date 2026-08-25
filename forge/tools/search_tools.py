@@ -195,7 +195,7 @@ def make_search_tools(workspace) -> dict:
             return ToolResult.fail(display=f"rebuild_symbol_index 失败: {e}")
 
     def search_history(query: str, max_results: int = 5) -> ToolResult:
-        """搜索对话历史日志中的关键信息。"""
+        """仅本会话/对话历史日志。不是项目工作历史；默认不用于「今天/最近做了什么」。"""
         try:
             log_file = Path(workspace.project_root) / ".forge" / "conversation_log.jsonl"
             if not log_file.exists():

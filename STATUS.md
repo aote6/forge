@@ -1260,3 +1260,8 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - 处理：从 Git 历史提炼早期脉络摘要（7-14 起点 → 8-05 安全 → 8-06 Projection/Recovery → 8-07 架构收敛 → 8-08 规划 → 8-09 修 bug → 8-12 语义 → 8-16 身份边界），插入头部；完整逐日记录仍在 Git 历史可查（git log --follow STATUS.md）。
 - 教训：整理历史文档 ≠ 删除过时内容。过时应标注（~~删除线~~或"历史：已被 XX 推翻"），原文保留；流水账可压缩但事实不丢。
 
+
+## Project Review / 事实检索闭合（2026-08-25）
+- 问题：回顾类问题 ad-hoc 并联 git + STATUS + memory + history，证据链不闭合。
+- 修复：project_review 统一 FACT/EVIDENCE/CONTEXT/CONFLICTS；last_test_result 持久化；PROJECT_REVIEW_CONTRACT；system_prompt 回顾规则；相关工具描述降权。
+- 测试：tests/test_project_review.py 13 passed；全量 495 passed。

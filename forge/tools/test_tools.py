@@ -11,6 +11,36 @@ from pathlib import Path
 from forge.adapters.base import ToolResult
 from forge.tools._common import _log, _truncate
 
+def _persist_pytest_result(project_root: str, *, command: str, target: str, returncode: int, out: str) -> None:
+    """Write .forge/last_test_result.json from a completed pytest run (no invention)."""
+    try:
+        from forge.tools.project_review import save_last_test_result
+        import re as _re
+        passed = failed = None
+        m = _re.search(r"(\d+)\s+passed", out)
+        if m:
+            passed = int(m.group(1))
+        m = _re.search(r"(\d+)\s+failed", out)
+        if m:
+            failed = int(m.group(1))
+        if failed is None:
+            failed = 0 if returncode == 0 else (1 if passed is not None else None)
+        status = "passed" if returncode == 0 else "failed"
+        save_last_test_result(
+            project_root,
+            {
+                "command": command,
+                "target": target,
+                "returncode": returncode,
+                "passed": passed,
+                "failed": failed if failed is not None else (0 if returncode == 0 else 1),
+                "status": status,
+            },
+        )
+    except Exception as e:
+        import sys
+        print(f"[test_tools] persist last_test_result failed: {e}", file=sys.stderr)
+
 
 def make_test_tools(workspace) -> dict:
     def run_test_structured(target: str = "tests/") -> ToolResult:
@@ -77,6 +107,13 @@ def make_test_tools(workspace) -> dict:
                 "mutation": False,
                 "phase": "verifying",
             }
+            _persist_pytest_result(
+                workspace.project_root,
+                command=" ".join(cmd),
+                target=target,
+                returncode=r.returncode,
+                out=out,
+            )
             if r.returncode == 0:
                 return ToolResult.ok(display=display, payload=payload)
             return ToolResult.fail(

@@ -11,6 +11,7 @@ from forge.tools._common import _truncate
 from forge.tools.display import format_block, error_slices
 from forge.tools.errors import decorate_fail_message
 from forge.tools.project_memory import load_memory, update_memory
+from forge.tools.project_review import make_project_review_tools
 from forge.tools.session_changes import list_changes, format_list as format_session_changes
 
 
@@ -132,7 +133,7 @@ def make_meta_tools(workspace) -> dict:
             return ToolResult.fail(display=f"web_fetch failed: {e}\n建议: 确认网络与 URL。")
 
     def project_memory() -> ToolResult:
-        """返回项目记忆（测试命令、最近文件等）。"""
+        """启发式项目记忆（可能过期）。不得作为项目当前事实或历史权威；提交历史以 Git / project_review 为准。"""
         data = load_memory(workspace.project_root)
         if not data:
             return ToolResult.ok(
@@ -146,7 +147,7 @@ def make_meta_tools(workspace) -> dict:
         )
 
     def session_changes() -> ToolResult:
-        """本会话修改清单（path / tx / summary）。"""
+        """当前 session 的 mutation evidence。session ≠ calendar day；不能替代 Git 日历工作历史。"""
         body = format_session_changes()
         items = list_changes()
         return ToolResult.ok(
@@ -252,7 +253,7 @@ def make_meta_tools(workspace) -> dict:
         except Exception as e:
             return ToolResult.fail(display=format_block("delete_toot", "FAIL", {"reason": str(e)}))
 
-    return {
+    tools = {
         "todo_write": todo_write,
         "todo_list": todo_list,
         "web_fetch": web_fetch,
@@ -262,3 +263,5 @@ def make_meta_tools(workspace) -> dict:
         "post_toot": post_toot,
         "delete_toot": delete_toot,
     }
+    tools.update(make_project_review_tools(workspace))
+    return tools

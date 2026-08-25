@@ -155,7 +155,11 @@ READ_ONLY_TOOL_DECLARATIONS = [
     },
     {
         "name": "search_history",
-        "description": "搜索本会话对话日志（.forge/conversation_log.jsonl）。",
+        "description": (
+            "仅搜索本会话/对话历史日志（.forge/conversation_log.jsonl）。"
+            "不是项目工作历史。默认不要用本工具回答「今天做了什么/最近完成什么」；"
+            "项目回顾请用 project_review。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -222,13 +226,56 @@ READ_ONLY_TOOL_DECLARATIONS = [
     },
     {
         "name": "session_changes",
-        "description": "列出本会话已成功修改的文件（path/tx/summary）。用户问改了哪些文件时使用。",
+        "description": (
+            "当前 session 的 mutation evidence（path/tx/summary）。"
+            "session ≠ calendar day；不能替代 Git 的日历工作历史。"
+            "用户问「本会话改了哪些文件」时用；问「今天/最近项目做了什么」用 project_review。"
+        ),
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "project_memory",
-        "description": "查看项目记忆：测试命令、最近改过的文件、曾失败测试、上次任务。",
+        "description": (
+            "启发式项目记忆（测试命令、recent_files、last_task 等），可能过期。"
+            "不得作为项目当前事实或项目历史的权威来源。项目提交历史以 Git / project_review 为准。"
+        ),
         "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "project_review",
+        "description": (
+            "【项目回顾统一入口】回答「今天/最近做了什么、项目状态、最近修改、测试是否通过、进度」时优先调用。"
+            "返回 FACT(Git commits/worktree + 可验证 last_test_result) / EVIDENCE(STATUS.md 叙事, verified=false) / "
+            "CONTEXT(project_memory 启发式; 可选 session/conversation) / CONFLICTS(不静默合并)。"
+            "不生成 INFERENCE；不执行 pytest。默认 since=today、不包含 conversation。"
+            "项目工作历史以 Git 为事实源；STATUS 不得升格为 Fact；无测试持久化结果时 tests.status=unverified。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "since": {
+                    "type": "string",
+                    "description": "起始日期 YYYY-MM-DD 或 today；默认本地日历今天",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "结束日期 YYYY-MM-DD（可选，git --until）",
+                },
+                "include_status": {
+                    "type": "boolean",
+                    "description": "是否纳入 STATUS.md Evidence，默认 true",
+                },
+                "include_session": {
+                    "type": "boolean",
+                    "description": "是否纳入 session_changes Context，默认 false",
+                },
+                "include_conversation": {
+                    "type": "boolean",
+                    "description": "是否纳入对话历史 Context，默认 false",
+                },
+            },
+            "required": [],
+        },
     },
     {
         "name": "web_fetch",
