@@ -1214,3 +1214,49 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - 问题：工具成功后的附属副作用失败只有 `side_effect_warnings` 一种可观测，无法区分「关键状态不可信（DEGRADED）」与「附属失败（WARN）」，且 path_map 降级无机器消费端。
 - 修复：`ToolResult.payload` 新增 `degraded` / `warnings` 机器字段（旧 `side_effect_warnings` 保留兼容）；intent_tools 按标签分类——path_map / sync_watermark / task_state 记 DEGRADED，cache / record 记 WARN；`WorldRuntime` 新增 `degraded_components` + `is_degraded` / `mark_degraded` / `clear_degraded`；`Runtime._guard_path_map_degraded` 在 path_map 不可信时拦截文件 mutation（forge_sync / undo_last_tx 放行）。`_save_task_state` 暂按 WARN 处理（无消费端，已文档化）。
 - 测试：422 passed。
+
+## 安全两修：run_single_test shell=False + 工具输出统一 sanitizer（2026-08-25）
+- 问题：DSH 漏洞审计后发现 Forge 虽无远程控制面，但 run_single_test 用 shell=True 拼路径有注入隐患；工具输出进 LLM 上下文前未经统一 sanitizer。
+- 修复：run_single_test 改 argv 列表 + shell=False；Runtime/subagent 在 tool message 进 LLM 前统一 sanitize_and_redact。
+- 测试：新增 2 个测试文件（shell 注入 + sanitizer 边界）；全量 431 passed。
+
+## SECURITY_BOUNDARY.md 建立（2026-08-25）
+- 明确定义：Forge 当前无远程控制面（本地 CLI 入口）；run_command 是本地用户信任边界内的能力，非远程 RCE；黑名单/sanitizer 是 Safety Guard 非 Security Boundary；未来 A2A 前必须认证 + schema 分离 + run_command 不对远程开放。
+- 文档位置：docs/SECURITY_BOUNDARY.md
+
+## 终端呈现层 Batch 1：工具输出摘要（2026-08-25）
+- 问题：工具输出截断保留头部 18 行，错误信息在尾部被砍掉。
+- 修复：summarize_tool_display 纯函数——短输出全文；长成功头 4 + 尾 12 + 省略标记；失败尾部优先。
+- 测试：8 个单元测试；全量 439 passed。
+
+## 终端呈现层 Batch 2：TerminalPresenter + pager（2026-08-25）
+- 问题：last 命令全文 print 刷屏，无分页。
+- 修复：TerminalPresenter 类 + page_text 最小 pager（Enter 下一页 / b 上一页 / q 退出，无 raw mode）；dp.py 不再内嵌 print 闭包。
+- 测试：23 个 presenter/pager 测试；全量 454 passed。
+
+## 终端呈现层 Batch 3：heartbeat（2026-08-25）
+- 问题：长工具执行（60s）期间终端只有 "..." 无反馈。
+- 修复：threading.Timer 每 10s 打 "running... Ns"（新行不打 \r）；token 防止 END 后过期 tick；可注入 timer_factory 便于单测。
+- 测试：8 个 ManualClock 确定性测试；全量 464 passed。
+
+## 终端呈现层 Batch 4：assistant streaming（2026-08-25）
+- 问题：模型回复等完整 response 才显示，长等待像卡死。
+- 修复：BaseAdapter 新增 send_stream 契约（默认 fallback send）；stream_util 解析 OpenAI chunk；Runtime 优先 stream + on_text_delta 钩子；Presenter 增量显示 FORGE>。
+- 测试：8 个 streaming 测试；全量 472 passed。
+
+## 终端呈现层 Batch 5：ANSI 磷光色彩语义（2026-08-25）
+- 问题：emoji（🔧✅❌🤖⚠️）与 Termux IBM 绿磷皮肤不协调，颜色无语义。
+- 修复：terminal_color.py 真彩色调色板（PHOSPHOR/OSCILLOSCOPE/ALARM/TUBE_BLUE/AMBER）+ paint() 强制 RESET；去掉 emoji 改用 [name] OK/FAIL、FORGE>、WARN:；正文不染色。
+- 测试：10 个 color 测试；全量 482 passed。
+
+## 终端标准文档 + 文档治理（2026-08-25）
+- docs/standards/terminal_presentation.md：TerminalPresenter/pager/heartbeat/streaming 行为契约（MUST/MUST NOT）。
+- docs/standards/terminal_color_semantics.md：颜色语义规范（调色板、映射、RESET/泄漏、emoji 政策）。
+- docs/standards/README.md：标准注册表 + 权威层级（Standard > Constitution > Contract > Security > Architecture > Stance > Audit）+ 变更规则（改行为先改标准）。
+- 9 份 docs/ 根目录文档加 Type/Authority/Status/Scope 元数据。
+
+## STATUS.md 早期历史恢复（2026-08-25）
+- 问题：昨日整理 STATUS.md 时误删了 8-05 到 8-20 的全部逐日记录。
+- 处理：从 Git 历史提炼早期脉络摘要（7-14 起点 → 8-05 安全 → 8-06 Projection/Recovery → 8-07 架构收敛 → 8-08 规划 → 8-09 修 bug → 8-12 语义 → 8-16 身份边界），插入头部；完整逐日记录仍在 Git 历史可查（git log --follow STATUS.md）。
+- 教训：整理历史文档 ≠ 删除过时内容。过时应标注（~~删除线~~或"历史：已被 XX 推翻"），原文保留；流水账可压缩但事实不丢。
+
