@@ -1,5 +1,55 @@
 # Forge 状态
 
+## 早期历史摘要（7-14 ~ 8-20，从 Git 历史提炼）
+
+> 注：本段为 2026-08-25 从 Git 历史恢复的早期脉络摘要。完整逐日记录曾因整理失误从工作区删除，但全部 commit 仍在 Git 历史中（`git log --follow STATUS.md` 可查）。以下保留关键节点，不逐字恢复流水账。
+
+### 起点（7-14）
+- Forge v0.2 起步：事务式 AI 代码助手（prepare_write → commit_write / cancel_write），仅 DeepSeek 单模型。
+
+### 安全层建立（8-05）
+- 路径黑名单 + 命令黑名单 + Git 确认机制 + Prompt Injection 清洗器（sanitizer）
+- 双模型（gg / dp）；VeritasClient 从 subprocess 升级为 veritasd 常驻进程（stdin/stdout JSON Lines）
+- WorldRuntime v1 落地：Forge 成为 Veritas 世界上的系统软件
+
+### Projection / Intent / Recovery 体系（8-06）
+- Phase 1~5 连续落地：Projection 框架 → Intent 层 → FileProjection → GitProjection / IndexProjection
+- P8~P10：ObjectPathMap、Projection 幂等保护、Checkpoint 持久化、崩溃恢复端到端
+- Recovery Constitution v1.0 诞生：Projection 恢复不变量正式成文
+- 架构裁决：删除 tx_ids，Checkpoint 只保存 version
+
+### Engineering Loop（8-06 晚）
+- Forge v2-alpha：Planner + 完整闭环，Engineering Loop 自动串联
+- Lu Patch Engine 接入：create/modify/delete 统一走 Lu
+
+### 架构收敛（8-07）
+- v1 architecture closure：唯一 Runtime、VERIFY→PLAN、无 Hub fallback、modify strict
+- P0 Runtime Closure：消灭第二写路径
+- P1-A/B/C：单事务、Checkpoint 绑 Veritas version、VERIFY 语义闭合
+
+### 规划系统建设（8-08）
+- P1~P8：版本化仓库快照、符号引用索引（Python AST）、失败分类自纠错、规划精度、验证可靠性、Plan Obligation 覆盖、测试目标选择
+- 203 passed 全绿
+
+### 关键 bug 修复（8-09）
+- intent-based routing、malformed-edit guard、checkpoint 隔离
+- capability_grants 持久化：自持 AdminCap 随 receipt 重放跨重启存活
+- 删除死代码 veritas_adapter.py
+
+### 语义修复（8-12 ~ 8-13）
+- P5：stage 预览不泄露 + modify 语义修正（0-indexed 半开区间）+ delete 后 ObjectPathMap 清理
+- CapabilityGrant 薄适配
+
+### 身份与决策边界（8-16 ~ 8-17）
+- Identity Binding Boundary Audit：发现身份绑定缺口
+- Forge 角色定位文档、Veritas 自举锚点
+- Edit Contract Closure：唯一 authoring→machine 转换边界
+- CREATE_OBJECT 语义穿透全链路闭合
+- Planner P0 收口：机器观测符号事实、fail-closed 边界、规划反模式标记
+- 机器与 LLM 决策权边界正式沉淀（PLANNER_DECISION_BOUNDARY）
+
+---
+
 ## recovery 分叉问题（今天发现，已修复 120eee2）
 - 问题：启动 recovery 重放 receipt 时无条件用 World 内容覆盖磁盘，
   会冲掉用户手动修改的文件（数据丢失风险）。
