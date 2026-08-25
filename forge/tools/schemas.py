@@ -466,6 +466,16 @@ MUTATION_TOOL_DECLARATIONS = [
             "required": ["from_id", "to_id"],
         },
     },
+]
+
+MUTATION_TOOL_NAMES = frozenset(d["name"] for d in MUTATION_TOOL_DECLARATIONS)
+
+# ---------------------------------------------------------------------------
+# Reconciliation — 安全的状态检测/推进，Planning 和 Execution 阶段都应可见
+# （forge_sync 契约：IN_SYNC 无操作 / FAST_FORWARD 安全推进 / CONFLICT 停止报告，
+#  不属于破坏性 mutation，因此单独分类而非塞进 MUTATION_TOOL_DECLARATIONS）
+# ---------------------------------------------------------------------------
+RECONCILIATION_TOOL_DECLARATIONS = [
     {
         "name": "forge_sync",
         "description": (
@@ -476,7 +486,9 @@ MUTATION_TOOL_DECLARATIONS = [
     },
 ]
 
-MUTATION_TOOL_NAMES = frozenset(d["name"] for d in MUTATION_TOOL_DECLARATIONS)
+RECONCILIATION_TOOL_NAMES = frozenset(
+    d["name"] for d in RECONCILIATION_TOOL_DECLARATIONS
+)
 
 # ---------------------------------------------------------------------------
 # 工具面分类（对齐 schemas.py ↔ make_tools 实际暴露面）
