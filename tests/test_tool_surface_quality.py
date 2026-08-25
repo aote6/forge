@@ -30,7 +30,7 @@ def test_llm_surface_is_curated_not_bloated():
     mu = {d["name"] for d in MUTATION_TOOL_DECLARATIONS}
     assert "glob_files" in ro and "todo_write" in ro and "web_fetch" in ro
     assert "str_replace" in mu and "apply_patch" in mu and "write_file" in mu
-    assert len(ro) + len(mu) <= 36  # hard ceiling
+    assert len(ro) + len(mu) <= 38  # hard ceiling (project_review added)
     # legacy noise must not be on the LLM schema list
     for noise in (
         "get_call_chain", "summarize_file", "extract_code_skeleton",

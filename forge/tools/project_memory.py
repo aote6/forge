@@ -49,7 +49,7 @@ def format_for_prompt(project_root: str) -> str:
     data = load_memory(project_root)
     if not data:
         return ""
-    lines = ["\n\n## 项目记忆"]
+    lines = ["\n\n## 项目记忆（启发式，可能过期；非权威事实源）"]
     if data.get("test_command"):
         lines.append(f"- 测试命令: {data['test_command']}")
     if data.get("recent_files"):
