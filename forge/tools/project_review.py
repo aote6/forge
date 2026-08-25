@@ -102,14 +102,27 @@ def _git_fact(project_root: str, since: str, until: str | None) -> dict[str, Any
     )
     last_commit_line = out_l.strip() if code_l == 0 else None
 
+    # Git's parsing of bare YYYY-MM-DD is environment-dependent (timezone /
+    # "future" edge cases). Normalize date-only values to an explicit local
+    # wall-clock timestamp so --since/--until match calendar-day intent.
+    # until date-only → that day's 00:00:00 (Git exclusive upper bound at
+    # start of that calendar day — same as common git bare-date behavior,
+    # made explicit; STATUS section filtering still uses date-only logic).
+    since_full = str(since).strip()
+    if since_full and " " not in since_full and "T" not in since_full:
+        since_full = f"{since_full} 00:00:00"
+
     log_args = [
         "log",
-        f"--since={since}",
+        f"--since={since_full}",
         "--format=%H%x09%h%x09%ad%x09%s",
         "--date=format:%Y-%m-%d %H:%M:%S",
     ]
     if until and str(until).strip():
-        log_args.insert(2, f"--until={until}")
+        until_full = str(until).strip()
+        if " " not in until_full and "T" not in until_full:
+            until_full = f"{until_full} 00:00:00"
+        log_args.insert(2, f"--until={until_full}")
     code_log, out_log, err_log = _run_git(project_root, log_args)
     commits: list[dict[str, str]] = []
     if code_log == 0:

@@ -146,6 +146,64 @@ def test_status_tests_claim_conflict(tmp_path: Path):
     assert "status_tests_unverified" in types
 
 
+
+def test_date_only_since_includes_same_day_commits(tmp_path: Path):
+    """Bare YYYY-MM-DD --since must include commits later that local calendar day.
+
+    Regression: Git may treat bare dates as a timezone-shifted instant and
+    drop same-day commits; project_review normalizes to YYYY-MM-DD 00:00:00.
+    """
+    root = _init_repo(tmp_path)
+    day = "2026-08-25"
+    env = {
+        **__import__("os").environ,
+        "GIT_AUTHOR_DATE": f"{day} 09:00:00",
+        "GIT_COMMITTER_DATE": f"{day} 09:00:00",
+    }
+    (root / "same_day.txt").write_text("x\n", encoding="utf-8")
+    r = subprocess.run(
+        ["git", "add", "same_day.txt"], cwd=root, capture_output=True, text=True
+    )
+    assert r.returncode == 0
+    r = subprocess.run(
+        ["git", "commit", "-m", "feat: same-day morning work"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert r.returncode == 0, r.stderr
+    payload = build_review(str(root), since=day)
+    subjects = [c["subject"] for c in payload["fact"]["git"]["commits"]]
+    assert any("same-day morning work" in s for s in subjects), subjects
+    assert payload["fact"]["git"]["commit_count"] >= 1
+
+
+def test_default_since_today_includes_same_day_commits(tmp_path: Path):
+    """since=None resolves to local today and must retrieve commits made today."""
+    root = _init_repo(tmp_path)
+    today = date.today().isoformat()
+    env = {
+        **__import__("os").environ,
+        "GIT_AUTHOR_DATE": f"{today} 09:00:00",
+        "GIT_COMMITTER_DATE": f"{today} 09:00:00",
+    }
+    (root / "today_work.txt").write_text("y\n", encoding="utf-8")
+    assert subprocess.run(["git", "add", "today_work.txt"], cwd=root).returncode == 0
+    r = subprocess.run(
+        ["git", "commit", "-m", "feat: default-today path"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert r.returncode == 0, r.stderr
+    payload = build_review(str(root), since=None)
+    assert payload["meta"]["since"] == today
+    subjects = [c["subject"] for c in payload["fact"]["git"]["commits"]]
+    assert any("default-today path" in s for s in subjects), subjects
+
+
 def test_timezone_today_string(tmp_path: Path):
     root = _init_repo(tmp_path)
     assert build_review(str(root), since="today")["meta"]["since"] == date.today().isoformat()
