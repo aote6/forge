@@ -1265,3 +1265,11 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - 问题：回顾类问题 ad-hoc 并联 git + STATUS + memory + history，证据链不闭合。
 - 修复：project_review 统一 FACT/EVIDENCE/CONTEXT/CONFLICTS；last_test_result 持久化；PROJECT_REVIEW_CONTRACT；system_prompt 回顾规则；相关工具描述降权。
 - 测试：tests/test_project_review.py 13 passed；全量 495 passed。
+
+## 同步工具阶段可见性修复（2026-08-25 晚）
+- 问题：forge_sync 被归入 MUTATION_TOOL_DECLARATIONS，导致 Planning 阶段模型看不到该工具；用户输入 forge_sync 后模型退化用 run_command 手动执行 SyncLayer.sync()（34 次工具调用）。
+- 根因：工具分类只有 READ_ONLY / MUTATION 两类，forge_sync 的「安全对账」语义既非纯只读也非破坏性修改，放错分类导致 Planning 阶段不可见。
+- 修复：新增 RECONCILIATION_TOOL_DECLARATIONS（对账类），forge_sync 移入；Planning 与 Execution 阶段 schemas 均包含 RECONCILIATION。验证后 forge_sync 首次调用即直接命中，工具调用数 34 → 1。
+- 附带修复：Planning 阶段模型「用文字说提交计划但未调用 submit_plan」问题——强化 _PLANNING_INSTRUCTION + _run_conversation 加 require_plan 精确纠偏（仅当文字含「计划/步骤/方案」等关键词且未调 submit_plan 时触发一次）。
+- 第二个附带修复：submit_plan 计划正文不显示——模型流式输出 content 后，show_assistant() 因「已流式过」跳过最终返回值，导致计划正文丢失。修复：show_assistant() 加 force 参数；Runtime 加 _last_response_needs_display 标记；submit_plan 时强制显示计划正文，普通问答保持不重复。
+- 测试：新增 tests/test_reconciliation_schema_exposure.py（2 个双阶段可见性用例）；更新 test_p2_2_sync_system_hint.py / test_tool_surface_alignment.py 迁移到 RECONCILIATION 工具面；全量 499 passed。
