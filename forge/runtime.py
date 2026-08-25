@@ -31,6 +31,7 @@ from forge.tools.schemas import (
     READ_ONLY_TOOL_DECLARATIONS,
     MUTATION_TOOL_DECLARATIONS,
     MUTATION_TOOL_NAMES,
+    RECONCILIATION_TOOL_DECLARATIONS,
     SUBMIT_PLAN_TOOL_NAME,
     SUBMIT_PLAN_DECLARATION,
 )
@@ -578,6 +579,9 @@ _PLANNING_INSTRUCTION = """
 ## 当前阶段：规划（只读）
 你现在只有只读/查询工具，无法修改代码。需要改动时：先只读探索定位，
 然后调用 submit_plan 提交计划并停下等待确认。纯问答直接回答即可。
+
+重要：提交计划只有一种方式——调用 submit_plan 工具。用文字说"我提交计划"、"计划如下"而不实际调用 submit_plan，等同于什么都没提交，对话会直接结束且用户看不到任何计划。任何一步只要打算收尾进入"等待用户确认"，就必须在同一步里带上 submit_plan 的工具调用，不能只写文字。
+即使遇到 STOP_HINT（连续失败提示），也要遵守这条规则：换方向可以是"改用 submit_plan 把已知情况和建议方案提交给用户判断"，而不是仅用文字描述后停下。
 """
 _EXECUTION_INSTRUCTION = """
 ## 当前阶段：执行
@@ -1431,8 +1435,11 @@ class Runtime:
         self._submitted_plan = None
         result = self._run_conversation(
             task,
-            schemas=list(READ_ONLY_TOOL_DECLARATIONS) + [SUBMIT_PLAN_DECLARATION],
+            schemas=list(READ_ONLY_TOOL_DECLARATIONS)
+            + list(RECONCILIATION_TOOL_DECLARATIONS)
+            + [SUBMIT_PLAN_DECLARATION],
             extra_system=_PLANNING_INSTRUCTION,
+            require_plan=True,
         )
         if self._submitted_plan:
             self._pending_plan = self._submitted_plan
@@ -1446,6 +1453,7 @@ class Runtime:
         return self._run_conversation(
             task,
             schemas=list(READ_ONLY_TOOL_DECLARATIONS)
+            + list(RECONCILIATION_TOOL_DECLARATIONS)
             + list(MUTATION_TOOL_DECLARATIONS),
             extra_system=_EXECUTION_INSTRUCTION.format(plan=plan),
         )
@@ -1498,7 +1506,9 @@ class Runtime:
             + (mem or "")
         )
 
-    def _run_conversation(self, task: str, schemas: list, extra_system: str = "") -> str:
+    def _run_conversation(
+        self, task: str, schemas: list, extra_system: str = "", require_plan: bool = False
+    ) -> str:
         """Tool-calling loop；schemas 决定本轮可见工具（规划=只读，执行=只读+mutation）。"""
         from forge.adapters.base import Message as ForgeMessage
 
@@ -1529,6 +1539,7 @@ class Runtime:
         assistant_replies: list[str] = []
         half = max(5, MAX_AGENT_STEPS // 2)
         nudged = False
+        plan_nudge_used = False
         # P1-1: task-level Working Set；P2-4 从 .forge/task_state.json 恢复上次
         # 未完成任务的上下文（goal 始终以本次 task 为准，其余字段恢复）。
         working_set = WorkingSet.from_dict(
@@ -1597,6 +1608,29 @@ class Runtime:
                 except Exception:
                     pass
             if not resp.tool_calls:
+                content_text = resp.content or ""
+                has_plan_keywords = any(
+                    kw in content_text
+                    for kw in ["计划", "步骤", "方案", "修改如下", "等待确认", "确认后"]
+                )
+                if (
+                    require_plan
+                    and self._submitted_plan is None
+                    and not plan_nudge_used
+                    and has_plan_keywords
+                ):
+                    plan_nudge_used = True
+                    if resp.content:
+                        assistant_replies.append(resp.content)
+                    messages.append(ForgeMessage(
+                        role="user",
+                        content=(
+                            "你刚才只用文字描述了计划，没有调用 submit_plan 工具——"
+                            "这不算提交，用户什么都看不到。请现在立即调用 submit_plan，"
+                            "把计划内容作为参数传入。"
+                        ),
+                    ))
+                    continue
                 if resp.content:
                     self.conversation.append(ForgeMessage(role="user", content=task))
                     self.conversation.append(ForgeMessage(role="assistant", content=resp.content))

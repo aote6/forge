@@ -21,6 +21,7 @@ from forge.tools.schemas import (
     MUTATION_TOOL_DECLARATIONS,
     MUTATION_TOOL_NAMES,
     READ_ONLY_TOOL_DECLARATIONS,
+    RECONCILIATION_TOOL_DECLARATIONS,
     SUBMIT_PLAN_DECLARATION,
     SUBMIT_PLAN_TOOL_NAME,
 )
@@ -56,7 +57,7 @@ def _full_registry(tmp_path: Path) -> tuple[dict, set[str]]:
 def _schema_names() -> set[str]:
     return {d["name"] for d in READ_ONLY_TOOL_DECLARATIONS} | {
         d["name"] for d in MUTATION_TOOL_DECLARATIONS
-    }
+    } | {d["name"] for d in RECONCILIATION_TOOL_DECLARATIONS}
 
 
 def test_schema_tools_all_have_implementations(tmp_path: Path):

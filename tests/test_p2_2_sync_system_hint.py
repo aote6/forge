@@ -173,6 +173,9 @@ def test_hint_is_pure_text_and_mutation_path_unchanged(tmp_path):
 
     assert system.startswith(SYSTEM_INSTRUCTION)  # base 指令逐字保留，仅追加
     # mutation 工具面（含对账入口 forge_sync）不因注入变化
-    assert {"str_replace", "write_file", "forge_sync"} <= set(MUTATION_TOOL_NAMES)
+    from forge.tools.schemas import RECONCILIATION_TOOL_NAMES
+    assert {"str_replace", "write_file"} <= set(MUTATION_TOOL_NAMES)
+    assert "forge_sync" in RECONCILIATION_TOOL_NAMES
+    assert "forge_sync" not in MUTATION_TOOL_NAMES
     # 注入不改写 sync_layer 对象本身
     assert rt.sync_layer is not None
