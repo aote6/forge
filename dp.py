@@ -17,6 +17,7 @@ from forge.runtime import Runtime
 from forge.events import EventType
 from forge.adapters.deepseek import DeepSeekAdapter
 from forge.tui_input import read_multiline_input
+from forge.terminal_present import summarize_tool_display
 
 project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 adapter = DeepSeekAdapter(
@@ -214,15 +215,9 @@ def main():
         disp = (e.data.get("display") or "").strip()
         if not disp:
             return
-        lines = disp.splitlines()
-        max_lines, max_chars = 18, 1200
-        shown = lines[:max_lines]
-        body = "\n".join(shown)
-        if len(body) > max_chars:
-            body = body[:max_chars] + "\n..."
-        elif len(lines) > max_lines:
-            body = body + f"\n...(+{len(lines) - max_lines} lines, 输入 last 看全文)"
-        print(body, flush=True)
+        body = summarize_tool_display(disp, success=bool(ok))
+        if body:
+            print(body, flush=True)
 
     runtime.on(EventType.TOOL_CALL_START, _on_tool_start)
     runtime.on(EventType.TOOL_CALL_END, _on_tool_end)
