@@ -258,6 +258,8 @@ class TerminalPresenter:
         self._hb_timer: Any = None
         self._hb_name: Optional[str] = None
         self._hb_t0: Optional[float] = None
+        self._assistant_open = False
+        self._assistant_streamed = False
 
     def _stop_heartbeat(self) -> None:
         """Invalidate any in-flight tick and cancel the pending timer."""
@@ -321,6 +323,8 @@ class TerminalPresenter:
             self._hb_name = name
             self._hb_t0 = self._time()
             self._hb_timer = None
+        self.on_assistant_done()
+        self._assistant_streamed = False
         self._write(f"\n🔧 [{name}] ...", end="", flush=True)
         self._schedule_heartbeat(token)
 
@@ -338,10 +342,35 @@ class TerminalPresenter:
         if body:
             self._write(body, flush=True)
 
+    def on_assistant_delta(self, text: str) -> None:
+        """Append assistant text incrementally (one 🤖 prefix per reply)."""
+        if not text:
+            return
+        if not self._assistant_open:
+            self._write("\n🤖 ", end="", flush=True)
+            self._assistant_open = True
+            self._assistant_streamed = True
+        self._write(text, end="", flush=True)
+
+    def on_assistant_done(self) -> None:
+        """Close the current streamed assistant line if open."""
+        if self._assistant_open:
+            self._write("", flush=True)  # newline after stream
+            self._assistant_open = False
+
     def show_assistant(self, text: str) -> None:
+        """Non-stream path: print full assistant text once.
+
+        If this turn already streamed deltas, skip to avoid double output.
+        """
+        if self._assistant_streamed or self._assistant_open:
+            self.on_assistant_done()
+            self._assistant_streamed = False
+            return
         if not text:
             return
         self._write(f"\n🤖 {text}")
+        self._assistant_streamed = False
 
     def page_last(self, name: str | None, display: str | None) -> None:
         """Open pager on the latest tool display (from Runtime cache).

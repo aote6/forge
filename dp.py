@@ -208,6 +208,8 @@ def main():
     presenter = TerminalPresenter()
     runtime.on(EventType.TOOL_CALL_START, presenter.on_tool_start)
     runtime.on(EventType.TOOL_CALL_END, presenter.on_tool_end)
+    runtime._on_assistant_delta = presenter.on_assistant_delta
+    runtime._on_assistant_done = presenter.on_assistant_done
 
     _check_veritas(runtime)
     _print_world_summary(runtime)

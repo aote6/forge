@@ -1095,6 +1095,10 @@ class Runtime:
     def __init__(self, adapter: BaseAdapter, workspace: Workspace, memory: MemoryStore):
         self.adapter = adapter
         self.workspace = workspace
+        # Optional CLI presentation hooks (TerminalPresenter); not part of agent semantics.
+        self._on_assistant_delta = None
+        self._on_assistant_done = None
+        self._assistant_streamed = False
         self.memory = memory
         self.world = WorldRuntime(project_root=workspace.project_root)
         # P2-1a 冷启动降级：Identity 建立失败不再使 Runtime 无法启动，
@@ -1563,7 +1567,35 @@ class Runtime:
             if checkpoint:
                 messages.append(ForgeMessage(role="system", content=checkpoint))
             mutation_pending = False
-            resp = self.adapter.send(messages, schemas)
+            self._assistant_streamed = False  # presentation only
+
+            def _delta(piece: str) -> None:
+                if not piece:
+                    return
+                self._assistant_streamed = True
+                cb = getattr(self, "_on_assistant_delta", None)
+                if cb is not None:
+                    try:
+                        cb(piece)
+                    except Exception:
+                        pass
+
+            send_stream = getattr(self.adapter, "send_stream", None)
+            if callable(send_stream):
+                try:
+                    resp = send_stream(messages, schemas, on_text_delta=_delta)
+                except Exception:
+                    resp = self.adapter.send(messages, schemas)
+                    if resp.content and not getattr(self, "_assistant_streamed", False):
+                        _delta(resp.content)
+            else:
+                resp = self.adapter.send(messages, schemas)
+            done_cb = getattr(self, "_on_assistant_done", None)
+            if done_cb is not None:
+                try:
+                    done_cb()
+                except Exception:
+                    pass
             if not resp.tool_calls:
                 if resp.content:
                     self.conversation.append(ForgeMessage(role="user", content=task))

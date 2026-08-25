@@ -52,3 +52,23 @@ class BaseAdapter(ABC):
     @abstractmethod
     def send(self, messages: list[Message], tools: list[dict]) -> Message:
         pass
+
+    def send_stream(
+        self,
+        messages: list[Message],
+        tools: list[dict],
+        on_text_delta=None,
+    ) -> Message:
+        """Optional streaming path. Default: non-stream send() + one full-text delta.
+
+        Subclasses that support provider streams should override and forward
+        incremental text via on_text_delta(str). Tool-call fragments must be
+        fully assembled before returning Message.tool_calls.
+        """
+        msg = self.send(messages, tools)
+        if on_text_delta and msg.content:
+            try:
+                on_text_delta(msg.content)
+            except Exception:
+                pass
+        return msg

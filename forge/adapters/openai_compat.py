@@ -151,3 +151,75 @@ class OpenAICompatAdapter(BaseAdapter):
             content=choice.message.content,
             tool_calls=tool_calls,
         )
+
+    def _build_chat_payload(self, messages: list, tools: list):
+        """Shared message/tool payload for send and send_stream."""
+        import json
+        api_messages = []
+        for msg in messages:
+            if msg.role == "system":
+                api_messages.append({"role": "system", "content": msg.content or ""})
+            elif msg.role == "user":
+                api_messages.append({"role": "user", "content": msg.content or ""})
+            elif msg.role == "assistant":
+                m = {"role": "assistant", "content": msg.content or ""}
+                if msg.tool_calls:
+                    m["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(
+                                    tc.arguments, ensure_ascii=False
+                                ),
+                            },
+                        }
+                        for tc in msg.tool_calls
+                    ]
+                api_messages.append(m)
+            elif msg.role == "tool":
+                api_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": msg.tool_call_id or "",
+                        "content": msg.content or "",
+                    }
+                )
+        api_tools = []
+        for t in tools:
+            api_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "parameters": t.get("parameters", {}),
+                    },
+                }
+            )
+        kwargs_base = {"temperature": 0.1}
+        return api_messages, api_tools, kwargs_base
+
+    def send_stream(self, messages: list, tools: list, on_text_delta=None) -> Message:
+        """Stream text deltas; return a complete Message (tool_calls fully assembled)."""
+        api_messages, api_tools, kwargs_base = self._build_chat_payload(messages, tools)
+        try:
+            from forge.adapters.stream_util import complete_chat_stream
+
+            return complete_chat_stream(
+                self.client,
+                model=self.model_name,
+                api_messages=api_messages,
+                api_tools=api_tools or None,
+                temperature=kwargs_base.get("temperature", 0.1),
+                on_text_delta=on_text_delta,
+            )
+        except Exception:
+            msg = self.send(messages, tools)
+            if on_text_delta and msg.content:
+                try:
+                    on_text_delta(msg.content)
+                except Exception:
+                    pass
+            return msg
