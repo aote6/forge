@@ -30,9 +30,15 @@ class _Buf:
 
 def test_on_tool_start_writes_name():
     buf = _Buf()
-    p = TerminalPresenter(writer=buf, input_fn=lambda _: "q")
+    p = TerminalPresenter(
+        writer=buf,
+        input_fn=lambda _: "q",
+        heartbeat_interval=10.0,
+        timer_factory=lambda d, cb: type("H", (), {"cancel": lambda self: None})(),
+    )
     p.on_tool_start(SimpleNamespace(data={"name": "run_test"}))
     assert any("run_test" in x for x in buf.lines)
+    p._stop_heartbeat()
 
 
 def test_on_tool_end_success_short():

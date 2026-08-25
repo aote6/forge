@@ -4,25 +4,34 @@ Currently includes:
   - tool-output summary (summarize_tool_display)
   - minimal pager (page_text)
   - TerminalPresenter (CLI event → terminal display)
+  - light tool-running heartbeat (Batch 3)
 
-Heartbeat, LLM streaming, and full TUI are later batches — not implemented here.
+LLM streaming and full TUI are later batches — not implemented here.
 No rich/textual/curses; standard library only.
 """
 from __future__ import annotations
 
 import shutil
-from typing import Callable, Optional
-
-Writer = Callable[..., None]
-InputFn = Callable[..., str]
-DEFAULT_PAGE_LINES = 14
+import threading
+import time
+from typing import Any, Callable, Iterable, Optional
 
 MAX_SUMMARY_LINES = 16
 MAX_SUMMARY_CHARS = 1200
 HEAD_LINES = 4
 TAIL_LINES = 12
+DEFAULT_PAGE_LINES = 14
+HEARTBEAT_INTERVAL = 10.0
 
 _OMIT_TMPL = "…（省略 {n} 行，输入 last 看全文）"
+
+Writer = Callable[..., None]
+InputFn = Callable[[str], str]
+
+
+# ---------------------------------------------------------------------------
+# Batch 1 — summary
+# ---------------------------------------------------------------------------
 
 
 def summarize_tool_display(display: str, *, success: bool) -> str:
@@ -37,8 +46,6 @@ def summarize_tool_display(display: str, *, success: bool) -> str:
         return ""
 
     text = display if isinstance(display, str) else str(display)
-    # Preserve intentional leading/trailing content for summary logic, but
-    # callers typically already .strip(); empty after strip → nothing to show.
     if not text.strip():
         return ""
 
@@ -59,29 +66,21 @@ def _omit_marker(omitted: int) -> str:
 
 
 def _join_fit(parts: list[str], *, max_chars: int) -> str:
-    """Join lines with newlines, preferring to keep the *end* of the list.
-
-    parts are ordered top→bottom as they should appear. If over budget,
-    drop from the front (except we never drop a lone marker-only edge case
-    in a destructive way — caller builds parts carefully).
-    """
+    """Join lines; if over budget, drop from the front (protects tail)."""
     if not parts:
         return ""
     body = "\n".join(parts)
     if len(body) <= max_chars:
         return body
-    # Drop leading lines until under budget (protects tail).
     start = 0
     while start < len(parts) - 1:
         cand = "\n".join(parts[start:])
         if len(cand) <= max_chars:
             return cand
         start += 1
-    # Single remaining line still too long: keep its tail characters.
     last = parts[-1]
     if len(last) <= max_chars:
         return last
-    # Leave room for a tiny prefix marker if we slice hard.
     if max_chars <= 3:
         return last[-max_chars:]
     return "…" + last[-(max_chars - 1) :]
@@ -91,8 +90,6 @@ def _summarize_success(lines: list[str]) -> str:
     n = len(lines)
     head_n = min(HEAD_LINES, n)
     tail_n = min(TAIL_LINES, max(0, n - head_n))
-    # If everything fits in head+tail without omit, just show all (shouldn't
-    # happen often given outer gate, but keeps edge cases sane).
     if head_n + tail_n >= n:
         return _join_fit(lines, max_chars=MAX_SUMMARY_CHARS)
 
@@ -105,13 +102,10 @@ def _summarize_success(lines: list[str]) -> str:
 
 
 def _summarize_failure(lines: list[str]) -> str:
-    """Tail-first: pack as many trailing lines as fit in line + char budget."""
     n = len(lines)
     if n == 0:
         return ""
 
-    # Prefer up to MAX_SUMMARY_LINES from the end; then fit chars without
-    # chopping the newest (last) lines.
     take = min(MAX_SUMMARY_LINES, n)
     tail = lines[-take:]
     omitted = n - take
@@ -120,15 +114,12 @@ def _summarize_failure(lines: list[str]) -> str:
         return _join_fit(tail, max_chars=MAX_SUMMARY_CHARS)
 
     marker = _omit_marker(omitted)
-    # Optional tiny head context (1 line) if we still have room after tail+marker.
     parts = [marker] + tail
     body = _join_fit(parts, max_chars=MAX_SUMMARY_CHARS)
-    # If budget allows and we omitted a lot, prepend first line for orientation.
     if omitted > 0 and lines:
         head_line = lines[0]
         trial = head_line + "\n" + body
         if len(trial) <= MAX_SUMMARY_CHARS and body.count("\n") + 1 < MAX_SUMMARY_LINES:
-            # Only add head if marker is still present (still summarized).
             if marker in body:
                 return trial
     return body
@@ -224,11 +215,24 @@ def page_text(
         write("请输入 Enter(下一页) / b(上一页) / q(返回)")
 
 
+
+def _default_timer_factory(delay: float, callback: Callable[[], None]) -> threading.Timer:
+    """threading.Timer wrapper: daemon, auto-start, cancel()-able."""
+    timer = threading.Timer(delay, callback)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 class TerminalPresenter:
     """Thin terminal presentation layer for the CLI REPL.
 
     Consumes Runtime tool events and last-tool text. Does not call tools,
     adapters, or mutate Runtime / ToolResult.
+
+    Heartbeat (Batch 3): after HEARTBEAT_INTERVAL without TOOL_CALL_END, print a
+    running line. Runtime currently runs tools sequentially (START→execute→END),
+    so one active heartbeat lifecycle is enough.
     """
 
     def __init__(
@@ -236,17 +240,93 @@ class TerminalPresenter:
         writer: Optional[Writer] = None,
         input_fn: Optional[InputFn] = None,
         page_size: Optional[int] = None,
+        *,
+        heartbeat_interval: float = HEARTBEAT_INTERVAL,
+        time_fn: Optional[Callable[[], float]] = None,
+        timer_factory: Optional[Callable[[float, Callable[[], None]], Any]] = None,
     ):
         self._write = writer or print
         self._input = input_fn or input
         self._page_size = page_size  # None → dynamic
+        self._heartbeat_interval = float(heartbeat_interval)
+        self._time = time_fn or time.monotonic
+        # timer_factory(delay_seconds, callback) -> handle with .cancel(); auto-starts
+        self._timer_factory = timer_factory or _default_timer_factory
+
+        self._hb_lock = threading.Lock()
+        self._hb_token = 0  # bumped on each start/stop; ticks ignore stale tokens
+        self._hb_timer: Any = None
+        self._hb_name: Optional[str] = None
+        self._hb_t0: Optional[float] = None
+
+    def _stop_heartbeat(self) -> None:
+        """Invalidate any in-flight tick and cancel the pending timer."""
+        with self._hb_lock:
+            self._hb_token += 1
+            timer = self._hb_timer
+            self._hb_timer = None
+            self._hb_name = None
+            self._hb_t0 = None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+
+    def _schedule_heartbeat(self, token: int) -> None:
+        interval = self._heartbeat_interval
+        if interval <= 0:
+            return
+
+        def tick() -> None:
+            with self._hb_lock:
+                if token != self._hb_token or self._hb_name is None or self._hb_t0 is None:
+                    return
+                name = self._hb_name
+                t0 = self._hb_t0
+            try:
+                elapsed = max(0, int(self._time() - t0))
+            except Exception:
+                elapsed = 0
+            # New line: reliable on Termux; avoid \r redraw games.
+            try:
+                self._write(f"\n🔧 [{name}] running… {elapsed}s", flush=True)
+            except Exception:
+                return
+            with self._hb_lock:
+                if token != self._hb_token:
+                    return
+                try:
+                    self._hb_timer = self._timer_factory(interval, tick)
+                except Exception:
+                    self._hb_timer = None
+
+        with self._hb_lock:
+            if token != self._hb_token:
+                return
+            try:
+                self._hb_timer = self._timer_factory(interval, tick)
+            except Exception:
+                self._hb_timer = None
 
     def on_tool_start(self, event) -> None:
         data = getattr(event, "data", None) or {}
         name = data.get("name") or "?"
+        # Defensive: end any previous heartbeat (Runtime is sequential, but
+        # missing END must not leak a timer into the next tool).
+        self._stop_heartbeat()
+        with self._hb_lock:
+            self._hb_token += 1
+            token = self._hb_token
+            self._hb_name = name
+            self._hb_t0 = self._time()
+            self._hb_timer = None
         self._write(f"\n🔧 [{name}] ...", end="", flush=True)
+        self._schedule_heartbeat(token)
 
     def on_tool_end(self, event) -> None:
+        # First: kill heartbeat so no tick can print after the mark.
+        self._stop_heartbeat()
         data = getattr(event, "data", None) or {}
         ok = bool(data.get("success"))
         mark = "✅" if ok else "❌"
