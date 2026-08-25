@@ -1,6 +1,12 @@
 # Forge Security Boundary
 
-> 状态：有效
+```
+Type: Security / Product Boundary
+Authority: Binding
+Status: Active
+Scope: Forge trust boundaries and capability safety semantics
+```
+
 
 前置：`FORGE_IDENTITY.md`、`FORGE_PRODUCT_STANCE.md`
 

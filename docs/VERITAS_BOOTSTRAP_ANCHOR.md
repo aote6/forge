@@ -1,5 +1,13 @@
 # Veritas 自举设计锚点
 
+```
+Type: Historical / Informational
+Authority: Informational
+Status: Design note (not an execution plan)
+Scope: Future Veritas self-hosting design anchor
+```
+
+
 日期：2026-08-17
 状态：设计笔记，非执行计划
 

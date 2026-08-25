@@ -1,6 +1,12 @@
 # Forge 身份定义与最高判定规则
 
-状态：有效
+```
+Type: Identity / Product Stance
+Authority: Strong Guidance
+Status: Active
+Scope: Forge identity and product-level identity constraints
+```
+
 
 讨论「这是不是 Forge / 算不算本体」时用本文件。
 不替代实现说明；能力通断见 `FORGE_VERITAS_STANCE.md`。

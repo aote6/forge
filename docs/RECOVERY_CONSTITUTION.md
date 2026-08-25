@@ -1,5 +1,13 @@
 # Recovery Constitution
 
+```
+Type: Constitution
+Authority: Binding
+Status: Active
+Scope: Forge projection/recovery semantics
+```
+
+
 ## Scope
 
 本宪法定义 Forge Projection Recovery 的架构不变量。

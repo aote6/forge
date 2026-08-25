@@ -1,6 +1,12 @@
-﻿# Veritas World Runtime Interface v1.0
+# Veritas World Runtime Interface v1.0
 
-状态：Draft
+```
+Type: Contract / Interface
+Authority: Binding
+Status: Active
+Scope: World Runtime Interface between Forge and Veritas-facing runtime surfaces
+```
+
 
 版本：v1.0
 

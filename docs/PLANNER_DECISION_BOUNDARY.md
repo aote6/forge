@@ -1,7 +1,12 @@
 # Forge 决策权边界 — 工具循环模式
 
-日期：2026-08-19
-状态：正式架构原则
+```
+Type: Architecture / Design
+Authority: Strong Guidance
+Status: Active
+Scope: Tool-loop decision boundary (machine tools/facts; model chooses next step)
+```
+
 
 ## 核心原则
 

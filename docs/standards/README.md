@@ -204,6 +204,7 @@ If code and a Normative Standard disagree:
 - **Terminal Presentation Standard** is adopted (`terminal_presentation.md`).  
 - **Terminal Color Semantics Standard** is adopted (`terminal_color_semantics.md`).  
 - Documentation types and hierarchy are registered in this README.  
+- Selected binding/guidance documents under `docs/` carry a short **Type / Authority / Status / Scope** header for registry clarity; that header **does not** move them into this directory or promote them to Normative Standard.  
 - **No bulk migration** of existing `docs/` files into `standards/` has been performed under this governance step.  
 - Further Normative Standards **MUST** be added only through explicit standardization, not by relocating files alone.
 

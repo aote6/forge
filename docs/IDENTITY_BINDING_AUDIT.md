@@ -1,5 +1,15 @@
 # Identity Binding / Authentication Boundary Audit
 
+```
+Type: Audit / Verification
+Authority: Informational
+Status: Point-in-time
+Scope: Identity attachment vs authentication findings
+```
+
+本文是审计记录，**不是** Normative Standard，也**不会**仅因存在本文件而自动约束实现。未来多用户/网络部署结论见文内建议，需单独设计与规范后再实现。
+
+
 日期: 2026-08-16
 状态: KNOWN DESIGN GAP
 级别: MINOR（当前本地单用户部署）

@@ -3,6 +3,15 @@
 日期：2026-08-19
 状态：更新为工具循环架构
 
+```
+Type: Architecture / Stance
+Authority: Strong Guidance
+Status: Active (may lag tool-loop details)
+Scope: Forge role framing in the Veritas world
+```
+
+**权威说明：** 工具循环中的决策权与禁止项以 `PLANNER_DECISION_BOUNDARY.md` 与当前 Runtime 工具循环为准。本文描述角色与操作模式；若与 Planner 边界或现行实现冲突，**不得**以本文覆盖 Planner 边界或 Normative Standard。
+
 ## Forge 是什么
 
 Forge 是 Veritas 世界中的工程 Agent。LLM 通过工具循环操作世界对象和文件系统。
