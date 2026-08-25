@@ -17,7 +17,7 @@ from forge.runtime import Runtime
 from forge.events import EventType
 from forge.adapters.deepseek import DeepSeekAdapter
 from forge.tui_input import read_multiline_input
-from forge.terminal_present import summarize_tool_display
+from forge.terminal_present import TerminalPresenter
 
 project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 adapter = DeepSeekAdapter(
@@ -205,22 +205,9 @@ def main():
     runtime = Runtime(adapter, workspace, memory)
     _background_health_check(project_root)
 
-    def _on_tool_start(e):
-        print(f"\n🔧 [{e.data.get('name')}] ...", end="", flush=True)
-
-    def _on_tool_end(e):
-        ok = e.data.get("success")
-        mark = "✅" if ok else "❌"
-        print(f" {mark}", flush=True)
-        disp = (e.data.get("display") or "").strip()
-        if not disp:
-            return
-        body = summarize_tool_display(disp, success=bool(ok))
-        if body:
-            print(body, flush=True)
-
-    runtime.on(EventType.TOOL_CALL_START, _on_tool_start)
-    runtime.on(EventType.TOOL_CALL_END, _on_tool_end)
+    presenter = TerminalPresenter()
+    runtime.on(EventType.TOOL_CALL_START, presenter.on_tool_start)
+    runtime.on(EventType.TOOL_CALL_END, presenter.on_tool_end)
 
     _check_veritas(runtime)
     _print_world_summary(runtime)
@@ -238,9 +225,9 @@ def main():
                 continue
             cmd = user_input.strip().lower()
             if cmd in ("last", "copy", "clip"):
-                disp = getattr(runtime, "_last_tool_display", None) or "(no tool output yet)"
-                name = getattr(runtime, "_last_tool_name", "")
-                print(f"\n📋 last tool={name}\n{disp}")
+                disp = getattr(runtime, "_last_tool_display", None) or ""
+                name = getattr(runtime, "_last_tool_name", "") or ""
+                presenter.page_last(name, disp)
                 continue
             if cmd in ("changes",):
                 tools = runtime.executor.tools
@@ -266,7 +253,7 @@ def main():
             n = getattr(runtime, "_last_tool_calls", 0)
             print(f"\n📊 本次工具调用: {n}")
             if response:
-                print(f"\n🤖 {response}")
+                presenter.show_assistant(response)
         except KeyboardInterrupt:
             try:
                 runtime.save_session_summary()
