@@ -18,6 +18,7 @@ from forge.events import EventType
 from forge.adapters.deepseek import DeepSeekAdapter
 from forge.tui_input import read_multiline_input
 from forge.terminal_present import TerminalPresenter
+from forge.terminal_color import ALARM, AMBER, PHOSPHOR, paint
 
 project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 adapter = DeepSeekAdapter(
@@ -68,7 +69,7 @@ def _check_veritas(runtime: Runtime) -> None:
     try:
         w = runtime.world
         if w is None:
-            print(f"⚠️ {_OFFLINE_HINT}")
+            print(paint(f"WARN: {_OFFLINE_HINT}", AMBER))
             return
         online = getattr(w, "online", None)
         if callable(online):
@@ -83,12 +84,12 @@ def _check_veritas(runtime: Runtime) -> None:
             else:
                 ok = True
         if not ok:
-            print(f"⚠️ {_OFFLINE_HINT}")
+            print(paint(f"WARN: {_OFFLINE_HINT}", AMBER))
             print("   需要事务写入时再启动 veritasd。")
         else:
-            print("✅ veritasd 在线 — 事务写入主路径可用")
+            print(paint("OK: veritasd 在线 — 事务写入主路径可用", PHOSPHOR))
     except Exception as e:
-        print(f"⚠️ veritasd 检查失败: {e}")
+        print(paint(f"WARN: veritasd 检查失败: {e}", AMBER))
         print(f"   {_OFFLINE_HINT}")
 
 
@@ -248,7 +249,7 @@ def main():
             try:
                 notes = _collect_health_notes(runtime)
                 for note in notes:
-                    print(f"\n⚠️ [自检] {note}")
+                    print(paint(f"\nWARN: [自检] {note}", AMBER))
             except Exception:
                 pass
             response = runtime.run(user_input)
@@ -267,7 +268,7 @@ def main():
         except Exception as e:
             import traceback
             traceback.print_exc()
-            print(f"\n❌ 会话异常，为避免继续损坏状态已终止本次会话：{e}")
+            print(paint(f"\nFAIL: 会话异常，为避免继续损坏状态已终止本次会话：{e}", ALARM))
             try:
                 runtime.save_session_summary()
                 _save_conversation_history(runtime)

@@ -132,15 +132,15 @@ def test_presenter_delta_single_prefix():
     p.on_assistant_delta(" world")
     p.on_assistant_done()
     t = buf.text()
-    assert t.count("🤖") == 1
-    assert "Hello world" in t.replace("\n", "")
+    assert t.count("FORGE>") == 1
+    assert "Hello" in t and "world" in t
 
 
 def test_presenter_empty_stream_no_garbage():
     buf = _Buf()
     p = TerminalPresenter(writer=buf, input_fn=lambda _: "q", timer_factory=lambda d, c: type("H", (), {"cancel": lambda self: None})())
     p.on_assistant_done()
-    assert "🤖" not in buf.text()
+    assert "FORGE>" not in buf.text()
 
 
 def test_show_assistant_skips_if_streamed():

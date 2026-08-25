@@ -7,7 +7,7 @@ Currently includes:
   - light tool-running heartbeat (Batch 3)
 
 LLM streaming and full TUI are later batches — not implemented here.
-No rich/textual/curses; standard library only.
+ANSI truecolor via forge.terminal_color (Batch 5). No rich/textual/curses; standard library only.
 """
 from __future__ import annotations
 
@@ -15,6 +15,15 @@ import shutil
 import threading
 import time
 from typing import Any, Callable, Iterable, Optional
+
+from forge.terminal_color import (
+    ALARM,
+    AMBER,
+    OSCILLOSCOPE,
+    PHOSPHOR,
+    TUBE_BLUE,
+    paint,
+)
 
 MAX_SUMMARY_LINES = 16
 MAX_SUMMARY_CHARS = 1200
@@ -182,8 +191,11 @@ def page_text(
         label = title or "output"
         write("\n".join(chunk))
         write(
-            f"── {label}  page {p + 1}/{n_pages} ── "
-            f"Enter:下一页  b:上一页  q:返回 ──"
+            paint(
+                f"── {label}  page {p + 1}/{n_pages} ── "
+                f"Enter:next  b:back  q:return ──",
+                TUBE_BLUE,
+            )
         )
 
     _show(page)
@@ -292,7 +304,7 @@ class TerminalPresenter:
                 elapsed = 0
             # New line: reliable on Termux; avoid \r redraw games.
             try:
-                self._write(f"\n🔧 [{name}] running… {elapsed}s", flush=True)
+                self._write(paint(f"\n[{name}] running... {elapsed}s", TUBE_BLUE), flush=True)
             except Exception:
                 return
             with self._hb_lock:
@@ -325,32 +337,49 @@ class TerminalPresenter:
             self._hb_timer = None
         self.on_assistant_done()
         self._assistant_streamed = False
-        self._write(f"\n🔧 [{name}] ...", end="", flush=True)
+        self._write(paint(f"\n[{name}] ...", OSCILLOSCOPE), flush=True)
         self._schedule_heartbeat(token)
 
     def on_tool_end(self, event) -> None:
+        # Capture duration before killing heartbeat state.
+        with self._hb_lock:
+            t0 = self._hb_t0
+            hb_name = self._hb_name
+        elapsed_s = None
+        if t0 is not None:
+            try:
+                elapsed_s = max(0, int(self._time() - t0))
+            except Exception:
+                elapsed_s = None
         # First: kill heartbeat so no tick can print after the mark.
         self._stop_heartbeat()
         data = getattr(event, "data", None) or {}
         ok = bool(data.get("success"))
-        mark = "✅" if ok else "❌"
-        self._write(f" {mark}", flush=True)
+        name = data.get("name") or hb_name or "?"
+        if elapsed_s is not None:
+            status = f"[{name}] OK {elapsed_s}s" if ok else f"[{name}] FAIL {elapsed_s}s"
+        else:
+            status = f"[{name}] OK" if ok else f"[{name}] FAIL"
+        color = PHOSPHOR if ok else ALARM
+        self._write(paint(f"\n{status}", color), flush=True)
         disp = (data.get("display") or "").strip()
         if not disp:
             return
         body = summarize_tool_display(disp, success=ok)
         if body:
+            # Tool body is uncolored chrome boundary: plain text only.
             self._write(body, flush=True)
 
     def on_assistant_delta(self, text: str) -> None:
-        """Append assistant text incrementally (one 🤖 prefix per reply)."""
+        """Append assistant text incrementally (one FORGE> prefix per reply)."""
         if not text:
             return
         if not self._assistant_open:
-            self._write("\n🤖 ", end="", flush=True)
+            self._write(paint("\nFORGE> ", AMBER), end="", flush=True)
             self._assistant_open = True
             self._assistant_streamed = True
-        self._write(text, end="", flush=True)
+        # Stream body in amber without re-prefix; each write still resets.
+        self._write(paint(text, AMBER), end="", flush=True)
 
     def on_assistant_done(self) -> None:
         """Close the current streamed assistant line if open."""
@@ -369,8 +398,14 @@ class TerminalPresenter:
             return
         if not text:
             return
-        self._write(f"\n🤖 {text}")
+        self._write(paint(f"\nFORGE> {text}", AMBER), flush=True)
         self._assistant_streamed = False
+
+    def show_warning(self, message: str) -> None:
+        """UI warning line (amber). Not a ToolResult channel."""
+        if not message:
+            return
+        self._write(paint(f"\nWARN: {message}", AMBER), flush=True)
 
     def page_last(self, name: str | None, display: str | None) -> None:
         """Open pager on the latest tool display (from Runtime cache).

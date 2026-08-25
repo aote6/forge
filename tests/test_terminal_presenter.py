@@ -47,7 +47,7 @@ def test_on_tool_end_success_short():
     p.on_tool_start(SimpleNamespace(data={"name": "t"}))
     p.on_tool_end(SimpleNamespace(data={"success": True, "display": "ok line"}))
     joined = buf.text()
-    assert "✅" in joined
+    assert "OK" in joined
     assert "ok line" in joined
 
 
@@ -58,7 +58,7 @@ def test_on_tool_end_failure_uses_summary_tail():
     disp = long_head + "\nERROR: real failure\nTraceback\nAssertionError: x"
     p.on_tool_end(SimpleNamespace(data={"success": False, "display": disp}))
     joined = buf.text()
-    assert "❌" in joined
+    assert "FAIL" in joined
     assert "AssertionError: x" in joined
     assert "省略" in joined or "ERROR" in joined
 
@@ -68,9 +68,9 @@ def test_on_tool_end_empty_display_no_body():
     p = TerminalPresenter(writer=buf, input_fn=lambda _: "q")
     p.on_tool_end(SimpleNamespace(data={"success": True, "display": ""}))
     joined = buf.text()
-    assert "✅" in joined
+    assert "OK" in joined
     # no dump of empty body lines beyond mark
-    assert joined.strip().endswith("✅") or "✅" in joined
+    assert joined.strip().endswith("OK") or "OK" in joined
 
 
 def test_on_tool_end_long_does_not_dump_full_middle():

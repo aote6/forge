@@ -22,7 +22,7 @@ class _Buf:
         return "\n".join(self.lines)
 
     def running_lines(self) -> list[str]:
-        return [x for x in self.lines if "running…" in x or "running..." in x]
+        return [x for x in self.lines if "running..." in x or "running..." in x]
 
 
 class ManualClock:
@@ -88,7 +88,7 @@ def test_fast_tool_no_heartbeat():
     p.on_tool_end(_ev(success=True, display="done"))
     clock.advance(30.0)  # would-be ticks must not print
     assert not buf.running_lines()
-    assert "✅" in buf.text()
+    assert "OK" in buf.text()
 
 
 def test_long_tool_one_heartbeat():
@@ -103,9 +103,9 @@ def test_long_tool_one_heartbeat():
     )
     p.on_tool_start(_ev(name="pytest"))
     clock.advance(10.0)
-    assert any("running…" in x and "10s" in x for x in buf.running_lines())
+    assert any("running..." in x and "10s" in x for x in buf.running_lines())
     p.on_tool_end(_ev(success=True, display="pass"))
-    assert "✅" in buf.text()
+    assert "OK" in buf.text()
 
 
 def test_multiple_heartbeats_monotonic():
@@ -146,7 +146,7 @@ def test_success_stops_heartbeat():
     n = len(buf.running_lines())
     clock.advance(50.0)
     assert len(buf.running_lines()) == n
-    assert "✅" in buf.text()
+    assert "OK" in buf.text()
 
 
 def test_failure_stops_heartbeat():
@@ -165,7 +165,7 @@ def test_failure_stops_heartbeat():
     n = len(buf.running_lines())
     clock.advance(40.0)
     assert len(buf.running_lines()) == n
-    assert "❌" in buf.text()
+    assert "FAIL" in buf.text()
     assert "ERROR: boom" in buf.text() or "Traceback" in buf.text()
 
 
