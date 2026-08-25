@@ -387,15 +387,18 @@ class TerminalPresenter:
             self._write("", flush=True)  # newline after stream
             self._assistant_open = False
 
-    def show_assistant(self, text: str) -> None:
+    def show_assistant(self, text: str, force: bool = False) -> None:
         """Non-stream path: print full assistant text once.
 
         If this turn already streamed deltas, skip to avoid double output.
+        Callers with structured content that was not streamed (e.g.
+        submit_plan plan body) pass force=True.
         """
         if self._assistant_streamed or self._assistant_open:
             self.on_assistant_done()
             self._assistant_streamed = False
-            return
+            if not force:
+                return
         if not text:
             return
         self._write(paint(f"\nFORGE> {text}", AMBER), flush=True)

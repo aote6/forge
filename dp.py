@@ -256,7 +256,10 @@ def main():
             n = getattr(runtime, "_last_tool_calls", 0)
             print(f"\n📊 本次工具调用: {n}")
             if response:
-                presenter.show_assistant(response)
+                presenter.show_assistant(
+                    response,
+                    force=getattr(runtime, "_last_response_needs_display", False),
+                )
         except KeyboardInterrupt:
             try:
                 runtime.save_session_summary()

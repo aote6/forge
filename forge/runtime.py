@@ -1103,6 +1103,7 @@ class Runtime:
         self._on_assistant_delta = None
         self._on_assistant_done = None
         self._assistant_streamed = False
+        self._last_response_needs_display = False
         self.memory = memory
         self.world = WorldRuntime(project_root=workspace.project_root)
         # P2-1a 冷启动降级：Identity 建立失败不再使 Runtime 无法启动，
@@ -1395,6 +1396,7 @@ class Runtime:
         """
         self._last_tool_calls = 0
         self._last_assistant_replies = []
+        self._last_response_needs_display = False
 
         # 有待确认的计划：先处理用户对计划的回复
         if self._pending_plan is not None:
@@ -1651,8 +1653,12 @@ class Runtime:
             for tc in resp.tool_calls:
                 if tc.name == SUBMIT_PLAN_TOOL_NAME:
                     # 模型提交计划 → 中断本轮，交还用户确认，不放行 mutation。
-                    plan = (tc.arguments or {}).get("plan") or (resp.content or "")
+                    raw_args = tc.arguments or {}
+                    plan_arg = raw_args.get("plan")
+                    content = resp.content or ""
+                    plan = plan_arg or content
                     self._submitted_plan = plan
+                    self._last_response_needs_display = True
                     self.conversation.append(ForgeMessage(role="user", content=task))
                     self.conversation.append(ForgeMessage(role="assistant", content=plan))
                     _append_conversation_log(
