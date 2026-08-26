@@ -29,9 +29,18 @@ _SECTION_RE = re.compile(
 )
 _EMPTY_MARK = "(无)"
 
+# 循环控制信号：每轮 content 中的显式 STOP_WHEN 行（非整段自然语言）。
+_STOP_WHEN_RE = re.compile(
+    r"^\s*STOP_WHEN\s*:\s*(met|not_met)\s*$", re.IGNORECASE | re.MULTILINE
+)
+
 SUBAGENT_SYSTEM = """你是 Forge 子 Agent。完成主 Agent 交给你的子任务。
 - 用工具探索与必要的小修改（str_replace / write_file）。
 - 不要无限搜索；找到结论后停止调用工具。
+- 每一轮回复（无论是否调用工具）必须单独包含一行循环控制信号，格式固定为其一：
+  STOP_WHEN: not_met
+  STOP_WHEN: met
+  当 STOP_WHEN: met 时，本轮之后禁止再请求任何工具；直接给出最终结论。
 - 最终回复必须严格使用下面的固定格式，不要贴完整文件内容，不要复述搜索过程：
 
 CONCLUSION:
@@ -85,6 +94,26 @@ def structure_conclusion(text: str) -> str:
         out.append(body if body else _EMPTY_MARK)
         out.append("")
     return "\n".join(out).rstrip() + "\n"
+
+
+def parse_stop_when(content: str) -> str:
+    """Extract explicit STOP_WHEN signal from one model turn.
+
+    Returns "met" or "not_met". Missing / invalid → "not_met".
+    If multiple lines match, the last one wins.
+    """
+    text = content or ""
+    found = "not_met"
+    for m in _STOP_WHEN_RE.finditer(text):
+        found = m.group(1).lower()
+    return found
+
+
+def strip_stop_when(content: str) -> str:
+    """Remove STOP_WHEN control lines before conclusion structuring."""
+    text = content or ""
+    return _STOP_WHEN_RE.sub("", text)
+
 
 # Tool names allowed for subagents (read + minimal write)
 SUBAGENT_READ_NAMES = frozenset({
@@ -173,9 +202,18 @@ def run_subagent(
     last_text = ""
     for _ in range(max_steps):
         resp = adapter.send(messages, schemas)
+        content = resp.content or ""
+        signal = parse_stop_when(content)
+
+        # Hard stop: stop_when met → discard this turn's tool_calls, no next round.
+        if signal == "met":
+            last_text = content.strip()
+            return structure_conclusion(strip_stop_when(last_text))
+
         if not resp.tool_calls:
-            last_text = (resp.content or "").strip()
-            return structure_conclusion(last_text)
+            last_text = content.strip()
+            return structure_conclusion(strip_stop_when(last_text))
+
         messages.append(
             Message(
                 role="assistant",
@@ -199,6 +237,6 @@ def run_subagent(
             last_text = resp.content.strip()
     # Force a brief conclusion from last tool outcomes
     return structure_conclusion(
-        last_text
+        strip_stop_when(last_text)
         or "(subagent: reached max steps without final text; check partial tool results in logs)"
     )
