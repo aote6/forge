@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from forge.adapters.base import Message, ToolCall, ToolResult
+from forge.agent_abi import AgentResult, AgentTask
 from forge.subagent import (
     SUBAGENT_MAX_STEPS,
     filter_schemas_for_subagent,
@@ -51,9 +52,15 @@ def test_run_subagent_returns_final_text_only():
     schemas = filter_schemas_for_subagent(
         list(READ_ONLY_TOOL_DECLARATIONS) + list(MUTATION_TOOL_DECLARATIONS)
     )
-    out = run_subagent(FakeAdapter(), tools, schemas, "find bug", max_steps=5)
-    assert "bug is in a.py" in out
-    assert "tool_calls" not in out
+    out = run_subagent(
+        FakeAdapter(),
+        tools,
+        schemas,
+        AgentTask(goal="find bug", max_steps=5),
+    )
+    assert isinstance(out, AgentResult)
+    assert out.status in {"done", "blocked", "need_decision"}
+    assert "bug is in a.py" in out.conclusion
 
 
 def test_spawn_subagent_on_schema():

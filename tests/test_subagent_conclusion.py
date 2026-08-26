@@ -8,6 +8,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from forge.adapters.base import ToolCall, ToolResult
+from forge.agent_abi import AgentResult, AgentTask
 from forge.subagent import (
     structure_conclusion,
     run_subagent,
@@ -116,10 +117,15 @@ def test_run_subagent_returns_structured_conclusion():
             )
 
     tools = {"search_code": lambda pattern, path=".": ToolResult.ok(display="a.py:3:x")}
-    out = run_subagent(FakeAdapter(), tools, _SUB_SCHEMAS, "find bug", max_steps=5)
-    sec = _sections(out)
-    assert "a.py" in sec["CONCLUSION"]
-    assert "- a.py:3" in sec["EVIDENCE"]
+    out = run_subagent(
+        FakeAdapter(),
+        tools,
+        _SUB_SCHEMAS,
+        AgentTask(goal="find bug", max_steps=5),
+    )
+    assert isinstance(out, AgentResult)
+    assert "a.py" in out.conclusion
+    assert len(out.evidence) == 0  # no tool_call_id in EVIDENCE line
 
 
 def test_run_subagent_intermediate_tool_trace_not_in_main_context():
@@ -143,10 +149,15 @@ def test_run_subagent_intermediate_tool_trace_not_in_main_context():
     tools = {
         "search_code": lambda pattern, path=".": ToolResult.ok(display="INTERMEDIATE_SECRET_TRACE a.py:3"),
     }
-    out = run_subagent(FakeAdapter(), tools, _SUB_SCHEMAS, "find bug", max_steps=5)
-    assert "INTERMEDIATE_SECRET_TRACE" not in out
-    assert "tool_calls" not in out
-    assert "CONCLUSION:" in out
+    out = run_subagent(
+        FakeAdapter(),
+        tools,
+        _SUB_SCHEMAS,
+        AgentTask(goal="find bug", max_steps=5),
+    )
+    assert isinstance(out, AgentResult)
+    assert "INTERMEDIATE_SECRET_TRACE" not in out.conclusion
+    assert "CONCLUSION:" not in out.conclusion
 
 
 def test_run_subagent_returns_str_for_compat():
@@ -156,6 +167,11 @@ def test_run_subagent_returns_str_for_compat():
             return MagicMock(content="自由结论", tool_calls=None)
 
     tools: dict = {}
-    out = run_subagent(FakeAdapter(), tools, _SUB_SCHEMAS, "task", max_steps=3)
-    assert isinstance(out, str)
-    assert out.startswith("CONCLUSION:")
+    out = run_subagent(
+        FakeAdapter(),
+        tools,
+        _SUB_SCHEMAS,
+        AgentTask(goal="task", max_steps=3),
+    )
+    assert isinstance(out, AgentResult)
+    assert out.status in {"done", "blocked", "need_decision"}

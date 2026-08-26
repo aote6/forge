@@ -1245,22 +1245,31 @@ class Runtime:
             sync_layer=self.sync_layer,
         )
         def spawn_subagent(task: str, max_steps: int = 15) -> ToolResult:
-            """Run an isolated subagent tool-loop; return conclusion text only."""
+            """Run an isolated subagent tool-loop; return AgentResult summary text."""
+            from forge.agent_abi import AgentTask, format_agent_result_for_parent
             from forge.subagent import run_subagent
             from forge.tools.schemas import MUTATION_TOOL_DECLARATIONS
 
             try:
                 schemas = list(READ_ONLY_TOOL_DECLARATIONS) + list(MUTATION_TOOL_DECLARATIONS)
-                conclusion = run_subagent(
+                agent_task = AgentTask(
+                    goal=task or "",
+                    max_steps=int(max_steps) if max_steps else 15,
+                )
+                result = run_subagent(
                     self.adapter,
                     tools,
                     schemas,
-                    task,
-                    max_steps=int(max_steps) if max_steps else 15,
+                    agent_task,
+                    project_root=workspace.project_root,
                 )
+                display = format_agent_result_for_parent(result)
                 return ToolResult.ok(
-                    display="RESULT: subagent_done\n" + (conclusion or ""),
-                    payload={"conclusion": conclusion, "subagent": True},
+                    display=display,
+                    payload={
+                        "subagent": True,
+                        "agent_result": result.to_dict(),
+                    },
                 )
             except Exception as e:
                 return ToolResult.fail(
