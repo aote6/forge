@@ -253,12 +253,70 @@ def make_meta_tools(workspace) -> dict:
         except Exception as e:
             return ToolResult.fail(display=format_block("delete_toot", "FAIL", {"reason": str(e)}))
 
+    def verify_tool_call(tool_call_id: str) -> ToolResult:
+        """Independently look up a ToolCallRecord by tool_call_id.
+
+        Returns only ground-truth fields from the append-only log.
+        Does NOT return sub-agent claim, conclusion, or any AgentResult narrative.
+        """
+        from forge.tool_call_record import get_record
+
+        tc_id = (tool_call_id or "").strip()
+        if not tc_id:
+            return ToolResult.fail(
+                display=format_block(
+                    "verify_tool_call",
+                    "FAIL",
+                    {"reason": "tool_call_id required"},
+                )
+            )
+        rec = get_record(workspace.project_root, tc_id)
+        if not rec:
+            return ToolResult.fail(
+                display=format_block(
+                    "verify_tool_call",
+                    "FAIL",
+                    {"tool_call_id": tc_id, "reason": "no ToolCallRecord found"},
+                ),
+                payload={"tool_call_id": tc_id, "found": False},
+            )
+        payload = {
+            "tool_call_id": tc_id,
+            "found": True,
+            "tool_name": rec.get("tool_name"),
+            "input": rec.get("input"),
+            "output": rec.get("output"),
+            "status": rec.get("status"),
+            "error": rec.get("error"),
+            "subtask_id": rec.get("subtask_id"),
+            "timestamp": rec.get("timestamp"),
+        }
+        body_lines = [
+            f"tool_call_id: {tc_id}",
+            f"tool_name: {payload['tool_name']}",
+            f"status: {payload['status']}",
+            f"subtask_id: {payload['subtask_id']}",
+            f"error: {payload['error']}",
+            f"input: {payload['input']!r}",
+            f"output: {payload['output']!r}",
+        ]
+        return ToolResult.ok(
+            display=format_block(
+                "verify_tool_call",
+                "OK",
+                {"tool_call_id": tc_id, "tool_name": payload["tool_name"]},
+                "\n".join(body_lines),
+            ),
+            payload=payload,
+        )
+
     tools = {
         "todo_write": todo_write,
         "todo_list": todo_list,
         "web_fetch": web_fetch,
         "project_memory": project_memory,
         "session_changes": session_changes,
+        "verify_tool_call": verify_tool_call,
         "run_command": run_command,
         "post_toot": post_toot,
         "delete_toot": delete_toot,

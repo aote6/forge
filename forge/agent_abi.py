@@ -396,3 +396,138 @@ def build_subagent_user_message(task: AgentTask) -> str:
         "tool_call_id=<id> from a prior tool result in this subtask."
     )
     return "\n".join(parts).strip() + "\n"
+
+
+def _coerce_agent_result(agent_result: AgentResult | dict[str, Any]) -> AgentResult:
+    """Accept AgentResult or its to_dict() form."""
+    if isinstance(agent_result, AgentResult):
+        return agent_result
+    if not isinstance(agent_result, dict):
+        raise TypeError(
+            f"agent_result must be AgentResult or dict, got {type(agent_result).__name__}"
+        )
+    raw_ev = agent_result.get("evidence") or []
+    evidence: list[Evidence] = []
+    for item in raw_ev:
+        if isinstance(item, Evidence):
+            evidence.append(item)
+        elif isinstance(item, dict):
+            tc = str(item.get("tool_call_id") or "").strip()
+            if not tc:
+                continue
+            evidence.append(
+                Evidence(
+                    tool_call_id=tc,
+                    claim=str(item.get("claim") or ""),
+                    path=item.get("path"),
+                    quote=item.get("quote"),
+                )
+            )
+    return AgentResult(
+        subtask_id=str(agent_result.get("subtask_id") or ""),
+        status=str(agent_result.get("status") or STATUS_BLOCKED),
+        conclusion=str(agent_result.get("conclusion") or ""),
+        evidence=tuple(evidence),
+        uncertain=str(agent_result.get("uncertain") or ""),
+        next=str(agent_result.get("next") or ""),
+        stop_when_met=bool(agent_result.get("stop_when_met")),
+        status_reason=str(agent_result.get("status_reason") or ""),
+        raw_conclusion=str(agent_result.get("raw_conclusion") or ""),
+    )
+
+
+def lookup_evidence_records(
+    project_root: str | Any,
+    agent_result: AgentResult | dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Independently resolve each evidence tool_call_id via ToolCallRecord log.
+
+    Returns a list of dicts:
+      {
+        "tool_call_id": str,
+        "ok": bool,
+        "record": dict|None,   # raw get_record result; never includes sub-agent claim
+        "evidence": dict,      # original evidence fields (for audit only)
+      }
+
+    Does not trust conclusion/claim as fact — only whether the id exists on disk.
+    """
+    from forge.tool_call_record import get_record
+
+    result = _coerce_agent_result(agent_result)
+    out: list[dict[str, Any]] = []
+    for ev in result.evidence:
+        tc_id = (ev.tool_call_id or "").strip()
+        rec = get_record(project_root, tc_id) if tc_id else None
+        # Optional subtask consistency: if record has subtask_id and result has one, match.
+        ok = rec is not None
+        if ok and result.subtask_id and rec.get("subtask_id"):
+            if str(rec.get("subtask_id")) != str(result.subtask_id):
+                ok = False
+        out.append(
+            {
+                "tool_call_id": tc_id,
+                "ok": ok,
+                "record": rec if ok else None,
+                "evidence": ev.to_dict(),
+            }
+        )
+    return out
+
+
+def precheck_agent_result(
+    project_root: str | Any,
+    agent_result: AgentResult | dict[str, Any],
+) -> AgentResult:
+    """Machine precheck at the spawn_subagent return boundary.
+
+    Re-validates evidence against on-disk ToolCallRecord (not in-memory assembly
+    records). If status is done but no independently verifiable evidence remains,
+    demote to blocked. Never elevates status to done.
+
+    This does NOT evaluate conclusion semantics — that is the main agent's job
+    after verify_tool_call lookups.
+    """
+    result = _coerce_agent_result(agent_result)
+    looked = lookup_evidence_records(project_root, result)
+    verified: list[Evidence] = []
+    rejected: list[str] = []
+    for row in looked:
+        if row["ok"]:
+            ev = row["evidence"]
+            verified.append(
+                Evidence(
+                    tool_call_id=row["tool_call_id"],
+                    claim=str(ev.get("claim") or ""),
+                    path=ev.get("path"),
+                    quote=ev.get("quote"),
+                )
+            )
+        else:
+            if row["tool_call_id"]:
+                rejected.append(row["tool_call_id"])
+
+    status = result.status
+    reason = result.status_reason
+    if rejected:
+        note = f"acceptance_precheck: unverifiable tool_call_id(s) stripped: {rejected}"
+        reason = f"{reason}; {note}" if reason else note
+
+    if status == STATUS_DONE and not verified:
+        status = STATUS_BLOCKED
+        reason = (
+            "acceptance_precheck: status=done demoted — "
+            "no independently verifiable evidence on disk"
+        )
+
+    return AgentResult(
+        subtask_id=result.subtask_id,
+        status=status,
+        conclusion=result.conclusion,
+        evidence=tuple(verified),
+        uncertain=result.uncertain,
+        next=result.next,
+        stop_when_met=result.stop_when_met,
+        status_reason=reason,
+        raw_conclusion=result.raw_conclusion,
+    )

@@ -1246,7 +1246,11 @@ class Runtime:
         )
         def spawn_subagent(task: str, max_steps: int = 15) -> ToolResult:
             """Run an isolated subagent tool-loop; return AgentResult summary text."""
-            from forge.agent_abi import AgentTask, format_agent_result_for_parent
+            from forge.agent_abi import (
+                AgentTask,
+                format_agent_result_for_parent,
+                precheck_agent_result,
+            )
             from forge.subagent import run_subagent
             from forge.tools.schemas import MUTATION_TOOL_DECLARATIONS
 
@@ -1263,6 +1267,9 @@ class Runtime:
                     agent_task,
                     project_root=workspace.project_root,
                 )
+                # Machine precheck: re-verify evidence against on-disk ToolCallRecord
+                # before the main agent sees the result.
+                result = precheck_agent_result(workspace.project_root, result)
                 display = format_agent_result_for_parent(result)
                 return ToolResult.ok(
                     display=display,

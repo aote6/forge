@@ -225,6 +225,25 @@ READ_ONLY_TOOL_DECLARATIONS = [
         },
     },
     {
+        "name": "verify_tool_call",
+        "description": (
+            "按 tool_call_id 独立反查 ToolCallRecord（只读）。"
+            "返回 tool_name/input/output/status/error/subtask_id；"
+            "不返回子 Agent 的 claim 或 conclusion。"
+            "验收 spawn_subagent 的 done 候选时必须对 evidence 中的 id 调用本工具。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tool_call_id": {
+                    "type": "string",
+                    "description": "Evidence 中的 tool_call_id（如 tc_…）",
+                },
+            },
+            "required": ["tool_call_id"],
+        },
+    },
+    {
         "name": "session_changes",
         "description": (
             "当前 session 的 mutation evidence（path/tx/summary）。"

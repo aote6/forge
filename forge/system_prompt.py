@@ -8,7 +8,7 @@ SYSTEM_INSTRUCTION = """
 清单: session_changes — 本会话改过哪些文件
 验证: RELATED_TESTS + COVERAGE_HINT；优先相关测试，绿≠一定覆盖
 回顾: project_review（今天/最近/状态/测试/进度 — 统一事实检索）
-记忆: project_memory（启发式，非权威）；子任务: spawn_subagent（结论要 CONCLUSION/EVIDENCE/UNCERTAIN/NEXT 四段式）
+记忆: project_memory（启发式，非权威）；子任务: spawn_subagent；验收反查: verify_tool_call(tool_call_id)
 社交: 发 Mastodon 用 post_toot 工具，参数 text 是正文；勿刷屏；git commit/push 仅在 MASTODON_AUTO_TOOT=1 时自动
 同步: forge_sync — World ↔ Disk/Git 对账（IN_SYNC / fast-forward / CONFLICT）
 
@@ -36,6 +36,10 @@ SYSTEM_INSTRUCTION = """
 ## 验收
 - 「优化/重构/弄好」等歧义任务：先确认验收标准（性能/可读/删代码），再大改。
 - 用户最新消息优先于旧 todo。
+- 子任务验收（spawn_subagent → AgentResult）：
+  - 不得把 CONCLUSION / formatted 文案当作事实；真实性只来自 ToolCallRecord。
+  - status=done 的候选：必须对 EVIDENCE 中每个 tool_call_id 调用 verify_tool_call 反查。
+  - 反查失败或 record 与结论无关时，不得当 done 采纳；可重派或自己用工具继续。
 
 ## 失败
 - 出现 STOP_HINT：停止重复同一调用，换策略或问用户。
