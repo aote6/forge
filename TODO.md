@@ -16,10 +16,11 @@
   - 建议：考虑将 post_toot 移入 RECONCILIATION 或新建 ACTION_TOOL_DECLARATIONS（用户明确指令可直接执行的副作用操作），让 Planning 阶段可见。
   - 优先级：P1（用户高频操作被破坏）
 
-## 工具分类设计待议（明天解决）
+## 工具分类设计待议（明天解决）——已解决（2026-08-26）
 
-- [ ] 当前工具分类三层（READ_ONLY / RECONCILIATION / MUTATION）+ 两阶段（Planning / Execution）规则过多，模型容易绕路。
-  - 发现场景：发嘟文时模型在 Planning 阶段看不到 post_toot，绕路用 run_command；forge_sync 因「安全对账」被单独分类，但规则不统一。
-  - 待议：是否简化为两层（READ / WRITE），所有非只读操作统一走「计划 → 确认 → 执行」；forge_sync 是否也应先确认再执行。
-  - 关联：post_toot Planning 阶段不可见（P1）与 forge_sync RECONCILIATION 分类是否保留，一并解决。
-  - 优先级：P0（设计层面，影响后续所有工具分类）
+- [x] 当前工具分类三层（READ_ONLY / RECONCILIATION / MUTATION）+ 两阶段（Planning / Execution）规则过多，模型容易绕路。
+  - 解决：Pending Action Gate 替换 Phase 状态机；工具始终完整可见，权限轴简化为 READ / WRITE；确认 = 冻结精确 tool_call 快照，不再整段计划。
+  - forge_sync 独立 FORGE_SYNC 策略：detect 只读观察；仅 FAST_FORWARD 才冻结 PendingAction 确认推进；CONFLICT STOP。
+  - 关联关闭：post_toot Planning 阶段不可见（P1，见上）随「工具始终可见」一并解决；RECONCILIATION 分类由 FORGE_SYNC 策略取代。
+  - 测试：test_pending_action_gate.py + test_forge_sync_gate.py；全量 510 passed。
+  - 优先级：P0 ✅

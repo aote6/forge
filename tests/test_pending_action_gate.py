@@ -17,10 +17,10 @@ def test_write_strategy_buckets():
     assert _write_strategy("str_replace") == "WRITE_CONFIRM"
     assert _write_strategy("post_toot") == "WRITE_CONFIRM"
     assert _write_strategy("write_file") == "WRITE_CONFIRM"
-    assert _write_strategy("forge_sync") == "WRITE_RECOVERY"
+    assert _write_strategy("forge_sync") == "FORGE_SYNC"
     assert _write_strategy("undo_last_tx") == "WRITE_RECOVERY"
     assert _write_strategy("submit_plan") == "READ"
-    assert "forge_sync" in _WRITE_RECOVERY_TOOLS
+    assert "forge_sync" not in _WRITE_RECOVERY_TOOLS
     assert "str_replace" in _WRITE_CONFIRM_TOOLS
     assert "forge_sync" not in _WRITE_CONFIRM_TOOLS
 

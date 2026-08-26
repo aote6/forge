@@ -1278,3 +1278,8 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - 问题：Planning/Execution 两阶段用 schema 裁剪控制工具可见性，所有 mutation（含 post_toot）在确认前对模型不可见；确认=整段计划+进入 Execution 后永久获得全部写权限。
 - 修复：删除 _run_planning/_run_execution/_handle_plan_reply 与 _pending_plan/_pending_task/_submitted_plan；新增 PendingAction 冻结精确 tool_call 快照（tool+args+tool_call_id），用户确认后 Runtime 直接执行快照不重问模型；工具始终完整可见；权限轴只有 READ/WRITE，策略桶 WRITE_CONFIRM/WRITE_RECOVERY/WRITE_BLOCKED；用户确认与安全 Guard 正交（确认不能绕过 Guard）。
 - 测试：新增 test_pending_action_gate.py；全量 501 passed。
+
+## forge_sync 独立 FORGE_SYNC 策略（2026-08-26）
+- 问题：Pending Action Gate 上线时 forge_sync 归入 WRITE_RECOVERY 桶，detect 也会被当作写操作冻结 PendingAction，语义不符。
+- 修复：新增独立 FORGE_SYNC 策略与 _forge_sync_observe_or_pending：detect 只读观察不冻结；仅 FAST_FORWARD 才冻结 PendingAction 确认推进；CONFLICT STOP。
+- 测试：新增 test_forge_sync_gate.py（9 个用例）；test_pending_action_gate.py 断言更新（forge_sync == FORGE_SYNC，移出 WRITE_RECOVERY）；全量 510 passed。

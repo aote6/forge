@@ -98,9 +98,11 @@ _MASTODON_TOOLS = {
 # WRITE_RECOVERY: 恢复一致性 → 按现有安全规则直接执行（仍受 Guard）
 # WRITE_BLOCKED: 由 _guard_* 判定，与确认正交
 # ---------------------------------------------------------------------------
-_WRITE_RECOVERY_TOOLS = frozenset({"forge_sync", "undo_last_tx"})
+# undo_last_tx: 恢复类，直接执行（仍受 Guard）
+# forge_sync: 不在此自动执行；循环内先 detect，仅 FAST_FORWARD 才进 PendingAction
+_WRITE_RECOVERY_TOOLS = frozenset({"undo_last_tx"})
 _WRITE_CONFIRM_TOOLS = frozenset(
-    (MUTATION_TOOL_NAMES | RECONCILIATION_TOOL_NAMES) - _WRITE_RECOVERY_TOOLS
+    (MUTATION_TOOL_NAMES | RECONCILIATION_TOOL_NAMES) - _WRITE_RECOVERY_TOOLS - {"forge_sync"}
 )
 
 
@@ -127,7 +129,12 @@ def _default_tool_schemas() -> list:
 
 
 def _write_strategy(tool_name: str) -> str:
-    """返回 READ | WRITE_CONFIRM | WRITE_RECOVERY。"""
+    """返回 READ | WRITE_CONFIRM | WRITE_RECOVERY | FORGE_SYNC。
+
+    FORGE_SYNC 单独处理：先 detect（只读观察）；仅需 FAST_FORWARD 推进时进 PendingAction。
+    """
+    if tool_name == "forge_sync":
+        return "FORGE_SYNC"
     if tool_name in _WRITE_RECOVERY_TOOLS:
         return "WRITE_RECOVERY"
     if tool_name in _WRITE_CONFIRM_TOOLS:
@@ -158,6 +165,9 @@ def _pending_action_summary(tool: str, args: dict | None) -> str:
         return f"post_toot visibility={vis} text={text[:200]!r}{'…' if len(text) > 200 else ''}"
     if tool == "delete_toot":
         return f"delete_toot status_id={args.get('status_id')!r}"
+    if tool == "forge_sync":
+        detail = str(args.get("_detect_summary") or args.get("status") or "FAST_FORWARD")
+        return f"forge_sync 将推进同步：\n{detail}"
     try:
         import json as _json
         blob = _json.dumps(args, ensure_ascii=False)
@@ -664,7 +674,7 @@ _CONTINUOUS_INSTRUCTION = """
 ## 工作方式
 你可以自由读取、分析、验证；需要改变外部状态（改文件、发嘟文等）时直接调用对应工具。
 Runtime 会在真正执行写操作前要求用户确认（确认的是这一次精确动作，不是「进入执行模式」）。
-forge_sync / undo_last_tx 按恢复一致性规则处理。
+forge_sync：先观察同步状态；仅需安全推进时再确认后执行。undo_last_tx 按恢复规则直接执行（仍受 Guard）。
 可选：复杂任务可用 submit_plan 先给出方案供讨论，但这不是写操作的必经前门。
 """
 
@@ -1506,7 +1516,10 @@ class Runtime:
         pa = self._pending_action
         if pa is None:
             return "没有待确认的写操作。"
-        tc = ToolCall(id=pa.tool_call_id or "pending", name=pa.tool, arguments=dict(pa.args or {}))
+        # 执行参数：去掉仅用于展示/门禁的内部键（如 forge_sync 的 _detect_*）
+        raw_args = dict(pa.args or {})
+        exec_args = {k: v for k, v in raw_args.items() if not str(k).startswith("_")}
+        tc = ToolCall(id=pa.tool_call_id or "pending", name=pa.tool, arguments=exec_args)
         # Guard 与确认正交：已确认也不能绕过
         guard = self._guard_path_map_degraded(tc.name)
         if guard is None:
@@ -1578,7 +1591,108 @@ class Runtime:
             return header + "\n" + cont
         return header
 
+    def _forge_sync_observe_or_pending(
+        self,
+        tc,
+        *,
+        resp_content: str | None,
+        task: str,
+        messages: list,
+        assistant_replies: list,
+        tool_calls_n: int,
+        working_set,
+    ):
+        """forge_sync 边界：detect 只读观察；仅 FAST_FORWARD 冻结 PendingAction。
+
+        返回:
+          ("result", ToolResult) — 无需推进，已可作为 tool 结果继续循环
+          ("pending", str) — 需要用户确认推进，调用方应 return 该展示文本
+          ("execute", None) — 无 sync_layer 等，走普通 executor
+        """
+        from forge.adapters.base import ToolResult
+        from forge.sync.sync_layer import (
+            CONFLICT,
+            FAST_FORWARD_DISK_TO_WORLD,
+            FAST_FORWARD_WORLD_TO_DISK,
+            IN_SYNC,
+            NOT_A_GIT_REPO,
+            WORLD_UNAVAILABLE,
+        )
+
+        if self.sync_layer is None:
+            return ("execute", None)
+
+        try:
+            report = self.sync_layer.detect()
+        except Exception as e:
+            return (
+                "result",
+                ToolResult.fail(display=f"forge_sync detect failed: {e}"),
+            )
+
+        status = report.status
+        display = report.format() if hasattr(report, "format") else str(report)
+        payload = {"mutation": False, **(report.to_dict() if hasattr(report, "to_dict") else {"status": status})}
+
+        # 不推进水位 / 不写盘：只读观察或 STOP
+        if status in (
+            IN_SYNC,
+            CONFLICT,
+            WORLD_UNAVAILABLE,
+            NOT_A_GIT_REPO,
+        ):
+            if status == CONFLICT:
+                display = (
+                    display
+                    + "\n建议: CONFLICT 时请明确决定以 World 还是 Disk/Git 为准，勿自动覆盖。"
+                )
+                return ("result", ToolResult.fail(display=display, payload=payload))
+            if status == IN_SYNC:
+                return ("result", ToolResult.ok(display=display, payload=payload))
+            # WORLD_UNAVAILABLE / NOT_A_GIT_REPO：不推进
+            return ("result", ToolResult.fail(display=display, payload=payload))
+
+        if status in (FAST_FORWARD_DISK_TO_WORLD, FAST_FORWARD_WORLD_TO_DISK):
+            summary = (
+                f"forge_sync 需要推进同步（{status}）\n"
+                f"{display}\n"
+                f"确认后将执行安全 fast-forward；CONFLICT 仍会 STOP。"
+            )
+            # 冻结快照：确认后 executor 调用完整 forge_sync→sync()（内部再 detect）
+            self._pending_action = PendingAction(
+                tool="forge_sync",
+                args={
+                    "_detect_status": status,
+                    "_detect_summary": display,
+                },
+                tool_call_id=getattr(tc, "id", None) or "pending",
+                summary=summary,
+                assistant_content=resp_content,
+            )
+            self._last_response_needs_display = True
+            from forge.adapters.base import Message as ForgeMessage
+
+            self.conversation.append(ForgeMessage(role="user", content=task))
+            self.conversation.append(
+                ForgeMessage(role="assistant", content=(resp_content or "") + "\n" + summary)
+            )
+            _append_conversation_log(self.workspace.project_root, "assistant", summary)
+            assistant_replies.append(summary)
+            self._last_tool_calls = tool_calls_n
+            self._last_assistant_replies = assistant_replies
+            return ("pending", summary + _ACTION_CONFIRM_PROMPT)
+
+        # 未知状态：保守不自动推进，仅报告
+        return (
+            "result",
+            ToolResult.fail(
+                display=display + f"\n未识别的 sync 状态 {status!r}，未推进。",
+                payload=payload,
+            ),
+        )
+
     def save_session_summary(self) -> None:
+
         """Persist last assistant replies for next process start."""
         replies = getattr(self, "_last_assistant_replies", None) or []
         # also pull from conversation
@@ -1748,6 +1862,56 @@ class Runtime:
                 assistant_replies.append(resp.content)
             for tc in resp.tool_calls:
                 strategy = _write_strategy(tc.name)
+                if strategy == "FORGE_SYNC":
+                    kind, payload = self._forge_sync_observe_or_pending(
+                        tc,
+                        resp_content=resp.content,
+                        task=task,
+                        messages=messages,
+                        assistant_replies=assistant_replies,
+                        tool_calls_n=tool_calls_n,
+                        working_set=working_set,
+                    )
+                    if kind == "pending":
+                        return payload
+                    if kind == "result":
+                        result = payload
+                        tool_calls_n += 1
+                        self._last_tool_display = result.display or ""
+                        self._last_tool_name = tc.name
+                        try:
+                            working_set.update_from_tool(
+                                tc.name, getattr(tc, "arguments", None) or {}, result
+                            )
+                            _save_task_state(self.workspace.project_root, working_set)
+                        except Exception as e:
+                            print(f"[forge] WorkingSet update failed: {e}", file=sys.stderr)
+                        self.emit(
+                            Event(
+                                EventType.TOOL_CALL_END,
+                                {
+                                    "name": tc.name,
+                                    "success": result.success,
+                                    "display": result.display,
+                                },
+                            )
+                        )
+                        llm_tool_content = sanitize_and_redact(result.display or "")
+                        messages.append(ForgeMessage(
+                            role="tool",
+                            content=llm_tool_content,
+                            tool_call_id=tc.id,
+                            name=tc.name,
+                        ))
+                        _append_conversation_log(
+                            self.workspace.project_root,
+                            "tool",
+                            result.display or "",
+                            name=tc.name,
+                            success=bool(result.success),
+                        )
+                        continue
+                    # kind == "execute": fall through to normal executor
                 if tc.name == SUBMIT_PLAN_TOOL_NAME:
                     # 兼容：可选方案输出，不打开写权限、不建立 phase
                     raw_args = tc.arguments or {}
