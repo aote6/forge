@@ -1,8 +1,9 @@
 """Runtime — session shell for Forge.
 
 Production path (唯一):
-  Runtime.run(task) → _run_conversation() 工具循环
-    → READ_ONLY + MUTATION schemas
+  Runtime.run(task) → Continuous Conversation + Pending Action Gate
+    → 完整工具 schema 始终可见
+    → READ 直接执行；WRITE_CONFIRM 冻结 PendingAction，用户确认后 Runtime 执行快照
     → ToolExecutor → IntentExecutor → Veritas commit/abort → Projection
 """
 from __future__ import annotations
@@ -32,6 +33,7 @@ from forge.tools.schemas import (
     MUTATION_TOOL_DECLARATIONS,
     MUTATION_TOOL_NAMES,
     RECONCILIATION_TOOL_DECLARATIONS,
+    RECONCILIATION_TOOL_NAMES,
     SUBMIT_PLAN_TOOL_NAME,
     SUBMIT_PLAN_DECLARATION,
 )
@@ -88,6 +90,89 @@ _MASTODON_TOOLS = {
     "post_toot",
     "delete_toot",
 }
+
+# ---------------------------------------------------------------------------
+# Write strategy buckets (权限轴只有 READ / WRITE；桶是策略不是 phase)
+# ---------------------------------------------------------------------------
+# WRITE_CONFIRM: 普通副作用 → 冻结 PendingAction，用户确认后 Runtime 执行快照
+# WRITE_RECOVERY: 恢复一致性 → 按现有安全规则直接执行（仍受 Guard）
+# WRITE_BLOCKED: 由 _guard_* 判定，与确认正交
+# ---------------------------------------------------------------------------
+_WRITE_RECOVERY_TOOLS = frozenset({"forge_sync", "undo_last_tx"})
+_WRITE_CONFIRM_TOOLS = frozenset(
+    (MUTATION_TOOL_NAMES | RECONCILIATION_TOOL_NAMES) - _WRITE_RECOVERY_TOOLS
+)
+
+
+@dataclass
+class PendingAction:
+    """一次待用户确认的精确写操作快照。确认后 Runtime 直接执行，不重问模型。"""
+
+    tool: str
+    args: dict
+    tool_call_id: str
+    summary: str = ""
+    # 确认前模型可能已输出的 assistant 文本 / 同批已处理的 tool 上下文，用于续跑
+    assistant_content: str | None = None
+
+
+def _default_tool_schemas() -> list:
+    """模型始终可见的完整工具表（含 mutation + forge_sync + 可选 submit_plan）。"""
+    return (
+        list(READ_ONLY_TOOL_DECLARATIONS)
+        + list(RECONCILIATION_TOOL_DECLARATIONS)
+        + list(MUTATION_TOOL_DECLARATIONS)
+        + [SUBMIT_PLAN_DECLARATION]
+    )
+
+
+def _write_strategy(tool_name: str) -> str:
+    """返回 READ | WRITE_CONFIRM | WRITE_RECOVERY。"""
+    if tool_name in _WRITE_RECOVERY_TOOLS:
+        return "WRITE_RECOVERY"
+    if tool_name in _WRITE_CONFIRM_TOOLS:
+        return "WRITE_CONFIRM"
+    if tool_name == SUBMIT_PLAN_TOOL_NAME:
+        return "READ"  # 可选方案输出，不授予写权限
+    return "READ"
+
+
+def _pending_action_summary(tool: str, args: dict | None) -> str:
+    args = args or {}
+    if tool == "str_replace":
+        path = args.get("path", "?")
+        old = str(args.get("old_string") or "")
+        new = str(args.get("new_string") or "")
+        return (
+            f"str_replace path={path}\n"
+            f"  old_string ({len(old)} chars): {old[:120]!r}{'…' if len(old) > 120 else ''}\n"
+            f"  new_string ({len(new)} chars): {new[:120]!r}{'…' if len(new) > 120 else ''}"
+        )
+    if tool == "write_file":
+        path = args.get("path", "?")
+        content = str(args.get("content") or "")
+        return f"write_file path={path} content_len={len(content)}"
+    if tool == "post_toot":
+        text = str(args.get("text") or "")
+        vis = args.get("visibility") or "unlisted"
+        return f"post_toot visibility={vis} text={text[:200]!r}{'…' if len(text) > 200 else ''}"
+    if tool == "delete_toot":
+        return f"delete_toot status_id={args.get('status_id')!r}"
+    try:
+        import json as _json
+        blob = _json.dumps(args, ensure_ascii=False)
+    except Exception:
+        blob = str(args)
+    if len(blob) > 400:
+        blob = blob[:400] + "…"
+    return f"{tool} {blob}"
+
+
+_ACTION_CONFIRM_PROMPT = (
+    "\n\n── 待确认的写操作 ──\n"
+    "回复「确认」执行上述精确动作；「取消」放弃；或直接说明你的修改意见（将取消本次动作并继续对话）。"
+)
+
 
 
 def _norm_path(p: str) -> str:
@@ -574,26 +659,14 @@ def _checkpoint_for_step(
     return ""
 
 
-# 规划/执行阶段注入到 system 的额外指令
-_PLANNING_INSTRUCTION = """
-## 当前阶段：规划（只读）
-你现在只有只读/查询工具，无法修改代码。需要改动时：先只读探索定位，
-然后调用 submit_plan 提交计划并停下等待确认。纯问答直接回答即可。
-
-重要：提交计划只有一种方式——调用 submit_plan 工具。用文字说"我提交计划"、"计划如下"而不实际调用 submit_plan，等同于什么都没提交，对话会直接结束且用户看不到任何计划。任何一步只要打算收尾进入"等待用户确认"，就必须在同一步里带上 submit_plan 的工具调用，不能只写文字。
-即使遇到 STOP_HINT（连续失败提示），也要遵守这条规则：换方向可以是"改用 submit_plan 把已知情况和建议方案提交给用户判断"，而不是仅用文字描述后停下。
+# 连续对话工作模型（无 Planning/Execution 硬阶段）
+_CONTINUOUS_INSTRUCTION = """
+## 工作方式
+你可以自由读取、分析、验证；需要改变外部状态（改文件、发嘟文等）时直接调用对应工具。
+Runtime 会在真正执行写操作前要求用户确认（确认的是这一次精确动作，不是「进入执行模式」）。
+forge_sync / undo_last_tx 按恢复一致性规则处理。
+可选：复杂任务可用 submit_plan 先给出方案供讨论，但这不是写操作的必经前门。
 """
-_EXECUTION_INSTRUCTION = """
-## 当前阶段：执行
-用户已确认以下计划，请按计划执行修改：
-{plan}
-
-执行中若发现计划需要偏离或推翻，先停下说明，不要擅自大改。
-"""
-_PLAN_CONFIRM_PROMPT = (
-    "\n\n── 以上是计划 ──\n"
-    "回复「确认」开始执行；「取消」放弃；或直接说出你的修改意见。"
-)
 
 # 确认词 + 后续分隔符：用于把「确认，另外改下 b.py」拆成「确认」+「补充意见」，
 # 避免把用户确认时顺带说的补充意见丢掉。
@@ -1194,10 +1267,8 @@ class Runtime:
         self.conversation = Conversation()
         self.conversation.append(Message(role="system", content=SYSTEM_INSTRUCTION))
         self._handlers: dict = {t: [] for t in EventType}
-        # 规划→确认→执行 状态：待用户确认的计划与原任务
-        self._pending_plan: str | None = None
-        self._pending_task: str | None = None
-        self._submitted_plan: str | None = None
+        # Continuous Conversation + Pending Action Gate（唯一等待确认状态）
+        self._pending_action: PendingAction | None = None
 
     def _startup_sync_check(self):
         """启动时只做同步状态检测，不自动 replay receipt 写磁盘（决策 3/8）。
@@ -1388,21 +1459,19 @@ class Runtime:
         return event
 
     def run(self, task: str, task_id: str | None = None) -> str:
-        """Single path: 规划(只读) → 用户确认 → 执行(mutation)。
+        """Continuous Conversation + Pending Action Gate.
 
-        默认先进入规划阶段：只读工具 + submit_plan。模型要改代码时必须
-        先 submit_plan，运行时把计划交还用户确认；确认后下一轮才放行
-        mutation 工具执行。纯问答直接返回，不需要确认。
+        工具始终可见。写操作需确认时冻结 PendingAction；用户确认后 Runtime
+        执行快照（不重问模型），然后继续普通对话。不存在 Execution 整表放行。
         """
         self._last_tool_calls = 0
         self._last_assistant_replies = []
         self._last_response_needs_display = False
 
-        # 有待确认的计划：先处理用户对计划的回复
-        if self._pending_plan is not None:
-            result = self._handle_plan_reply(task)
+        if self._pending_action is not None:
+            result = self._handle_pending_reply(task)
         else:
-            result = self._run_planning(task)
+            result = self._run_conversation(task)
 
         n = getattr(self, "_last_tool_calls", 0)
         print(f"[stats] tools={n}", file=sys.stderr)
@@ -1410,55 +1479,104 @@ class Runtime:
             return "(no response)"
         return result if isinstance(result, str) else str(result)
 
-    def _handle_plan_reply(self, reply: str) -> str:
-        """用户对计划回复：确认→执行；取消→放弃；其它→当作补充意见重新规划。"""
+    def _handle_pending_reply(self, reply: str) -> str:
+        """用户对 PendingAction 的回复：确认→执行快照；取消→放弃；其它→取消 pending 并当新任务。"""
         if is_confirm(reply):
-            plan = self._pending_plan
-            task = self._pending_task
-            self._pending_plan = None
-            self._pending_task = None
             extra = _strip_confirm_prefix(reply)
+            result_text = self._execute_pending_action()
             if extra:
-                task = (task or "") + "\n（用户确认时的补充）" + extra
-            return self._run_execution(task, plan)
+                # 确认时的补充意见：执行完再作为新用户输入继续对话
+                follow = self._run_conversation(
+                    "（用户确认时的补充）" + extra,
+                    extra_system=_CONTINUOUS_INSTRUCTION,
+                )
+                return (result_text or "") + ("\n" + follow if follow else "")
+            return result_text
         if is_cancel(reply):
-            self._pending_plan = None
-            self._pending_task = None
-            return "已取消，未做任何改动。"
-        # 其余内容：用户对计划有意见/新指令，并入原任务重新规划
-        original = self._pending_task or ""
-        self._pending_plan = None
-        self._pending_task = None
-        combined = original + "\n（用户对计划的补充/修正）" + reply
-        return self._run_planning(combined)
+            self._pending_action = None
+            return "已取消，未执行该写操作。"
+        # 非确认：放弃冻结动作，把输入当普通任务继续
+        self._pending_action = None
+        return self._run_conversation(reply, extra_system=_CONTINUOUS_INSTRUCTION)
 
-    def _run_planning(self, task: str) -> str:
-        """规划阶段：只读工具 + submit_plan。返回计划（待确认）或直接答案。"""
-        self._submitted_plan = None
-        result = self._run_conversation(
-            task,
-            schemas=list(READ_ONLY_TOOL_DECLARATIONS)
-            + list(RECONCILIATION_TOOL_DECLARATIONS)
-            + [SUBMIT_PLAN_DECLARATION],
-            extra_system=_PLANNING_INSTRUCTION,
-            require_plan=True,
-        )
-        if self._submitted_plan:
-            self._pending_plan = self._submitted_plan
-            self._pending_task = task
-            return result + _PLAN_CONFIRM_PROMPT
-        return result
+    def _execute_pending_action(self) -> str:
+        """执行已冻结的 PendingAction 快照：先 Guard，再 ToolExecutor，再清空 pending。"""
+        from forge.adapters.base import Message as ForgeMessage, ToolCall
 
-    def _run_execution(self, task: str, plan: str) -> str:
-        """执行阶段：用户已确认计划，放行 mutation 工具按计划执行。"""
-        self._submitted_plan = None
-        return self._run_conversation(
-            task,
-            schemas=list(READ_ONLY_TOOL_DECLARATIONS)
-            + list(RECONCILIATION_TOOL_DECLARATIONS)
-            + list(MUTATION_TOOL_DECLARATIONS),
-            extra_system=_EXECUTION_INSTRUCTION.format(plan=plan),
+        pa = self._pending_action
+        if pa is None:
+            return "没有待确认的写操作。"
+        tc = ToolCall(id=pa.tool_call_id or "pending", name=pa.tool, arguments=dict(pa.args or {}))
+        # Guard 与确认正交：已确认也不能绕过
+        guard = self._guard_path_map_degraded(tc.name)
+        if guard is None:
+            guard = self._guard_pending_verify(tc.name, tc.arguments)
+        if guard is None:
+            guard = self._guard_external_change(tc.name)
+        if guard is not None:
+            self._pending_action = None
+            display = guard.display or "被安全守卫拦截"
+            self.conversation.append(
+                ForgeMessage(role="assistant", content=f"待确认动作未执行：{display}")
+            )
+            return display
+
+        result = self.executor.execute(tc)
+        self._pending_action = None
+        self._last_tool_display = result.display or ""
+        self._last_tool_name = tc.name
+        self._last_tool_calls = getattr(self, "_last_tool_calls", 0) + 1
+        try:
+            ws = getattr(self, "_working_set", None)
+            if ws is not None:
+                ws.update_from_tool(tc.name, tc.arguments, result)
+                _save_task_state(self.workspace.project_root, ws)
+        except Exception as e:
+            print(f"[forge] WorkingSet update after pending failed: {e}", file=sys.stderr)
+
+        llm_tool_content = sanitize_and_redact(result.display or "")
+        # 写入对话：assistant 曾请求的 tool_call + tool result
+        self.conversation.append(
+            ForgeMessage(
+                role="assistant",
+                content=pa.assistant_content or "",
+                tool_calls=[tc],
+            )
         )
+        self.conversation.append(
+            ForgeMessage(
+                role="tool",
+                content=llm_tool_content,
+                tool_call_id=tc.id,
+                name=tc.name,
+            )
+        )
+        _append_conversation_log(
+            self.workspace.project_root,
+            "tool",
+            result.display or "",
+            name=tc.name,
+            success=bool(result.success),
+        )
+        self.emit(
+            Event(
+                EventType.TOOL_CALL_END,
+                {"name": tc.name, "success": result.success, "display": result.display},
+            )
+        )
+        # 执行后让模型根据结果继续（完整工具表，不再放行整表无确认写）
+        cont = self._run_conversation(
+            (
+                f"[系统] 用户已确认并执行 {tc.name}（tool_call_id={tc.id}）。"
+                f"结果：\n{result.display or '(empty)'}\n"
+                "请根据结果继续：验证、再读、或提出下一步写操作（写操作仍需再次确认）。"
+            ),
+            extra_system=_CONTINUOUS_INSTRUCTION,
+        )
+        header = f"已执行 {tc.name}：\n{result.display or ''}"
+        if cont and cont not in (result.display or ""):
+            return header + "\n" + cont
+        return header
 
     def save_session_summary(self) -> None:
         """Persist last assistant replies for next process start."""
@@ -1509,9 +1627,11 @@ class Runtime:
         )
 
     def _run_conversation(
-        self, task: str, schemas: list, extra_system: str = "", require_plan: bool = False
+        self, task: str, schemas: list | None = None, extra_system: str = "", require_plan: bool = False
     ) -> str:
-        """Tool-calling loop；schemas 决定本轮可见工具（规划=只读，执行=只读+mutation）。"""
+        """Tool-calling loop；完整工具表默认可见；WRITE_CONFIRM 冻结 PendingAction。"""
+        if schemas is None:
+            schemas = _default_tool_schemas()
         from forge.adapters.base import Message as ForgeMessage
 
         system = self._initial_system(extra_system)
@@ -1541,7 +1661,6 @@ class Runtime:
         assistant_replies: list[str] = []
         half = max(5, MAX_AGENT_STEPS // 2)
         nudged = False
-        plan_nudge_used = False
         # P1-1: task-level Working Set；P2-4 从 .forge/task_state.json 恢复上次
         # 未完成任务的上下文（goal 始终以本次 task 为准，其余字段恢复）。
         working_set = WorkingSet.from_dict(
@@ -1610,29 +1729,6 @@ class Runtime:
                 except Exception:
                     pass
             if not resp.tool_calls:
-                content_text = resp.content or ""
-                has_plan_keywords = any(
-                    kw in content_text
-                    for kw in ["计划", "步骤", "方案", "修改如下", "等待确认", "确认后"]
-                )
-                if (
-                    require_plan
-                    and self._submitted_plan is None
-                    and not plan_nudge_used
-                    and has_plan_keywords
-                ):
-                    plan_nudge_used = True
-                    if resp.content:
-                        assistant_replies.append(resp.content)
-                    messages.append(ForgeMessage(
-                        role="user",
-                        content=(
-                            "你刚才只用文字描述了计划，没有调用 submit_plan 工具——"
-                            "这不算提交，用户什么都看不到。请现在立即调用 submit_plan，"
-                            "把计划内容作为参数传入。"
-                        ),
-                    ))
-                    continue
                 if resp.content:
                     self.conversation.append(ForgeMessage(role="user", content=task))
                     self.conversation.append(ForgeMessage(role="assistant", content=resp.content))
@@ -1651,13 +1747,11 @@ class Runtime:
             if resp.content:
                 assistant_replies.append(resp.content)
             for tc in resp.tool_calls:
+                strategy = _write_strategy(tc.name)
                 if tc.name == SUBMIT_PLAN_TOOL_NAME:
-                    # 模型提交计划 → 中断本轮，交还用户确认，不放行 mutation。
+                    # 兼容：可选方案输出，不打开写权限、不建立 phase
                     raw_args = tc.arguments or {}
-                    plan_arg = raw_args.get("plan")
-                    content = resp.content or ""
-                    plan = plan_arg or content
-                    self._submitted_plan = plan
+                    plan = raw_args.get("plan") or (resp.content or "")
                     self._last_response_needs_display = True
                     self.conversation.append(ForgeMessage(role="user", content=task))
                     self.conversation.append(ForgeMessage(role="assistant", content=plan))
@@ -1667,7 +1761,33 @@ class Runtime:
                     assistant_replies.append(plan)
                     self._last_tool_calls = tool_calls_n
                     self._last_assistant_replies = assistant_replies
-                    return plan or "(no plan)"
+                    return (plan or "(no plan)") + (
+                        "\n\n── 以上是可选方案 ──\n"
+                        "可直接回复意见继续讨论；需要改文件/发嘟时请调用对应工具，"
+                        "Runtime 会在执行前要求确认。"
+                    )
+                if strategy == "WRITE_CONFIRM":
+                    # 冻结精确快照，本轮停止；不执行、不打开其它 mutation 权限
+                    summary = _pending_action_summary(tc.name, getattr(tc, "arguments", None) or {})
+                    self._pending_action = PendingAction(
+                        tool=tc.name,
+                        args=dict(getattr(tc, "arguments", None) or {}),
+                        tool_call_id=getattr(tc, "id", None) or "pending",
+                        summary=summary,
+                        assistant_content=resp.content,
+                    )
+                    self._last_response_needs_display = True
+                    self.conversation.append(ForgeMessage(role="user", content=task))
+                    self.conversation.append(
+                        ForgeMessage(role="assistant", content=(resp.content or "") + "\n" + summary)
+                    )
+                    _append_conversation_log(
+                        self.workspace.project_root, "assistant", summary
+                    )
+                    assistant_replies.append(summary)
+                    self._last_tool_calls = tool_calls_n
+                    self._last_assistant_replies = assistant_replies
+                    return summary + _ACTION_CONFIRM_PROMPT
                 self.emit(
                     Event(EventType.TOOL_CALL_START, {"name": tc.name, "args": tc.arguments})
                 )

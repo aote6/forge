@@ -1273,3 +1273,8 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - 附带修复：Planning 阶段模型「用文字说提交计划但未调用 submit_plan」问题——强化 _PLANNING_INSTRUCTION + _run_conversation 加 require_plan 精确纠偏（仅当文字含「计划/步骤/方案」等关键词且未调 submit_plan 时触发一次）。
 - 第二个附带修复：submit_plan 计划正文不显示——模型流式输出 content 后，show_assistant() 因「已流式过」跳过最终返回值，导致计划正文丢失。修复：show_assistant() 加 force 参数；Runtime 加 _last_response_needs_display 标记；submit_plan 时强制显示计划正文，普通问答保持不重复。
 - 测试：新增 tests/test_reconciliation_schema_exposure.py（2 个双阶段可见性用例）；更新 test_p2_2_sync_system_hint.py / test_tool_surface_alignment.py 迁移到 RECONCILIATION 工具面；全量 499 passed。
+
+## Pending Action Gate：Phase 状态机替换（2026-08-26）
+- 问题：Planning/Execution 两阶段用 schema 裁剪控制工具可见性，所有 mutation（含 post_toot）在确认前对模型不可见；确认=整段计划+进入 Execution 后永久获得全部写权限。
+- 修复：删除 _run_planning/_run_execution/_handle_plan_reply 与 _pending_plan/_pending_task/_submitted_plan；新增 PendingAction 冻结精确 tool_call 快照（tool+args+tool_call_id），用户确认后 Runtime 直接执行快照不重问模型；工具始终完整可见；权限轴只有 READ/WRITE，策略桶 WRITE_CONFIRM/WRITE_RECOVERY/WRITE_BLOCKED；用户确认与安全 Guard 正交（确认不能绕过 Guard）。
+- 测试：新增 test_pending_action_gate.py；全量 501 passed。
