@@ -41,6 +41,13 @@
   - 建议：新增独立 PTY/交互终端能力，与 run_command 批处理捕获分离。run_command 继续给模型拿结果；新工具（如 run_terminal）让用户直接看真实终端过程，模型只拿结束摘要。具体设计待做。
   - 优先级：P0
 
+### 主从分工 / 行为契约
+- [ ] 主 AI 默认还是自己干活，没有把复杂执行任务派给子 AI。
+  - 发现场景：Agent ABI v1 六步完成后，启动 Forge 处理 CONFLICT，主 AI 自己用 run_command 分析、删除、提交，没有一次使用 spawn_subagent。主 AI 监督子 AI 的能力已建成，但主 AI 没有被强制使用。
+  - 影响：Agent ABI 的监督通道形同虚设。子 AI 的边界修好了，但主 AI 默认行为不变，用户看到的还是主 AI 自己从头干到尾。
+  - 建议：在 system_prompt 里把 spawn_subagent 从“可选探索工具”改为“默认执行路径”。明确主 AI 职责收窄为判断、派工、验收；读多文件探索、跨目录定位、小范围修改并回报等任务必须派子 AI。主 AI 自己直接做工程活应该是例外，不是常态。
+  - 优先级：P0
+
 ## 已解决
 
 ### 工具可见性
@@ -55,3 +62,4 @@
   - 解决：Pending Action Gate 替换 Phase 状态机；权限轴简化为 READ / WRITE；forge_sync 独立 FORGE_SYNC 策略（2026-08-26）。
   - 测试：test_pending_action_gate.py + test_forge_sync_gate.py；全量 510 passed。
   - 优先级：P0 ✅
+
