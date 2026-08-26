@@ -1283,3 +1283,48 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - 问题：Pending Action Gate 上线时 forge_sync 归入 WRITE_RECOVERY 桶，detect 也会被当作写操作冻结 PendingAction，语义不符。
 - 修复：新增独立 FORGE_SYNC 策略与 _forge_sync_observe_or_pending：detect 只读观察不冻结；仅 FAST_FORWARD 才冻结 PendingAction 确认推进；CONFLICT STOP。
 - 测试：新增 test_forge_sync_gate.py（9 个用例）；test_pending_action_gate.py 断言更新（forge_sync == FORGE_SYNC，移出 WRITE_RECOVERY）；全量 510 passed。
+
+## Agent ABI v1：主 AI ↔ 子 AI 硬契约实现（2026-08-26）
+
+- 背景：真实使用审计发现 8 个问题，归并为 5 个根因。核心不是缺功能，而是主 AI 与子 AI 之间只有自然语言 task，没有硬边界。
+- 方案：参照 Forge → Veritas 的 WRI 思路，建立 Agent ABI，把主 AI 的授权和子 AI 的回报变成可追溯、可拒绝、可验收的硬接口。
+- 契约文档：docs/AGENT_ABI.md（v1.3，含冻结增补裁定与工具映射补充裁定）。
+
+### 第一步：ToolCallRecord append-only 日志
+- 问题：子 AI 的工具调用没有不可变记录，Evidence 无法独立反查。
+- 修复：新建 forge/tool_call_record.py。每次真实工具调用前分配 tool_call_id，执行后写入 .forge/tool_call_records.jsonl。write_record 失败不影响工具结果；get_record 供验收反查。
+- 测试：全量 510 passed。
+
+### 第二步：工具映射表 + 命令前缀白名单
+- 问题：约束判定层需要把 tool_name 确定性翻译成 action / path / command_class，不能靠模型判断。
+- 修复：新建 forge/tool_action_map.py（39 个工具全部登记，apply_patch 标记 __UNPARSEABLE_PATH__）与 forge/command_class_prefixes.py（长前缀优先，未登记 unknown）。
+- 测试：全量 510 passed。
+
+### 第三步：constraint_enforcer 约束判定
+- 问题：not_allowed / scope.paths 如果只进 prompt，就是假硬约束。
+- 修复：新建 forge/constraint_enforcer.py。未登记工具默认拒绝；not_allowed 黑名单先于 scope.paths 白名单；machine 拒 / advisory 记违规放行；command_class unknown 且有约束时拒；path_in_scope 修复 src2 不匹配 src。
+- 测试：全量 510 passed。
+
+### 第四步：stop_when 硬终止
+- 问题：子 AI 没有显式停止信号，stop_when 藏在自然语言里。
+- 修复：subagent.py 新增 STOP_WHEN: met/not_met 行信号。met 时丢弃本轮 tool_calls 直接产出结论；缺失或非法值按 not_met；strip_stop_when 去掉控制行。
+- 测试：全量 510 passed。
+
+### 第五步：AgentResult 组装 + AgentTask 契约
+- 问题：子 AI 直接返回自然语言结论，主 AI 无法区分“真完成”和“看起来完成”。
+- 修复：新建 forge/agent_abi.py。AgentTask 五字段；AgentResult status 仅 done/blocked/need_decision 且由机器组装；Evidence 必须绑定真实 tool_call_id；done_when v1 代理 = stop_when_met 且 evidence 非空；run_subagent 签名从 task: str 改成 AgentTask，返回 AgentResult；constraint_enforcer 接入子循环；runtime spawn_subagent 最小胶合。
+- 测试：更新 test_subagent_and_ux.py / test_subagent_conclusion.py；全量 510 passed。
+
+### 第六步：主 AI 验收 precheck + verify_tool_call
+- 问题：主 AI 没有独立反查工具，验收只能信 conclusion 文本。
+- 修复：agent_abi.py 新增 lookup_evidence_records / precheck_agent_result（磁盘再验，done 证据全失效降级 blocked）；新增只读工具 verify_tool_call，只返回 record 原始字段不返回 claim；system_prompt 加验收纪律；tool_action_map 登记 verify_tool_call。
+- 测试：全量 510 passed。
+
+### 补测试
+- 问题：六个新模块没有专门测试，只有旧测试适配。
+- 修复：新增 7 个测试文件共 43 个用例，覆盖 ToolCallRecord、工具映射、命令前缀、约束判定、Agent ABI 组装/precheck、stop_when、verify_tool_call。
+- 测试：新增 43 passed；全量 553 passed。
+
+### 当前状态
+- Agent ABI v1 六步实现全部完成并推送。
+- 剩余未解决：终端体验问题（问题 8）——run_command 捕获模式导致动画/实时输出无法展示给用户，待设计 PTY/交互终端方案。已记入 TODO.md，优先级 P0。
