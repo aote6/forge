@@ -6,10 +6,19 @@ to the parent context (no tool-call history).
 """
 from __future__ import annotations
 
+import os
 import re
+import uuid
 
 from forge.adapters.base import BaseAdapter, Message, ToolCall, ToolResult
 from forge.core.sanitizer import sanitize_and_redact
+from forge.tool_call_record import (
+    ToolCallRecord,
+    current_timestamp,
+    get_record,
+    new_tool_call_id,
+    write_record,
+)
 
 SUBAGENT_MAX_STEPS = 15
 
@@ -92,17 +101,52 @@ def filter_schemas_for_subagent(all_schemas: list[dict]) -> list[dict]:
     return [s for s in all_schemas if s.get("name") in allow]
 
 
-def _execute_tool(tools: dict, tc: ToolCall) -> ToolResult:
+def _execute_tool(
+    tools: dict,
+    tc: ToolCall,
+    *,
+    project_root: str | os.PathLike,
+    subtask_id: str,
+) -> ToolResult:
     fn = tools.get(tc.name)
     if fn is None:
         return ToolResult.fail(display=f"subagent: unknown tool {tc.name}")
+
+    tool_call_id = new_tool_call_id()
+    args = tc.arguments if isinstance(tc.arguments, dict) else {}
+
     try:
-        args = tc.arguments if isinstance(tc.arguments, dict) else {}
-        return fn(**args)
+        result = fn(**args)
+        status = "success" if getattr(result, "success", False) else "error"
+        error = None if status == "success" else getattr(result, "display", None)
+        output = getattr(result, "payload", None)
+        record_result = result
     except TypeError as e:
-        return ToolResult.fail(display=f"subagent tool arg error ({tc.name}): {e}")
+        status = "error"
+        error = f"arg error: {e}"
+        output = None
+        record_result = ToolResult.fail(display=f"subagent tool arg error ({tc.name}): {e}")
     except Exception as e:
-        return ToolResult.fail(display=f"subagent tool failed ({tc.name}): {e}")
+        status = "error"
+        error = f"exception: {e}"
+        output = None
+        record_result = ToolResult.fail(display=f"subagent tool failed ({tc.name}): {e}")
+
+    write_record(
+        project_root,
+        ToolCallRecord(
+            tool_call_id=tool_call_id,
+            subtask_id=subtask_id,
+            tool_name=tc.name,
+            input=args,
+            output=output,
+            status=status,
+            error=error,
+            timestamp=current_timestamp(),
+        ),
+    )
+
+    return record_result
 
 
 def run_subagent(
@@ -112,8 +156,12 @@ def run_subagent(
     task: str,
     *,
     max_steps: int = SUBAGENT_MAX_STEPS,
+    project_root: str | os.PathLike = ".",
+    subtask_id: str | None = None,
 ) -> str:
     """Run an isolated tool loop; return final text only."""
+    if subtask_id is None:
+        subtask_id = f"sub_{uuid.uuid4().hex[:12]}"
     schemas = filter_schemas_for_subagent(schemas)
     tool_names = {s["name"] for s in schemas}
     tools = {k: v for k, v in tools.items() if k in tool_names}
@@ -136,7 +184,9 @@ def run_subagent(
             )
         )
         for tc in resp.tool_calls:
-            result = _execute_tool(tools, tc)
+            result = _execute_tool(
+                tools, tc, project_root=project_root, subtask_id=subtask_id
+            )
             messages.append(
                 Message(
                     role="tool",
