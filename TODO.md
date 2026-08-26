@@ -25,6 +25,22 @@
   - 建议：逐步迁移为真实 PendingAction 流程（冻结 → 确认 → 执行），不再 monkeypatch 清空 `_WRITE_CONFIRM_TOOLS`。
   - 优先级：P2
 
+### 同步安全 / 行为契约
+
+- [ ] CONFLICT/FAST_FORWARD 状态下主循环缺少行为契约：应把「冲突分析 + 解决建议」列给用户、停止并等拍板，而不是自主决定删除文件并提交。
+  - 发现场景：真实 CONFLICT 处理时，forge_sync 返回 CONFLICT，主循环未停下等用户决策，而是自行 `run_command rm` 删除 10 个备份文件 + `git commit` + forge_sync 推进到 IN_SYNC，全程未列分析与建议。
+  - 影响：CONFLICT/FAST_FORWARD 是决策停止点，主循环自主写操作破坏用户对同步的掌控。漏洞链：① run_command 不在 `MUTATION_TOOL_NAMES`、不在 `_WRITE_CONFIRM_TOOLS`，写命令（rm/git commit）可绕过 Pending Action Gate；② `_guard_external_change` 对非 MUTATION 工具直接放行，CONFLICT 分叉态下照样执行；③ `is_dangerous_command` 黑名单不拦 git commit / reset --hard / stash drop / branch -D / 项目内 rm *.bak；④ `needs_git_confirmation` + `GIT_CONFIRM_COMMANDS` 定义在 security.py 但无调用方（死代码）；⑤ 启动 CONFLICT 提示只是软提示，无「列分析→停止→等拍板」指令。
+  - 建议：两层修复——① 行为契约：system_prompt + `_sync_status_system_hint` 明确「CONFLICT/FAST_FORWARD = 分析 + 建议 + 等拍板，禁止任何自主写操作（含 run_command 的 rm/git commit）」；② 硬兜底：CONFLICT 状态下 run_command 写命令（vcs_write/destructive，复用 `COMMAND_CLASS_PREFIXES` + `needs_git_confirmation`）接入确认门禁，并补测试断言 CONFLICT 态下 `rm`/`git commit` 不直接执行。
+  - 优先级：P0
+
+### 终端体验 / 产品可见性
+
+- [ ] Forge 无法让用户直接看到终端动画/实时输出效果。
+  - 发现场景：彩虹雨脚本写完后，Forge 用 run_command 运行成功，但用户只能看到静态 ASCII 摘要，看不到彩虹色、代码雨下落、字母聚成过程。用户必须退出 Forge 自己跑才能看。
+  - 影响：任何依赖 ANSI 颜色、光标移动、实时刷新的命令（动画、进度条、交互界面）在 Forge 里都无法演示给用户。对拍视频、产品效果验收是硬伤。
+  - 建议：新增独立 PTY/交互终端能力，与 run_command 批处理捕获分离。run_command 继续给模型拿结果；新工具（如 run_terminal）让用户直接看真实终端过程，模型只拿结束摘要。具体设计待做。
+  - 优先级：P0
+
 ## 已解决
 
 ### 工具可见性
@@ -39,10 +55,3 @@
   - 解决：Pending Action Gate 替换 Phase 状态机；权限轴简化为 READ / WRITE；forge_sync 独立 FORGE_SYNC 策略（2026-08-26）。
   - 测试：test_pending_action_gate.py + test_forge_sync_gate.py；全量 510 passed。
   - 优先级：P0 ✅
-
-### 终端体验 / 产品可见性
-- [ ] Forge 无法让用户直接看到终端动画/实时输出效果。
-  - 发现场景：彩虹雨脚本写完后，Forge 用 run_command 运行成功，但用户只能看到静态 ASCII 摘要，看不到彩虹色、代码雨下落、字母聚成过程。用户必须退出 Forge 自己跑才能看。
-  - 影响：任何依赖 ANSI 颜色、光标移动、实时刷新的命令（动画、进度条、交互界面）在 Forge 里都无法演示给用户。对拍视频、产品效果验收是硬伤。
-  - 建议：新增独立 PTY/交互终端能力，与 run_command 批处理捕获分离。run_command 继续给模型拿结果；新工具（如 run_terminal）让用户直接看真实终端过程，模型只拿结束摘要。具体设计待做。
-  - 优先级：P0
