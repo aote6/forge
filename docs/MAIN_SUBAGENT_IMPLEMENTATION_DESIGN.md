@@ -2,7 +2,7 @@
 
 Type: Design / Implementation
 Authority: Binding
-Status: Active v2
+Status: Active v3
 Scope: 主 AI 从执行者到派发者的实现设计
 
 ---
@@ -128,6 +128,45 @@ run_command 的 cmd 参数做静态前缀分类。
 对执行面工具调用前后取状态快照。
 
 调用后有变化但未走 WRITE_CONFIRM → 标记未授权变更。
+
+### 4.2.1 「世界变化」的定义
+
+Layer B 的「世界变化」指工程世界的实质变化，不是文件系统任何字节变化。
+
+工程世界变化包括：
+
+- 工程源文件 / 配置 / 数据文件被新增、修改、删除
+- Git 跟踪内容发生变化（不含缓存与验证副产物）
+- World 对象 / 链接关系被改变
+
+以下不属于工程世界变化，属于验证副作用：
+
+- __pycache__/**
+- .pytest_cache/**
+- .mypy_cache/**
+- .pyright/**
+- .forge/last_test_result.json
+
+验证副作用是工具运行的自然产物，不改变工程实质内容。
+
+### 4.2.2 三类工具与 Layer B 判定
+
+| 类别 | Gate | Layer B |
+|------|------|---------|
+| READ_ONLY | ALLOW | 任何工程变化 = unauthorized |
+| VERIFY | ALLOW | 白名单验证副作用合法；其他工程变化 = unauthorized |
+| WRITE | PAUSE | 用户确认后允许变化 |
+
+VERIFY 不是「绕过 Layer B」。
+
+VERIFY 的预期副作用属于 Gate 已授权的变化。
+
+Layer B 对 VERIFY 做：
+
+    实际变化 − 已授权验证副作用 = 剩余
+    剩余非空 → unauthorized_world_change
+
+因此 run_test_structured 写 .pytest_cache 合法；若它修改 forge/runtime.py，仍然会被 Layer B 抓住。
 
 ### 4.3 判定优先级（写死）
 
