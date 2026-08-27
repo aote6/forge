@@ -204,9 +204,10 @@ def test_full_schemas_still_visible(tmp_path):
     rt.sync_layer = None
     rt._run_conversation("hi")
     names = {s["name"] for s in adapter.calls[0]}
-    assert "forge_sync" in names
-    assert "str_replace" in names
-    assert "post_toot" in names
+    assert "spawn_subagent" in names
+    assert "verify_tool_call" in names
+    assert "forge_sync" not in names
+    assert "str_replace" not in names
 
 
 def test_guard_blocks_confirmed_forge_sync(tmp_path):

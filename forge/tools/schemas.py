@@ -179,71 +179,7 @@ READ_ONLY_TOOL_DECLARATIONS = [
             },
             "required": ["path"],
         },
-    },
-    {
-        "name": "todo_write",
-        "description": "写入/更新当前任务的待办列表。复杂任务（>3 步）应先拆解。items: [{id?, content, status}] status=pending|in_progress|done。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "description": "[{id?, content, status}]",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "string"},
-                            "content": {"type": "string"},
-                            "status": {"type": "string"}
-                        }
-                    },
-                },
-            },
-            "required": ["items"],
-        },
-    },
-    {
-        "name": "todo_list",
-        "description": "查看当前内存中的待办列表。",
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "spawn_subagent",
-        "description": (
-            "派生子 Agent 处理复杂探索/定位子任务。"
-            "子 Agent 有独立上下文与工具循环（只读+str_replace/write_file），"
-            "最多 15 步；只把最终结论返回给主 Agent，避免搜索过程污染上下文。"
-            "适合：跨多文件找 bug、梳理调用链、做小范围修复。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "task": {"type": "string", "description": "给子 Agent 的明确子任务描述"},
-                "max_steps": {"type": "integer", "description": "默认 15，上限 15"},
-            },
-            "required": ["task"],
-        },
-    },
-    {
-        "name": "verify_tool_call",
-        "description": (
-            "按 tool_call_id 独立反查 ToolCallRecord（只读）。"
-            "返回 tool_name/input/output/status/error/subtask_id；"
-            "不返回子 Agent 的 claim 或 conclusion。"
-            "验收 spawn_subagent 的 done 候选时必须对 evidence 中的 id 调用本工具。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "tool_call_id": {
-                    "type": "string",
-                    "description": "Evidence 中的 tool_call_id（如 tc_…）",
-                },
-            },
-            "required": ["tool_call_id"],
-        },
-    },
-    {
+    },    {
         "name": "session_changes",
         "description": (
             "当前 session 的 mutation evidence（path/tx/summary）。"
@@ -561,3 +497,85 @@ SUBMIT_PLAN_DECLARATION = {
         "required": ["plan"],
     },
 }
+
+# ---------------------------------------------------------------------------
+# Control plane — main AI only (Phase 1 tool-plane isolation)
+# ---------------------------------------------------------------------------
+CONTROL_PLANE_TOOL_DECLARATIONS = [
+    {
+        "name": "todo_write",
+        "description": "写入/更新当前任务的待办列表。复杂任务（>3 步）应先拆解。items: [{id?, content, status}] status=pending|in_progress|done。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "description": "[{id?, content, status}]",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "content": {"type": "string"},
+                            "status": {"type": "string"}
+                        }
+                    },
+                },
+            },
+            "required": ["items"],
+        },
+    },
+    {
+        "name": "todo_list",
+        "description": "查看当前内存中的待办列表。",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "spawn_subagent",
+        "description": (
+            "派生子 Agent 处理复杂探索/定位子任务。"
+            "子 Agent 有独立上下文与工具循环（只读+str_replace/write_file），"
+            "最多 15 步；只把最终结论返回给主 Agent，避免搜索过程污染上下文。"
+            "适合：跨多文件找 bug、梳理调用链、做小范围修复。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "给子 Agent 的明确子任务描述"},
+                "max_steps": {"type": "integer", "description": "默认 15，上限 15"},
+            },
+            "required": ["task"],
+        },
+    },
+    {
+        "name": "verify_tool_call",
+        "description": (
+            "按 tool_call_id 独立反查 ToolCallRecord（只读）。"
+            "返回 tool_name/input/output/status/error/subtask_id；"
+            "不返回子 Agent 的 claim 或 conclusion。"
+            "验收 spawn_subagent 的 done 候选时必须对 evidence 中的 id 调用本工具。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tool_call_id": {
+                    "type": "string",
+                    "description": "Evidence 中的 tool_call_id（如 tc_…）",
+                },
+            },
+            "required": ["tool_call_id"],
+        },
+    },
+    SUBMIT_PLAN_DECLARATION,
+]
+
+CONTROL_PLANE_TOOLS = frozenset(d["name"] for d in CONTROL_PLANE_TOOL_DECLARATIONS)
+
+# Execution plane — subagent only
+EXECUTION_PLANE_TOOL_DECLARATIONS = (
+    list(READ_ONLY_TOOL_DECLARATIONS)
+    + list(MUTATION_TOOL_DECLARATIONS)
+    + list(RECONCILIATION_TOOL_DECLARATIONS)
+)
+
+EXECUTION_PLANE_TOOLS = frozenset(d["name"] for d in EXECUTION_PLANE_TOOL_DECLARATIONS)
+

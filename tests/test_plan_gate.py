@@ -34,7 +34,9 @@ class _FakeAdapter:
 
 
 def test_full_schemas_include_mutations_and_sync(tmp_path):
-    """模型默认看到 str_replace / post_toot / forge_sync。"""
+    """Phase 1: 主循环默认只暴露控制面；执行面工具不在默认 schema。"""
+    from forge.tools.schemas import CONTROL_PLANE_TOOLS
+
     adapter = _FakeAdapter([
         Message(role="assistant", content="只读回答即可。", tool_calls=None),
     ])
@@ -51,10 +53,11 @@ def test_full_schemas_include_mutations_and_sync(tmp_path):
     rt._run_conversation("看看这个函数")
 
     names = {s["name"] for s in adapter.calls[0]}
-    assert "str_replace" in names
-    assert "post_toot" in names
-    assert "forge_sync" in names
-    assert "read_file" in names
+    assert names == CONTROL_PLANE_TOOLS
+    assert "str_replace" not in names
+    assert "forge_sync" not in names
+    assert "read_file" not in names
+    assert "spawn_subagent" in names
 
 
 def test_write_confirm_freezes_pending_action(tmp_path):
@@ -194,8 +197,13 @@ def test_cancel_clears_pending():
 
 
 def test_default_schemas_helper():
+    from forge.tools.schemas import CONTROL_PLANE_TOOLS, EXECUTION_PLANE_TOOLS
+
     names = {s["name"] for s in _default_tool_schemas()}
-    for n in ("str_replace", "post_toot", "forge_sync", "read_file", "submit_plan"):
+    assert names == CONTROL_PLANE_TOOLS
+    for n in ("spawn_subagent", "verify_tool_call", "todo_write", "todo_list", "submit_plan"):
         assert n in names
-    # mutations present
-    assert {d["name"] for d in MUTATION_TOOL_DECLARATIONS} <= names
+    for n in ("str_replace", "post_toot", "forge_sync", "read_file"):
+        assert n not in names
+    # mutations live on execution plane
+    assert {d["name"] for d in MUTATION_TOOL_DECLARATIONS} <= EXECUTION_PLANE_TOOLS

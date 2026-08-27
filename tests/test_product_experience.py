@@ -13,9 +13,13 @@ from forge.workspace import Workspace
 
 
 def test_schemas_include_product_tools():
+    from forge.tools.schemas import CONTROL_PLANE_TOOLS
+
     ro = {d["name"] for d in READ_ONLY_TOOL_DECLARATIONS}
     mu = {d["name"] for d in MUTATION_TOOL_DECLARATIONS}
-    assert "todo_write" in ro and "todo_list" in ro and "web_fetch" in ro
+    assert "web_fetch" in ro
+    assert "todo_write" in CONTROL_PLANE_TOOLS and "todo_list" in CONTROL_PLANE_TOOLS
+    assert "todo_write" not in ro
     assert "apply_patch" in mu
 
 

@@ -36,6 +36,10 @@ from forge.tools.schemas import (
     RECONCILIATION_TOOL_NAMES,
     SUBMIT_PLAN_TOOL_NAME,
     SUBMIT_PLAN_DECLARATION,
+    CONTROL_PLANE_TOOL_DECLARATIONS,
+    CONTROL_PLANE_TOOLS,
+    EXECUTION_PLANE_TOOL_DECLARATIONS,
+    EXECUTION_PLANE_TOOLS,
 )
 from forge.workspace import Workspace
 from forge.world import WorldRuntime
@@ -119,13 +123,8 @@ class PendingAction:
 
 
 def _default_tool_schemas() -> list:
-    """模型始终可见的完整工具表（含 mutation + forge_sync + 可选 submit_plan）。"""
-    return (
-        list(READ_ONLY_TOOL_DECLARATIONS)
-        + list(RECONCILIATION_TOOL_DECLARATIONS)
-        + list(MUTATION_TOOL_DECLARATIONS)
-        + [SUBMIT_PLAN_DECLARATION]
-    )
+    """主 AI 可见的控制面工具表（Phase 1：不含执行面工具）。"""
+    return list(CONTROL_PLANE_TOOL_DECLARATIONS)
 
 
 def _write_strategy(tool_name: str) -> str:
@@ -1252,17 +1251,16 @@ class Runtime:
                 precheck_agent_result,
             )
             from forge.subagent import run_subagent
-            from forge.tools.schemas import MUTATION_TOOL_DECLARATIONS
-
             try:
-                schemas = list(READ_ONLY_TOOL_DECLARATIONS) + list(MUTATION_TOOL_DECLARATIONS)
+                schemas = list(EXECUTION_PLANE_TOOL_DECLARATIONS)
+                sub_tools = {k: v for k, v in tools.items() if k in EXECUTION_PLANE_TOOLS}
                 agent_task = AgentTask(
                     goal=task or "",
                     max_steps=int(max_steps) if max_steps else 15,
                 )
                 result = run_subagent(
                     self.adapter,
-                    tools,
+                    sub_tools,
                     schemas,
                     agent_task,
                     project_root=workspace.project_root,

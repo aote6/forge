@@ -20,6 +20,7 @@ from forge.agent_abi import (
 )
 from forge.constraint_enforcer import enforce
 from forge.core.sanitizer import sanitize_and_redact
+from forge.tools.schemas import EXECUTION_PLANE_TOOLS
 from forge.tool_call_record import (
     ToolCallRecord,
     current_timestamp,
@@ -124,19 +125,9 @@ def strip_stop_when(content: str) -> str:
     return _STOP_WHEN_RE.sub("", text)
 
 
-# Tool names allowed for subagents (read + minimal write)
-SUBAGENT_READ_NAMES = frozenset({
-    "read_file", "read_function", "glob_files", "search_code",
-    "find_symbol_definition", "get_repo_map", "git_diff",
-    "run_command", "run_test_structured", "run_type_check",
-    "list_world_objects", "world_info", "get_world_object", "list_world_links",
-})
-SUBAGENT_MUT_NAMES = frozenset({"str_replace", "write_file"})
-
-
 def filter_schemas_for_subagent(all_schemas: list[dict]) -> list[dict]:
-    allow = SUBAGENT_READ_NAMES | SUBAGENT_MUT_NAMES
-    return [s for s in all_schemas if s.get("name") in allow]
+    """Keep only execution-plane tools. Control-plane names are dropped."""
+    return [s for s in all_schemas if s.get("name") in EXECUTION_PLANE_TOOLS]
 
 
 def _execute_tool(

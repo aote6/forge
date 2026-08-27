@@ -1,19 +1,22 @@
-"""forge_sync 始终出现在默认完整工具 schema 中（无 Planning/Execution 裁剪）。"""
+"""forge_sync 属于执行面；主 AI 默认 schema 为控制面（Phase 1 isolation）。"""
 from __future__ import annotations
 
 from forge.adapters.base import Message
 from forge.conversation import Conversation
 from forge.events import EventType
 from forge.runtime import Runtime, ToolExecutor, _default_tool_schemas
+from forge.tools.schemas import CONTROL_PLANE_TOOLS, EXECUTION_PLANE_TOOLS
 from forge.workspace import Workspace
 
 
-def test_forge_sync_in_default_schemas():
-    names = {s["name"] for s in _default_tool_schemas()}
-    assert "forge_sync" in names
+def test_forge_sync_on_execution_plane_not_control_default():
+    default_names = {s["name"] for s in _default_tool_schemas()}
+    assert "forge_sync" not in default_names
+    assert default_names == CONTROL_PLANE_TOOLS
+    assert "forge_sync" in EXECUTION_PLANE_TOOLS
 
 
-def test_forge_sync_visible_in_conversation_loop(tmp_path):
+def test_conversation_loop_uses_control_plane_schemas(tmp_path):
     class _FakeAdapter:
         def __init__(self):
             self.calls = []
@@ -34,4 +37,6 @@ def test_forge_sync_visible_in_conversation_loop(tmp_path):
     rt._last_assistant_replies = []
     rt._run_conversation("status")
     names = {s["name"] for s in adapter.calls[0]}
-    assert "forge_sync" in names, f"缺少 forge_sync，实际: {sorted(names)}"
+    assert names == CONTROL_PLANE_TOOLS
+    assert "forge_sync" not in names
+    assert "read_file" not in names

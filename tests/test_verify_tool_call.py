@@ -5,14 +5,14 @@ from pathlib import Path
 
 from forge.tool_call_record import ToolCallRecord, current_timestamp, write_record
 from forge.tools.meta_tools import make_meta_tools
-from forge.tools.schemas import READ_ONLY_TOOL_DECLARATIONS
+from forge.tools.schemas import CONTROL_PLANE_TOOL_DECLARATIONS
 from forge.workspace import Workspace
 
 
 def test_verify_tool_call_on_schema():
-    names = {d["name"] for d in READ_ONLY_TOOL_DECLARATIONS}
+    names = {d["name"] for d in CONTROL_PLANE_TOOL_DECLARATIONS}
     assert "verify_tool_call" in names
-    decl = next(d for d in READ_ONLY_TOOL_DECLARATIONS if d["name"] == "verify_tool_call")
+    decl = next(d for d in CONTROL_PLANE_TOOL_DECLARATIONS if d["name"] == "verify_tool_call")
     assert "tool_call_id" in decl["parameters"]["properties"]
     assert "tool_call_id" in decl["parameters"]["required"]
 

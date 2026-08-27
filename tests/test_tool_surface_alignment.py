@@ -17,6 +17,9 @@ from pathlib import Path
 
 from forge.tools import make_tools
 from forge.tools.schemas import (
+    CONTROL_PLANE_TOOL_DECLARATIONS,
+    CONTROL_PLANE_TOOLS,
+    EXECUTION_PLANE_TOOLS,
     INTERNAL_TOOL_NAMES,
     MUTATION_TOOL_DECLARATIONS,
     MUTATION_TOOL_NAMES,
@@ -55,14 +58,14 @@ def _full_registry(tmp_path: Path) -> tuple[dict, set[str]]:
 
 
 def _schema_names() -> set[str]:
-    return {d["name"] for d in READ_ONLY_TOOL_DECLARATIONS} | {
-        d["name"] for d in MUTATION_TOOL_DECLARATIONS
-    } | {d["name"] for d in RECONCILIATION_TOOL_DECLARATIONS}
+    """All role-visible schema names (control ∪ execution)."""
+    return set(CONTROL_PLANE_TOOLS) | set(EXECUTION_PLANE_TOOLS)
 
 
 def test_schema_tools_all_have_implementations(tmp_path: Path):
     registry = set(_full_registry(tmp_path).keys())
-    missing = _schema_names() - registry
+    # submit_plan is schema-visible but intercepted in _run_conversation (not registered).
+    missing = _schema_names() - registry - {SUBMIT_PLAN_TOOL_NAME}
     assert missing == set(), f"schema 暴露但无实现: {sorted(missing)}"
 
 
@@ -120,7 +123,7 @@ def test_submit_plan_is_intercepted_not_registered(tmp_path: Path):
 
 def test_tool_name_and_params_consistent(tmp_path: Path):
     registry = _full_registry(tmp_path)
-    decls = {d["name"]: d for d in READ_ONLY_TOOL_DECLARATIONS + MUTATION_TOOL_DECLARATIONS}
+    decls = {d["name"]: d for d in list(READ_ONLY_TOOL_DECLARATIONS) + list(MUTATION_TOOL_DECLARATIONS) + list(CONTROL_PLANE_TOOL_DECLARATIONS)}
     problems = []
     for name, decl in decls.items():
         fn = registry.get(name)
@@ -141,6 +144,6 @@ def test_tool_name_and_params_consistent(tmp_path: Path):
 def test_spawn_subagent_schema_matches_runtime_signature(tmp_path: Path):
     registry = _full_registry(tmp_path)
     sig = inspect.signature(registry["spawn_subagent"])
-    decl = next(d for d in READ_ONLY_TOOL_DECLARATIONS if d["name"] == "spawn_subagent")
+    decl = next(d for d in CONTROL_PLANE_TOOL_DECLARATIONS if d["name"] == "spawn_subagent")
     props = set((decl.get("parameters") or {}).get("properties") or {})
     assert props <= set(sig.parameters)

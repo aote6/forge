@@ -11,20 +11,28 @@ from forge.subagent import (
     filter_schemas_for_subagent,
     run_subagent,
 )
-from forge.tools.schemas import READ_ONLY_TOOL_DECLARATIONS, MUTATION_TOOL_DECLARATIONS
+from forge.tools.schemas import (
+    CONTROL_PLANE_TOOL_DECLARATIONS,
+    EXECUTION_PLANE_TOOLS,
+    READ_ONLY_TOOL_DECLARATIONS,
+    MUTATION_TOOL_DECLARATIONS,
+)
 from forge.tools import make_tools
 from forge.workspace import Workspace
 from forge.runtime import _load_session_summary, _save_session_summary
 
 
 def test_filter_schemas_for_subagent():
-    schemas = list(READ_ONLY_TOOL_DECLARATIONS) + list(MUTATION_TOOL_DECLARATIONS)
+    schemas = list(READ_ONLY_TOOL_DECLARATIONS) + list(MUTATION_TOOL_DECLARATIONS) + list(
+        CONTROL_PLANE_TOOL_DECLARATIONS
+    )
     sub = filter_schemas_for_subagent(schemas)
     names = {s["name"] for s in sub}
     assert "read_file" in names and "str_replace" in names and "write_file" in names
-    assert "spawn_subagent" not in names  # not nested
-    assert "create_object" not in names
-    assert "apply_patch" not in names
+    assert "spawn_subagent" not in names  # control plane, not nested
+    assert "create_object" in names  # full execution plane
+    assert "apply_patch" in names
+    assert names <= EXECUTION_PLANE_TOOLS
 
 
 def test_run_subagent_returns_final_text_only():
@@ -64,8 +72,9 @@ def test_run_subagent_returns_final_text_only():
 
 
 def test_spawn_subagent_on_schema():
-    names = {d["name"] for d in READ_ONLY_TOOL_DECLARATIONS}
+    names = {d["name"] for d in CONTROL_PLANE_TOOL_DECLARATIONS}
     assert "spawn_subagent" in names
+    assert "spawn_subagent" not in {d["name"] for d in READ_ONLY_TOOL_DECLARATIONS}
 
 
 def test_session_summary_roundtrip(tmp_path: Path):
