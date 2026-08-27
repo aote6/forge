@@ -1328,3 +1328,83 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 ### 当前状态
 - Agent ABI v1 六步实现全部完成并推送。
 - 剩余未解决：终端体验问题（问题 8）——run_command 捕获模式导致动画/实时输出无法展示给用户，待设计 PTY/交互终端方案。已记入 TODO.md，优先级 P0。
+
+---
+
+## Phase 1：Control Plane / Execution Plane 工具面隔离（2026-08-27）
+
+- 问题：主 AI 仍然拥有全部执行工具（read_file / write_file / run_command / str_replace 等），可以从工具面直接干工程活。主从分工只有 prompt 约束，没有代码层隔离。
+- 修复：schemas.py 新增 CONTROL_PLANE_TOOL_DECLARATIONS / EXECUTION_PLANE_TOOL_DECLARATIONS 两组常量。主 AI 默认 schema 收缩为 CONTROL（spawn_subagent / verify_tool_call / todo_write / todo_list / submit_plan）；子 AI 通过 spawn_subagent 获得完整 EXECUTION（READ + MUTATION + RECONCILIATION）。全量 registry 不动，真正隔离的是角色过滤后的 LLM 可见面。
+- 验证：CONTROL ∩ EXECUTION = ∅；主 AI 看不到任何执行工具；全量 562 passed。
+- 文档：docs/MAIN_AGENT_BEHAVIOR.md v1 冻结（主 AI 七职责、默认派发、直接处理四例外、澄清原则、验收关系、控制/执行面边界）。
+
+## Phase 2：Execution Pause / Write Confirmation 迁移到子 Runtime（2026-08-27）
+
+- 问题：写确认机制还在主循环的 Pending Action Gate 里，子 AI 的写操作没有确认门禁。
+- 修复：run_subagent 内 enforce 之后挂 Execution Gate。Gate 分类：ALLOW（只读）/ PAUSE（需确认写）。confirm_fn 由 spawn_subagent 闭包注入，用户确认后在同一个子 Runtime 栈帧内继续执行，不重问模型。confirm_fn=None + PAUSE → blocked / confirmation_unavailable；用户拒绝 → blocked / user_denied_write。
+- Layer B：执行前后状态快照。ALLOW 路径产生未授权变化 → blocked / unauthorized_world_change。已确认写入不误杀。
+- AgentResult.status 枚举不变，exit_kind 只映射到 blocked。
+- 主 AI 不持有 pending、不转发、不 resume。用户确认路径：用户 → CLI → confirm_fn → 恢复子 Runtime，不经过主 AI。
+- 验证：全量 576 passed。
+
+## Phase 2.1：command classification 收敛 + compound 绕过修复（2026-08-27）
+
+- 问题：enforcer 和 execution_gate 各自实现 resolve_command_class，split-brain。且 compound 正则漏了 \n / & / > / < 等 shell 控制结构。run_command 用 shell=True，换行/重定向可绕过前缀分类，未授权写成功。
+- 修复：command_class_prefixes.py 成为唯一 classification source of truth。新增 is_compound_shell_command（覆盖 && || ; | & \n \r > >> < << ` $(）。enforcer 和 Gate 都调共享实现。compound → COMMAND_CLASS_UNKNOWN → enforcer 有约束则 deny，Gate 则 PAUSE。
+- 验证：绕过向量全部被阻断；只读命令仍 ALLOW；全库仅一处 resolve_command_class 定义；全量 583 passed。
+
+## Layer B VERIFY 类别 + 文档 v3（2026-08-27）
+
+- 问题：run_test_structured / run_type_check 被当成只读工具放在 _ALWAYS_ALLOW_TOOLS，但它们实际会写 .pytest_cache / __pycache__ / .mypy_cache / .forge/last_test_result.json。Layer B 快照看不到这些路径，检测盲区。
+- 修复：新增 VERIFY_TOOL_NAMES 和 VERIFY_SIDE_EFFECT_PATTERNS。VERIFY 仍 ALLOW，但 Layer B 对 VERIFY 做「实际变化 − 白名单副作用 = 剩余」，剩余非空才报 unauthorized。run_test_structured 写 .forge/last_test_result.json 合法；若它改 forge/runtime.py 仍会被抓住。
+- 文档：MAIN_SUBAGENT_IMPLEMENTATION_DESIGN.md 升级 v3。新增 4.2.1「世界变化」定义（工程世界变化 vs 验证副作用）和 4.2.2 三类工具判定表（READ_ONLY / VERIFY / WRITE）。
+- 验证：全量 589 passed。
+
+## Phase 3：主 AI 行为契约落地（2026-08-27）
+
+- 问题：system_prompt.py 还是旧身份，教主 AI 自己用 glob_files / str_replace / write_file 等执行工具。但工具面已经是 CONTROL ONLY，prompt 和现实冲突。
+- 修复：重写 SYSTEM_INSTRUCTION。主 AI 是判断/控制层；工程任务默认 spawn_subagent；直接处理只有四例外（纯对话 / 已有事实总结 / 明确只分析 / 极简单无工具）；无法形成 goal / done_when / stop_when 必须先澄清；AgentResult 不得只信 conclusion，必须 verify_tool_call 反查 ToolCallRecord。
+- 验证：prompt 不含任何执行工具名；spawn_subagent 是默认路径；全量 595 passed。
+
+## Runtime Integration：确认终端独占 + 事件桥接 + 同步上下文（2026-08-27）
+
+- 问题 1：子 AI 确认提示用 sys.stdin.readline()，和主循环 read_multiline_input 的 termios 输入冲突。确认提示后 heartbeat 继续刷 running...，看起来像没等用户就继续执行。
+- 修复：Runtime 接受 confirm_provider，dp.py 的 cli_confirm 用 read_multiline_input 独占终端。TerminalPresenter 新增 begin_exclusive / end_exclusive / exclusive_terminal；确认期间 heartbeat / tool / assistant 全部暂停输出。
+- 问题 2：子 AI 执行完全黑盒，看不到工具调用过程。
+- 修复：run_subagent 接受 emit 回调，子循环在工具执行前后发 TOOL_CALL_START / TOOL_CALL_END。spawn_subagent 传 self.emit，CLI 的 TerminalPresenter 订阅同一 EventBus。子 AI 工具调用实时可见。
+- 问题 3：主 AI 收到 forge_sync 时不知道当前同步状态，盲目 spawn。
+- 修复：system_prompt 加「同步场景下的行为」规则。FAST_FORWARD → 构造带方向的 AgentTask；CONFLICT → 先让用户决策；WORLD_UNAVAILABLE → 不主动同步。
+- 验证：真实运行 forge_sync 全链路通过（主 AI 说明状态 → spawn → 子 AI 执行 → 确认 → IN_SYNC → verify_tool_call 验收 → 解释）。全量 597 passed。
+
+## 语言跟随规则（2026-08-27）
+
+- 问题：用户英文输入，主 AI 用中文汇报。
+- 修复：system_prompt 加「语言跟随」规则。面向用户的最终解释、澄清和汇报必须使用与用户输入相同的语言。
+- 验证：全量 598 passed。
+
+## 真实行为验证（2026-08-27）
+
+### forge_sync 同步链路
+
+- 输入：forge_sync
+- 主 AI 先说明当前 FAST_FORWARD(Disk → World) 状态
+- 确认块独占终端，无 running 串行
+- 用户确认后子 AI 执行 forge_sync，返回 IN_SYNC
+- 主 AI verify_tool_call 反查 ToolCallRecord，验收通过
+- 向用户解释 FACT / INFERENCE 边界
+
+### 测试套件验收链路
+
+- 输入：英文「跑测试并总结稳定性」
+- 主 AI 判断执行层任务，spawn 子 AI
+- 子 AI 执行 git status / ls tests / pytest（两次完整运行 597 passed）
+- 每个写命令都弹出确认
+- 主 AI 对 4 个 tool_call_id 逐一 verify_tool_call
+- 主 AI 明确说「597 这个数字来自子 AI conclusion，我只能验证 exit code=0」
+- 汇报区分 FACT / INFERENCE，列出未验证边界
+
+## TODO.md 更新（2026-08-27）
+
+- 删除已解决条目
+- 新增：旧 PendingAction 死代码清理（P3）、子 AI prompt 审查（P2）、子 AI 重复执行观察（P3）、行为验证扩展（P2）
+- 保留：CONFLICT 行为契约（P0）、PTY 终端（P0）、glob_files 隐藏目录（P2）、旧测试门禁迁移（P2）
