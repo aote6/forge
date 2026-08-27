@@ -1258,12 +1258,38 @@ class Runtime:
                     goal=task or "",
                     max_steps=int(max_steps) if max_steps else 15,
                 )
+                def _subagent_confirm(summary: str) -> bool:
+                    """Host-side confirmation; does not involve main-agent pending."""
+                    # Present to user on stderr/stdout; read one line from stdin.
+                    # Main AI does not hold or resume this pause.
+                    try:
+                        import sys as _sys
+                        from forge.confirmation import is_cancel, is_confirm
+
+                        _sys.stderr.write(
+                            "\n── 子任务待确认的写操作 ──\n"
+                            + (summary or "")
+                            + "\n回复「确认」执行；「取消」拒绝。\n"
+                        )
+                        _sys.stderr.flush()
+                        line = _sys.stdin.readline()
+                        if not line:
+                            return False
+                        if is_confirm(line):
+                            return True
+                        if is_cancel(line):
+                            return False
+                        return False
+                    except Exception:
+                        return False
+
                 result = run_subagent(
                     self.adapter,
                     sub_tools,
                     schemas,
                     agent_task,
                     project_root=workspace.project_root,
+                    confirm_fn=_subagent_confirm,
                 )
                 # Machine precheck: re-verify evidence against on-disk ToolCallRecord
                 # before the main agent sees the result.

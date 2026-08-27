@@ -300,7 +300,17 @@ def assemble_agent_result(
     exit_kind = candidate.exit_kind or "no_tools"
 
     # --- draft status from exit path (still provisional) ---
-    if exit_kind == "error":
+    # Phase 2 execution-plane exits (not ABI status values — still blocked only)
+    if exit_kind == "confirmation_unavailable":
+        status = STATUS_BLOCKED
+        reason = candidate.error_message or "confirmation_unavailable"
+    elif exit_kind == "user_denied_write":
+        status = STATUS_BLOCKED
+        reason = candidate.error_message or "user_denied_write"
+    elif exit_kind == "unauthorized_world_change":
+        status = STATUS_BLOCKED
+        reason = candidate.error_message or "unauthorized_world_change"
+    elif exit_kind == "error":
         status = STATUS_BLOCKED
         reason = f"loop error: {candidate.error_message or 'unknown'}"
     elif exit_kind == "max_steps":

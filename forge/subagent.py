@@ -7,6 +7,7 @@ surface and its own messages list. The executor returns an AgentResult
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import re
 import uuid
 
@@ -21,6 +22,12 @@ from forge.agent_abi import (
 from forge.constraint_enforcer import enforce
 from forge.core.sanitizer import sanitize_and_redact
 from forge.tools.schemas import EXECUTION_PLANE_TOOLS
+from forge.execution_gate import (
+    ALLOW,
+    PAUSE,
+    classify_for_confirmation,
+    pause_summary,
+)
 from forge.tool_call_record import (
     ToolCallRecord,
     current_timestamp,
@@ -123,6 +130,42 @@ def strip_stop_when(content: str) -> str:
     """Remove STOP_WHEN control lines before conclusion structuring."""
     text = content or ""
     return _STOP_WHEN_RE.sub("", text)
+
+
+
+def _layer_b_snapshot(project_root: str | os.PathLike, args: dict) -> dict[str, str]:
+    """Minimal deterministic snapshot of paths referenced by a tool call."""
+    root = Path(project_root)
+    paths: list[str] = []
+    for key in ("path", "file", "target"):
+        v = args.get(key)
+        if isinstance(v, str) and v.strip():
+            paths.append(v.strip())
+    edits = args.get("edits")
+    if isinstance(edits, list):
+        for e in edits:
+            if isinstance(e, dict):
+                p = e.get("path") or e.get("file")
+                if isinstance(p, str) and p.strip():
+                    paths.append(p.strip())
+    snap: dict[str, str] = {}
+    for p in paths:
+        fp = root / p if not os.path.isabs(p) else Path(p)
+        try:
+            if fp.is_file():
+                st = fp.stat()
+                snap[p] = f"{st.st_mtime_ns}:{st.st_size}"
+            elif fp.exists():
+                snap[p] = "exists"
+            else:
+                snap[p] = "missing"
+        except OSError:
+            snap[p] = "error"
+    return snap
+
+
+def _layer_b_changed(before: dict[str, str], after: dict[str, str]) -> bool:
+    return before != after
 
 
 def filter_schemas_for_subagent(all_schemas: list[dict]) -> list[dict]:
@@ -231,6 +274,7 @@ def run_subagent(
     task: AgentTask,
     *,
     project_root: str | os.PathLike = ".",
+    confirm_fn=None,
 ) -> AgentResult:
     """Run an isolated tool loop; return machine-assembled AgentResult."""
     if not isinstance(task, AgentTask):
@@ -307,6 +351,52 @@ def run_subagent(
                     )
                     continue
 
+                # --- Execution Gate: confirmation layer (post-enforce) ---
+                gate = classify_for_confirmation(tc.name, args)
+                confirmed_write = False
+                if gate == PAUSE:
+                    if confirm_fn is None:
+                        last_text = content.strip()
+                        return _finalize(
+                            task,
+                            subtask_id=subtask_id,
+                            last_text=last_text,
+                            stop_when_met=False,
+                            exit_kind="confirmation_unavailable",
+                            records=records,
+                            error_message="confirmation_unavailable",
+                        )
+                    summary = pause_summary(tc.name, args)
+                    try:
+                        approved = bool(confirm_fn(summary))
+                    except Exception as e:
+                        last_text = content.strip()
+                        return _finalize(
+                            task,
+                            subtask_id=subtask_id,
+                            last_text=last_text,
+                            stop_when_met=False,
+                            exit_kind="confirmation_unavailable",
+                            records=records,
+                            error_message=f"confirmation_unavailable: {e}",
+                        )
+                    if not approved:
+                        last_text = content.strip()
+                        return _finalize(
+                            task,
+                            subtask_id=subtask_id,
+                            last_text=last_text,
+                            stop_when_met=False,
+                            exit_kind="user_denied_write",
+                            records=records,
+                            error_message="user_denied_write",
+                        )
+                    confirmed_write = True
+
+                # Layer B: snapshot before execute.
+                # authorized write = confirmed PAUSE, or policy-ALLOW recovery tools.
+                authorized_write = confirmed_write or (tc.name in ("undo_last_tx",))
+                before = _layer_b_snapshot(project_root, args)
                 result, tool_call_id = _execute_tool(
                     tools,
                     tc,
@@ -314,6 +404,26 @@ def run_subagent(
                     subtask_id=subtask_id,
                     records_out=records,
                 )
+                after = _layer_b_snapshot(project_root, args)
+                if (
+                    _layer_b_changed(before, after)
+                    and not authorized_write
+                    and gate == ALLOW
+                ):
+                    # ALLOW path produced a world change without write authorization
+                    last_text = content.strip()
+                    return _finalize(
+                        task,
+                        subtask_id=subtask_id,
+                        last_text=last_text,
+                        stop_when_met=False,
+                        exit_kind="unauthorized_world_change",
+                        records=records,
+                        error_message=(
+                            f"unauthorized_world_change:after_tool={tc.name}"
+                        ),
+                    )
+
                 display = result.display or ""
                 if tool_call_id:
                     display = f"tool_call_id={tool_call_id}\n{display}"

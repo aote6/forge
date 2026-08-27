@@ -20,6 +20,8 @@ COMMAND_CLASS_PREFIXES: dict[str, str] = {
     "git log": "vcs_read",
     "git diff": "vcs_read",
     "git status": "vcs_read",
+    "python -m mypy": "type_check",
+    "mypy": "type_check",
     "rm": "destructive",
     "mv": "destructive",
 }
