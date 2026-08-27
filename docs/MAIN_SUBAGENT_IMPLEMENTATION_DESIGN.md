@@ -2,7 +2,7 @@
 
 Type: Design / Implementation
 Authority: Binding
-Status: Active v1
+Status: Active v2
 Scope: 主 AI 从执行者到派发者的实现设计
 
 ---
@@ -129,29 +129,100 @@ run_command 的 cmd 参数做静态前缀分类。
 
 调用后有变化但未走 WRITE_CONFIRM → 标记未授权变更。
 
-### 4.3 两类写路径汇合
+### 4.3 判定优先级（写死）
 
-子 AI 内部 MUTATION 工具写调用和 run_command 写命令，共用同一个 awaiting_confirmation 通道。
+执行面写操作按以下顺序判定：
 
-不另起第二个 Gate。
+1. not_allowed 命中 → 直接拒绝，不进入 confirmation
+2. scope 越界 → 直接拒绝，不进入 confirmation
+3. 允许范围内但属于需要确认的写操作 → pause，等用户确认
+4. 确认通过 → 执行
+
+not_allowed / scope 是授权边界。
+
+confirmation 是授权边界以内的用户批准机制。
+
+两者不可混为一谈。
+
+## 4.4 Layer B 未授权变化
+
+Layer B 检测到“执行层发生了未被 Gate 授权的世界变化”时：
+
+- 不新增独立状态
+- 子 AI 返回 blocked
+- 具体原因写入 status_reason
 
 ---
 
-## 5. awaiting_confirmation 中间态
+## 5. Execution Pause 是执行层暂停态
 
-子 AI 执行循环命中写确认时：
+### 5.1 定位
 
-- 不是 stop_when
-- 不是 blocked
-- 是独立的 awaiting_confirmation
+Execution Pause 不属于 Agent ABI。
 
-子 AI 把 pending 动作原样交给主 AI。
+它不进入 AgentResult.status。
 
-主 AI 只转达给用户，不加工。
+它不是主从协议状态。
 
-用户确认后，子 AI 从暂停点继续同一个 AgentTask。
+它是 Execution Plane 内部的运行时暂停态。
 
-主 AI 全程不执行工具。
+### 5.2 链路
+
+主 AI
+  |
+  | AgentTask
+  v
+子 AI Runtime
+  |
+  +-- read/search/test → 继续
+  |
+  +-- mutation/write
+        |
+        v
+     Execution Gate
+        |
+        +-- not_allowed 命中 → 拒绝
+        +-- scope 越界 → 拒绝
+        +-- 允许但需确认 → Execution Pause
+        +-- 允许且无需确认 → 执行
+        |
+        v
+     用户确认
+        |
+        v
+     原子恢复同一个子 Runtime
+        |
+        v
+     继续 AgentTask
+        |
+        v
+     AgentResult
+        |
+        v
+     主 AI 验收
+
+### 5.3 Ownership
+
+- pending 由子 Runtime / Execution Gate 持有
+- 主 AI 不持有 pending
+- 主 AI 不转发 pending
+- 主 AI 不 resume 子 AI
+- 主 AI 最终只看到 AgentResult
+
+### 5.4 用户确认路径
+
+用户
+  |
+  v
+Forge Runtime / Execution Gate
+  |
+  v
+确认
+  |
+  v
+恢复对应子 Runtime
+
+这是运行时控制机制，不是 Agent ABI。
 
 ---
 
@@ -170,7 +241,7 @@ run_command 的 cmd 参数做静态前缀分类。
 - 子 AI 看不到原始用户消息
 - stop_when 硬终止检查点
 - Gate 挂载点迁移到子 AI 写调用
-- 跨 Runtime awaiting_confirmation 通道
+- Execution Pause 暂停与恢复通道（运行时内部，不进 Agent ABI）
 
 ### 6.3 system_prompt.py
 
