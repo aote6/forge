@@ -52,6 +52,17 @@
 
 ### 主从分工 / 行为契约
 
+- [ ] 主 AI 无事中监督通道，子 AI 跑偏时只能事后发现。
+  - 发现场景：打开浏览器任务中，子 AI 收到「打开 URL」后没有直接执行，而是读 STATUS.md、读同步文档、搜 forge_sync 源码、读 sync_layer、检查环境变量、验证命令路径。主 AI 全程沉默，直到 AgentResult 返回才发现跑偏。
+  - 影响：子 AI 的浪费性侦查无法被中途制止。对简单任务浪费时间和 token；对危险任务，虽然 Gate / Layer B 能拦破坏性操作，但浪费性行为本身无人纠正。
+  - 根因：当前架构只有事前约束（AgentTask 的 goal / done_when / not_allowed）和事后验收（AgentResult + verify），没有事中监督。子 AI 执行时主 AI 不在循环里，事件桥接只发给 TerminalPresenter，不发回主 AI 上下文。
+  - 设计张力：AGENT_ABI v1.3 §8 明确排除「多轮主从协商」，当时是怕主 AI 过度干预。但完全没有事中监督导致跑偏无法纠正。
+  - 建议方向（待裁定，不立即实现）：
+    1. 轻量方案：主 AI 构造 AgentTask 时更精确地写 stop_when，减少跑偏概率。不改变架构。
+    2. 中期方案：子 AI 每步工具调用后发一个轻量事件给主 AI 上下文，主 AI 可以发「停止/继续」信号。不算多轮协商，只是单向监督。
+    3. 重方案：真正的主从协商，子 AI 可以问主 AI「我这么做对吗」。需要改 Agent ABI。
+  - 优先级：P2
+
 - [ ] 旧 PendingAction 死代码清理：主循环 _pending_action / _execute_pending_action / _write_strategy / _WRITE_CONFIRM_TOOLS 等已确认无活执行路径。
   - 发现场景：Phase 2 closure audit 确认主循环 schemas 只有 CONTROL_PLANE_TOOLS，WRITE_CONFIRM 分支永远不可达。
   - 影响：死代码增加维护负担，但当前不影响功能。
