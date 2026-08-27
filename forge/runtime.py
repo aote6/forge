@@ -1286,11 +1286,14 @@ class Runtime:
                 # Machine precheck: re-verify evidence against on-disk ToolCallRecord
                 # before the main agent sees the result.
                 result = precheck_agent_result(workspace.project_root, result)
-                # Persist structured AgentResult by subtask_id so main agent can
-                # call verify_subtask_evidence(subtask_id) without re-emitting
-                # machine identity (tool_call_id) through LLM text.
+                # Persist structured AgentResult by subtask_id (memory + JSONL)
+                # so main agent can call verify_subtask_evidence(subtask_id)
+                # without re-emitting machine identity through LLM text.
                 if result.subtask_id:
-                    self._subagent_results[str(result.subtask_id)] = result.to_dict()
+                    ar_dict = result.to_dict()
+                    self._subagent_results[str(result.subtask_id)] = ar_dict
+                    from forge.subagent_results_store import append_subagent_result
+                    append_subagent_result(workspace.project_root, ar_dict)
                 display = format_agent_result_for_parent(result)
                 return ToolResult.ok(
                     display=display,
@@ -1443,8 +1446,11 @@ class Runtime:
         # Continuous Conversation + Pending Action Gate（唯一等待确认状态）
         self._pending_action: PendingAction | None = None
         # Structured AgentResult by subtask_id (machine store; not LLM-reparsed).
-        # Enables verify_subtask_evidence(subtask_id) without re-emitting UUIDs.
-        self._subagent_results: dict[str, dict] = {}
+        # Load append-only JSONL so prior subtasks remain verifiable after restart.
+        from forge.subagent_results_store import load_subagent_results
+        self._subagent_results: dict[str, dict] = load_subagent_results(
+            workspace.project_root
+        )
 
     def _startup_sync_check(self):
         """启动时只做同步状态检测，不自动 replay receipt 写磁盘（决策 3/8）。

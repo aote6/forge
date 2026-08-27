@@ -74,3 +74,24 @@ def test_prompt_requires_following_user_language():
     assert "语言跟随" in SYSTEM_INSTRUCTION
     assert "与用户输入相同的语言" in SYSTEM_INSTRUCTION
     assert "不要因为系统提示词是中文就默认输出中文" in SYSTEM_INSTRUCTION
+
+
+def test_prompt_prefers_verify_subtask_evidence():
+    assert "verify_subtask_evidence" in SYSTEM_INSTRUCTION
+    assert "subtask_id" in SYSTEM_INSTRUCTION
+    assert "主 AI 不需要复制 UUID" in SYSTEM_INSTRUCTION
+
+
+def test_prompt_separates_verify_failure_from_task_failure():
+    assert "verify 失败" in SYSTEM_INSTRUCTION
+    assert "工程任务失败" in SYSTEM_INSTRUCTION
+    assert "不得为了重新获得证据而重新执行" in SYSTEM_INSTRUCTION or (
+        "不得为了获得新的 Evidence 而自动重新 spawn" in SYSTEM_INSTRUCTION
+    )
+    assert "无法独立验收该子任务的证据链" in SYSTEM_INSTRUCTION
+
+
+def test_prompt_stdout_truncated_rules():
+    assert "stdout_truncated" in SYSTEM_INSTRUCTION
+    assert "returncode" in SYSTEM_INSTRUCTION
+    assert "598 passed" in SYSTEM_INSTRUCTION or "具体数字" in SYSTEM_INSTRUCTION
