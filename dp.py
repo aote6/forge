@@ -203,7 +203,26 @@ def main():
     print(f"📁 项目: {os.path.abspath(os.path.expanduser(project_root))}")
     workspace = Workspace(project_root=project_root)
     memory = MemoryStore()
-    runtime = Runtime(adapter, workspace, memory)
+
+    def cli_confirm(summary: str) -> bool:
+        """CLI-owned confirmation prompt for subagent write pauses."""
+        from forge.confirmation import is_cancel, is_confirm
+
+        print("\n── 子任务待确认的写操作 ──")
+        print(summary or "")
+        try:
+            line = read_multiline_input("回复「确认」执行；「取消」拒绝 > ")
+        except Exception:
+            return False
+        if line is None:
+            return False
+        if is_confirm(line):
+            return True
+        if is_cancel(line):
+            return False
+        return False
+
+    runtime = Runtime(adapter, workspace, memory, confirm_provider=cli_confirm)
     _background_health_check(project_root)
 
     presenter = TerminalPresenter()

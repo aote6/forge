@@ -1178,9 +1178,16 @@ class ToolExecutor:
 
 
 class Runtime:
-    def __init__(self, adapter: BaseAdapter, workspace: Workspace, memory: MemoryStore):
+    def __init__(
+        self,
+        adapter: BaseAdapter,
+        workspace: Workspace,
+        memory: MemoryStore,
+        confirm_provider=None,
+    ):
         self.adapter = adapter
         self.workspace = workspace
+        self._confirm_provider = confirm_provider
         # Optional CLI presentation hooks (TerminalPresenter); not part of agent semantics.
         self._on_assistant_delta = None
         self._on_assistant_done = None
@@ -1259,27 +1266,11 @@ class Runtime:
                     max_steps=int(max_steps) if max_steps else 15,
                 )
                 def _subagent_confirm(summary: str) -> bool:
-                    """Host-side confirmation; does not involve main-agent pending."""
-                    # Present to user on stderr/stdout; read one line from stdin.
-                    # Main AI does not hold or resume this pause.
-                    try:
-                        import sys as _sys
-                        from forge.confirmation import is_cancel, is_confirm
-
-                        _sys.stderr.write(
-                            "\n── 子任务待确认的写操作 ──\n"
-                            + (summary or "")
-                            + "\n回复「确认」执行；「取消」拒绝。\n"
-                        )
-                        _sys.stderr.flush()
-                        line = _sys.stdin.readline()
-                        if not line:
-                            return False
-                        if is_confirm(line):
-                            return True
-                        if is_cancel(line):
-                            return False
+                    """Host-side confirmation; delegates to CLI input provider."""
+                    if self._confirm_provider is None:
                         return False
+                    try:
+                        return bool(self._confirm_provider(summary))
                     except Exception:
                         return False
 
