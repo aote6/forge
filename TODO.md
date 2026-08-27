@@ -33,6 +33,15 @@
   - 建议：两层修复——① 行为契约：system_prompt + `_sync_status_system_hint` 明确「CONFLICT/FAST_FORWARD = 分析 + 建议 + 等拍板，禁止任何自主写操作（含 run_command 的 rm/git commit）」；② 硬兜底：CONFLICT 状态下 run_command 写命令（vcs_write/destructive，复用 `COMMAND_CLASS_PREFIXES` + `needs_git_confirmation`）接入确认门禁，并补测试断言 CONFLICT 态下 `rm`/`git commit` 不直接执行。
   - 优先级：P0
 
+### 系统集成能力
+
+- [ ] Forge 无法主动使用 Termux 系统命令，必须用户明确指定完整命令。
+  - 发现场景 1：用户说「Open https://github.com/aote6/forge in the browser」，主 AI 回复「我没有浏览器工具」。用户改说「Run: termux-open-url https://github.com/aote6/forge」后才执行成功。
+  - 影响：用户必须知道底层命令名才能让 Forge 执行系统操作。打开 URL、播放音乐、打开图片、手电筒等直观操作都无法通过自然语言触发。
+  - 根因：Forge 工具面只注册了工程工具（read/search/write/test），没有注册 Termux 系统集成工具。主 AI 和子 AI 不知道 termux-open-url / termux-media-player / termux-torch 等命令存在。
+  - 建议：新增系统集成工具组，例如 open_url（调 termux-open-url）、open_image（调 termux-open）、play_media（调 termux-media-player）等。每个工具内部封装具体命令，schema 描述写清楚用途。这样主 AI 能识别自然语言意图并派发，用户不需要知道底层命令。
+  - 优先级：P2
+
 ### 终端体验 / 产品可见性
 
 - [ ] Forge 无法让用户直接看到终端动画/实时输出效果。
