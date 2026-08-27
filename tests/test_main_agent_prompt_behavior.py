@@ -68,3 +68,9 @@ def test_prompt_requires_direction_in_sync_agent_task():
     assert "Disk → World" in SYSTEM_INSTRUCTION
     assert "World → Disk" in SYSTEM_INSTRUCTION
     assert "goal" in SYSTEM_INSTRUCTION
+
+
+def test_prompt_requires_following_user_language():
+    assert "语言跟随" in SYSTEM_INSTRUCTION
+    assert "与用户输入相同的语言" in SYSTEM_INSTRUCTION
+    assert "不要因为系统提示词是中文就默认输出中文" in SYSTEM_INSTRUCTION
