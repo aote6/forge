@@ -35,6 +35,13 @@
 
 ### 系统集成能力
 
+- [ ] Forge CLI 缺少单次机器调用入口（类似 claude -p），stdin 管道模式结束后 EOFError。
+  - 发现场景：测试 `printf '说一句电影台词' | python3 dp.py` 时，Forge 能正常处理第一条消息并回复，但处理完回到交互循环继续读 stdin，管道已空，`read_multiline_input` 抛 EOFError。
+  - 影响：Claude Code 或其他外部程序无法干净地用管道调 Forge。虽然能用 `2>/dev/null | head` 滤掉 traceback，但这是绕过不是解决。
+  - 根因：dp.py 只有交互循环（while True + read_multiline_input）和 sync/status 两种非交互模式，没有「读一条消息 → 处理 → 干净退出」的单次入口。对比 Claude Code 的 `claude -p` 是现成的单次接口。
+  - 建议：给 dp.py 加 `-c / --command` 模式，例如 `python3 dp.py -c "说一句电影台词"`，内部调 runtime.run(message) 后打印结果并 return，不进入交互循环。改动很小（在 main() 开头加一个分支）。
+  - 优先级：P3
+
 - [ ] Forge 无法主动使用 Termux 系统命令，必须用户明确指定完整命令。
   - 发现场景 1：用户说「Open https://github.com/aote6/forge in the browser」，主 AI 回复「我没有浏览器工具」。用户改说「Run: termux-open-url https://github.com/aote6/forge」后才执行成功。
   - 影响：用户必须知道底层命令名才能让 Forge 执行系统操作。打开 URL、播放音乐、打开图片、手电筒等直观操作都无法通过自然语言触发。
