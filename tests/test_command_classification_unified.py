@@ -77,3 +77,12 @@ def test_only_one_resolve_command_class_definition():
                 defs.append(f"{path.relative_to(root.parent)}:{i}")
     assert len(defs) == 1, defs
     assert defs[0].startswith("forge/command_class_prefixes.py:"), defs
+
+
+def test_execution_gate_has_no_local_compound_regex():
+    from pathlib import Path
+
+    p = Path(__file__).resolve().parents[1] / "forge" / "execution_gate.py"
+    text = p.read_text(encoding="utf-8")
+    assert "_COMPOUND_RE" not in text
+    assert "import re" not in text

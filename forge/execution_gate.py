@@ -9,7 +9,6 @@ Does not evaluate model semantics. Compound commands → unknown → PAUSE.
 """
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from forge.command_class_prefixes import (
@@ -54,7 +53,6 @@ _ALWAYS_ALLOW_TOOLS = frozenset({
     "web_fetch",
 })
 
-_COMPOUND_RE = re.compile(r"(&&|\|\||;|\||`|\$\()")
 
 
 def _normalize_cmd(cmd: str) -> str:
