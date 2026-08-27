@@ -13,8 +13,8 @@ import re
 from typing import Any
 
 from forge.command_class_prefixes import (
-    COMMAND_CLASS_PREFIXES,
     COMMAND_CLASS_UNKNOWN,
+    resolve_command_class,
 )
 from forge.tools.schemas import MUTATION_TOOL_NAMES, RECONCILIATION_TOOL_NAMES
 
@@ -61,23 +61,7 @@ def _normalize_cmd(cmd: str) -> str:
     return " ".join((cmd or "").strip().split())
 
 
-def resolve_command_class(cmd: str) -> str:
-    """Static prefix match; longer prefixes win. Compound → unknown."""
-    text = _normalize_cmd(cmd)
-    if not text:
-        return COMMAND_CLASS_UNKNOWN
-    if _COMPOUND_RE.search(text):
-        return COMMAND_CLASS_UNKNOWN
-    # Longer prefixes first
-    prefixes = sorted(COMMAND_CLASS_PREFIXES.keys(), key=len, reverse=True)
-    lower = text.lower()
-    for prefix in prefixes:
-        if lower == prefix.lower() or lower.startswith(prefix.lower() + " "):
-            return COMMAND_CLASS_PREFIXES[prefix]
-    # bare executable first token heuristics already covered by table; else unknown
-    return COMMAND_CLASS_UNKNOWN
-
-
+# resolve_command_class imported from forge.command_class_prefixes
 def resolve_run_command_gate(cmd: str) -> str:
     """Layer A: ALLOW for read-only classes; PAUSE otherwise."""
     cls = resolve_command_class(cmd)

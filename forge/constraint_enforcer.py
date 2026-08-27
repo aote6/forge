@@ -35,6 +35,7 @@ from typing import Any
 from forge.command_class_prefixes import (
     COMMAND_CLASS_PREFIXES,
     COMMAND_CLASS_UNKNOWN,
+    resolve_command_class,
 )
 from forge.tool_action_map import TOOL_ACTION_MAP_BY_NAME
 
@@ -262,25 +263,7 @@ def path_in_scope(path: str, scope_paths: tuple[str, ...] | list[str]) -> bool:
     return False
 
 
-def resolve_command_class(cmd: str) -> str:
-    """Map a shell command string to a command_class via prefix whitelist.
-
-    Longer prefixes are checked first. No match → COMMAND_CLASS_UNKNOWN.
-    """
-    text = (cmd or "").strip()
-    if not text:
-        return COMMAND_CLASS_UNKNOWN
-    # Sort by prefix length descending so longer matches win.
-    for prefix in sorted(COMMAND_CLASS_PREFIXES.keys(), key=len, reverse=True):
-        if text == prefix or text.startswith(prefix + " ") or text.startswith(prefix + "\t"):
-            return COMMAND_CLASS_PREFIXES[prefix]
-        # also allow exact prefix as whole first token sequence
-        if text.startswith(prefix):
-            # avoid matching "git" against "gitignore" style — require boundary
-            rest = text[len(prefix) :]
-            if rest == "" or rest[0].isspace():
-                return COMMAND_CLASS_PREFIXES[prefix]
-    return COMMAND_CLASS_UNKNOWN
+# resolve_command_class: imported from forge.command_class_prefixes (single source of truth)
 
 
 def resolve_command_class_from_rule(
