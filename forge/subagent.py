@@ -25,6 +25,8 @@ from forge.tools.schemas import EXECUTION_PLANE_TOOLS
 from forge.execution_gate import (
     ALLOW,
     PAUSE,
+    VERIFY_SIDE_EFFECT_PATTERNS,
+    VERIFY_TOOL_NAMES,
     classify_for_confirmation,
     pause_summary,
 )
@@ -133,8 +135,19 @@ def strip_stop_when(content: str) -> str:
 
 
 
-def _layer_b_snapshot(project_root: str | os.PathLike, args: dict) -> dict[str, str]:
-    """Minimal deterministic snapshot of paths referenced by a tool call."""
+def _layer_b_snapshot(
+    project_root: str | os.PathLike,
+    args: dict,
+    tool_name: str | None = None,
+) -> dict[str, str]:
+    """Minimal deterministic snapshot of paths referenced by a tool call.
+
+    For VERIFY tools the snapshot also covers authorized side-effect paths,
+    so Layer B can tell authorized cache/persistence writes apart from
+    unauthorized engineering-world changes.
+    """
+    import glob as _glob
+
     root = Path(project_root)
     paths: list[str] = []
     for key in ("path", "file", "target"):
@@ -148,6 +161,14 @@ def _layer_b_snapshot(project_root: str | os.PathLike, args: dict) -> dict[str, 
                 p = e.get("path") or e.get("file")
                 if isinstance(p, str) and p.strip():
                     paths.append(p.strip())
+    # VERIFY side-effect coverage: materialize glob patterns under project_root.
+    if tool_name in VERIFY_TOOL_NAMES:
+        for pattern in VERIFY_SIDE_EFFECT_PATTERNS.get(tool_name, frozenset()):
+            full_pattern = str(root / pattern)
+            for hit in _glob.glob(full_pattern, recursive=True):
+                rel = str(Path(hit).relative_to(root))
+                if rel not in paths:
+                    paths.append(rel)
     snap: dict[str, str] = {}
     for p in paths:
         fp = root / p if not os.path.isabs(p) else Path(p)
@@ -166,6 +187,36 @@ def _layer_b_snapshot(project_root: str | os.PathLike, args: dict) -> dict[str, 
 
 def _layer_b_changed(before: dict[str, str], after: dict[str, str]) -> bool:
     return before != after
+
+
+def _layer_b_unauthorized_diff(
+    project_root: str | os.PathLike,
+    before: dict[str, str],
+    after: dict[str, str],
+    authorized_patterns: frozenset[str],
+) -> list[str]:
+    """Return changed paths that are NOT covered by authorized side-effect patterns."""
+    import fnmatch
+
+    root = Path(project_root)
+    changed: list[str] = []
+    for p in after:
+        if before.get(p) != after.get(p):
+            if os.path.isabs(p):
+                rel = p
+            else:
+                try:
+                    rel = str(Path(p).relative_to(root))
+                except ValueError:
+                    rel = p
+            allowed = False
+            for pat in authorized_patterns:
+                if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(p, pat):
+                    allowed = True
+                    break
+            if not allowed:
+                changed.append(rel)
+    return changed
 
 
 def filter_schemas_for_subagent(all_schemas: list[dict]) -> list[dict]:
@@ -396,7 +447,7 @@ def run_subagent(
                 # Layer B: snapshot before execute.
                 # authorized write = confirmed PAUSE, or policy-ALLOW recovery tools.
                 authorized_write = confirmed_write or (tc.name in ("undo_last_tx",))
-                before = _layer_b_snapshot(project_root, args)
+                before = _layer_b_snapshot(project_root, args, tool_name=tc.name)
                 result, tool_call_id = _execute_tool(
                     tools,
                     tc,
@@ -404,25 +455,42 @@ def run_subagent(
                     subtask_id=subtask_id,
                     records_out=records,
                 )
-                after = _layer_b_snapshot(project_root, args)
-                if (
-                    _layer_b_changed(before, after)
-                    and not authorized_write
-                    and gate == ALLOW
-                ):
-                    # ALLOW path produced a world change without write authorization
-                    last_text = content.strip()
-                    return _finalize(
-                        task,
-                        subtask_id=subtask_id,
-                        last_text=last_text,
-                        stop_when_met=False,
-                        exit_kind="unauthorized_world_change",
-                        records=records,
-                        error_message=(
-                            f"unauthorized_world_change:after_tool={tc.name}"
-                        ),
-                    )
+                after = _layer_b_snapshot(project_root, args, tool_name=tc.name)
+                if not authorized_write and gate == ALLOW:
+                    if tc.name in VERIFY_TOOL_NAMES:
+                        # VERIFY: authorized side effects are subtracted from diff.
+                        patterns = VERIFY_SIDE_EFFECT_PATTERNS.get(tc.name, frozenset())
+                        remaining = _layer_b_unauthorized_diff(
+                            project_root, before, after, patterns
+                        )
+                        if remaining:
+                            last_text = content.strip()
+                            return _finalize(
+                                task,
+                                subtask_id=subtask_id,
+                                last_text=last_text,
+                                stop_when_met=False,
+                                exit_kind="unauthorized_world_change",
+                                records=records,
+                                error_message=(
+                                    f"unauthorized_world_change:after_tool={tc.name}"
+                                    f" paths={sorted(remaining)[:5]}"
+                                ),
+                            )
+                    elif _layer_b_changed(before, after):
+                        # READ_ONLY ALLOW path produced a world change
+                        last_text = content.strip()
+                        return _finalize(
+                            task,
+                            subtask_id=subtask_id,
+                            last_text=last_text,
+                            stop_when_met=False,
+                            exit_kind="unauthorized_world_change",
+                            records=records,
+                            error_message=(
+                                f"unauthorized_world_change:after_tool={tc.name}"
+                            ),
+                        )
 
                 display = result.display or ""
                 if tool_call_id:

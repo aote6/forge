@@ -39,8 +39,6 @@ _ALWAYS_ALLOW_TOOLS = frozenset({
     "find_symbol_definition",
     "get_repo_map",
     "git_diff",
-    "run_test_structured",
-    "run_type_check",
     "world_info",
     "list_world_objects",
     "get_world_object",
@@ -52,6 +50,30 @@ _ALWAYS_ALLOW_TOOLS = frozenset({
     "project_review",
     "web_fetch",
 })
+
+# Verify tools: ALLOW, but produce defined verification side effects.
+# These are NOT read-only; they are execution-plane verifiers.
+VERIFY_TOOL_NAMES = frozenset({
+    "run_test_structured",
+    "run_type_check",
+})
+
+# Authorized side effects for each verify tool. Patterns match paths
+# relative to project_root. Globs use fnmatch semantics.
+VERIFY_SIDE_EFFECT_PATTERNS: dict[str, frozenset[str]] = {
+    "run_test_structured": frozenset({
+        ".pytest_cache/**",
+        "__pycache__/**",
+        "**/__pycache__/**",
+        ".forge/last_test_result.json",
+    }),
+    "run_type_check": frozenset({
+        ".mypy_cache/**",
+        "__pycache__/**",
+        "**/__pycache__/**",
+        ".pyright/**",
+    }),
+}
 
 
 
@@ -77,6 +99,9 @@ def classify_for_confirmation(tool_name: str, args: dict[str, Any] | None) -> st
         return resolve_run_command_gate(str(args.get("cmd") or ""))
 
     if name in _RECOVERY_TOOLS:
+        return ALLOW
+
+    if name in VERIFY_TOOL_NAMES:
         return ALLOW
 
     if name in _ALWAYS_ALLOW_TOOLS:
