@@ -272,6 +272,51 @@ class TerminalPresenter:
         self._hb_t0: Optional[float] = None
         self._assistant_open = False
         self._assistant_streamed = False
+        # Confirm exclusive: when True, no presenter output (heartbeat / tool /
+        # assistant) may touch the terminal. Confirm input owns stdout/stdin.
+        self._exclusive = False
+        self._exclusive_lock = threading.Lock()
+
+    def begin_exclusive(self) -> None:
+        """Enter confirm-exclusive mode: stop all async/presenter writes."""
+        self._stop_heartbeat()
+        # Close assistant stream state without writing (terminal belongs to confirm).
+        self._assistant_open = False
+        self._assistant_streamed = False
+        with self._exclusive_lock:
+            self._exclusive = True
+
+    def end_exclusive(self) -> None:
+        """Leave confirm-exclusive mode; subsequent tool events may display."""
+        with self._exclusive_lock:
+            self._exclusive = False
+
+    def exclusive_terminal(self):
+        """Context manager: terminal owned solely by confirm input."""
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            self.begin_exclusive()
+            try:
+                yield self
+            finally:
+                self.end_exclusive()
+
+        return _cm()
+
+    def _in_exclusive(self) -> bool:
+        with self._exclusive_lock:
+            return self._exclusive
+
+    def _emit(self, *args, **kwargs) -> None:
+        """Write to terminal unless confirm-exclusive is active."""
+        if self._in_exclusive():
+            return
+        try:
+            self._write(*args, **kwargs)
+        except Exception:
+            pass
 
     def _stop_heartbeat(self) -> None:
         """Invalidate any in-flight tick and cancel the pending timer."""
@@ -303,8 +348,11 @@ class TerminalPresenter:
             except Exception:
                 elapsed = 0
             # New line: reliable on Termux; avoid \r redraw games.
+            # Confirm exclusive owns the terminal — never write running... there.
+            if self._in_exclusive():
+                return
             try:
-                self._write(paint(f"\n[{name}] running... {elapsed}s", TUBE_BLUE), flush=True)
+                self._emit(paint(f"\n[{name}] running... {elapsed}s", TUBE_BLUE), flush=True)
             except Exception:
                 return
             with self._hb_lock:
@@ -326,6 +374,11 @@ class TerminalPresenter:
     def on_tool_start(self, event) -> None:
         data = getattr(event, "data", None) or {}
         name = data.get("name") or "?"
+        # During confirm exclusive the terminal is owned by input — drop display
+        # and do not arm heartbeat (events should not arrive here, but be safe).
+        if self._in_exclusive():
+            self._stop_heartbeat()
+            return
         # Defensive: end any previous heartbeat (Runtime is sequential, but
         # missing END must not leak a timer into the next tool).
         self._stop_heartbeat()
@@ -337,7 +390,12 @@ class TerminalPresenter:
             self._hb_timer = None
         self.on_assistant_done()
         self._assistant_streamed = False
-        self._write(paint(f"\n[{name}] ...", OSCILLOSCOPE), flush=True)
+        # spawn_subagent is a long outer shell; clearer than bare "..."
+        if name == "spawn_subagent":
+            label = "子任务开始"
+        else:
+            label = "..."
+        self._emit(paint(f"\n[{name}] {label}", OSCILLOSCOPE), flush=True)
         self._schedule_heartbeat(token)
 
     def on_tool_end(self, event) -> None:
@@ -360,31 +418,36 @@ class TerminalPresenter:
             status = f"[{name}] OK {elapsed_s}s" if ok else f"[{name}] FAIL {elapsed_s}s"
         else:
             status = f"[{name}] OK" if ok else f"[{name}] FAIL"
+        if self._in_exclusive():
+            return
         color = PHOSPHOR if ok else ALARM
-        self._write(paint(f"\n{status}", color), flush=True)
+        self._emit(paint(f"\n{status}", color), flush=True)
         disp = (data.get("display") or "").strip()
         if not disp:
             return
         body = summarize_tool_display(disp, success=ok)
         if body:
             # Tool body is uncolored chrome boundary: plain text only.
-            self._write(body, flush=True)
+            self._emit(body, flush=True)
 
     def on_assistant_delta(self, text: str) -> None:
         """Append assistant text incrementally (one FORGE> prefix per reply)."""
         if not text:
             return
+        if self._in_exclusive():
+            return
         if not self._assistant_open:
-            self._write(paint("\nFORGE> ", AMBER), end="", flush=True)
+            self._emit(paint("\nFORGE> ", AMBER), end="", flush=True)
             self._assistant_open = True
             self._assistant_streamed = True
         # Stream body in amber without re-prefix; each write still resets.
-        self._write(paint(text, AMBER), end="", flush=True)
+        self._emit(paint(text, AMBER), end="", flush=True)
 
     def on_assistant_done(self) -> None:
         """Close the current streamed assistant line if open."""
         if self._assistant_open:
-            self._write("", flush=True)  # newline after stream
+            if not self._in_exclusive():
+                self._emit("", flush=True)  # newline after stream
             self._assistant_open = False
 
     def show_assistant(self, text: str, force: bool = False) -> None:
@@ -401,14 +464,14 @@ class TerminalPresenter:
                 return
         if not text:
             return
-        self._write(paint(f"\nFORGE> {text}", AMBER), flush=True)
+        self._emit(paint(f"\nFORGE> {text}", AMBER), flush=True)
         self._assistant_streamed = False
 
     def show_warning(self, message: str) -> None:
         """UI warning line (amber). Not a ToolResult channel."""
         if not message:
             return
-        self._write(paint(f"\nWARN: {message}", AMBER), flush=True)
+        self._emit(paint(f"\nWARN: {message}", AMBER), flush=True)
 
     def page_last(self, name: str | None, display: str | None) -> None:
         """Open pager on the latest tool display (from Runtime cache).

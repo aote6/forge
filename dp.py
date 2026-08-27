@@ -204,28 +204,36 @@ def main():
     workspace = Workspace(project_root=project_root)
     memory = MemoryStore()
 
+    # Presenter must exist before cli_confirm so confirm can take exclusive terminal.
+    presenter = TerminalPresenter()
+
     def cli_confirm(summary: str) -> bool:
-        """CLI-owned confirmation prompt for subagent write pauses."""
+        """CLI-owned confirmation: exclusive terminal until user answers.
+
+        While active: heartbeat / tool / assistant presenter output is suppressed.
+        Only this prompt may write; input is blocking and uncontested.
+        """
         from forge.confirmation import is_cancel, is_confirm
 
-        print("\n── 子任务待确认的写操作 ──")
-        print(summary or "")
-        try:
-            line = read_multiline_input("回复「确认」执行；「取消」拒绝 > ")
-        except Exception:
+        with presenter.exclusive_terminal():
+            # Explicit newlines so the block is isolated from any prior tool line.
+            print("\n── 子任务待确认的写操作 ──", flush=True)
+            print(summary or "", flush=True)
+            try:
+                line = read_multiline_input("回复「确认」执行；「取消」拒绝 > ")
+            except Exception:
+                return False
+            if line is None:
+                return False
+            if is_confirm(line):
+                return True
+            if is_cancel(line):
+                return False
             return False
-        if line is None:
-            return False
-        if is_confirm(line):
-            return True
-        if is_cancel(line):
-            return False
-        return False
 
     runtime = Runtime(adapter, workspace, memory, confirm_provider=cli_confirm)
     _background_health_check(project_root)
 
-    presenter = TerminalPresenter()
     runtime.on(EventType.TOOL_CALL_START, presenter.on_tool_start)
     runtime.on(EventType.TOOL_CALL_END, presenter.on_tool_end)
     runtime._on_assistant_delta = presenter.on_assistant_delta
