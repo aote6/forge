@@ -42,24 +42,27 @@
   - 优先级：P0
 
 ### 主从分工 / 行为契约
-- [ ] 主 AI 默认还是自己干活，没有把复杂执行任务派给子 AI。
-  - 发现场景：Agent ABI v1 六步完成后，启动 Forge 处理 CONFLICT，主 AI 自己用 run_command 分析、删除、提交，没有一次使用 spawn_subagent。主 AI 监督子 AI 的能力已建成，但主 AI 没有被强制使用。
-  - 影响：Agent ABI 的监督通道形同虚设。子 AI 的边界修好了，但主 AI 默认行为不变，用户看到的还是主 AI 自己从头干到尾。
-  - 建议：在 system_prompt 里把 spawn_subagent 从“可选探索工具”改为“默认执行路径”。明确主 AI 职责收窄为判断、派工、验收；读多文件探索、跨目录定位、小范围修改并回报等任务必须派子 AI。主 AI 自己直接做工程活应该是例外，不是常态。
-  - 优先级：P0
 
-## 已解决
+- [ ] 旧 PendingAction 死代码清理：主循环 _pending_action / _execute_pending_action / _write_strategy / _WRITE_CONFIRM_TOOLS 等已确认无活执行路径。
+  - 发现场景：Phase 2 closure audit 确认主循环 schemas 只有 CONTROL_PLANE_TOOLS，WRITE_CONFIRM 分支永远不可达。
+  - 影响：死代码增加维护负担，但当前不影响功能。
+  - 建议：确认无测试依赖后清理，不碰子循环 confirm_fn / Execution Pause。
+  - 优先级：P3
 
-### 工具可见性
+- [ ] 子 AI system_prompt 审查：主 AI prompt 已改为控制层身份，但子 AI 的 SUBAGENT_SYSTEM 是否清晰表达「连续执行层」身份未审。
+  - 发现场景：Phase 3 后主 AI 行为契约落地，子 AI prompt 未同步审查。
+  - 影响：子 AI 可能保留旧工具指令或身份模糊。
+  - 建议：审查 forge/subagent.py 里的 SUBAGENT_SYSTEM，确认其符合 Agent ABI v1.3 和 Execution Plane 定位。
+  - 优先级：P2
 
-- [x] post_toot 在 Planning 阶段不可见，导致模型绕路用 run_command 手动发帖。
-  - 解决：Pending Action Gate 让所有工具始终可见，post_toot 不再被 Planning schema 隐藏（2026-08-26）。
-  - 优先级：P1 ✅
+- [ ] 子 AI 重复执行观察：测试套件任务中，子 AI 跑了两次完整 pytest（29.88s + 28.00s），第二次是复跑确认。
+  - 发现场景：真实行为验证「跑测试并总结稳定性」时，子 AI 第一次 597 passed 后仍复跑一次。
+  - 影响：浪费执行时间，可能因为 stop_when 不够明确。
+  - 建议：观察更多真实任务，确认是否需要优化 AgentTask 构造规则或子 AI 停止条件。
+  - 优先级：P3
 
-### 工具分类设计
-
-- [x] 工具分类三层 + 两阶段（Planning / Execution）规则过多，模型容易绕路。
-  - 解决：Pending Action Gate 替换 Phase 状态机；权限轴简化为 READ / WRITE；forge_sync 独立 FORGE_SYNC 策略（2026-08-26）。
-  - 测试：test_pending_action_gate.py + test_forge_sync_gate.py；全量 510 passed。
-  - 优先级：P0 ✅
-
+- [ ] 行为验证扩展：已验证 forge_sync 同步链路和测试套件验收链路，但「看看这个问题」「分析这个文件」「修 bug 并测试」「解释测试失败」等场景未验证。
+  - 发现场景：Phase 3 后只跑了两个真实任务。
+  - 影响：主 AI 行为契约的覆盖面还不完整。
+  - 建议：用真实对话逐场景验证，发现偏差再决定改 prompt 还是改 spawn 上下文。
+  - 优先级：P2
