@@ -1408,3 +1408,54 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - 删除已解决条目
 - 新增：旧 PendingAction 死代码清理（P3）、子 AI prompt 审查（P2）、子 AI 重复执行观察（P3）、行为验证扩展（P2）
 - 保留：CONFLICT 行为契约（P0）、PTY 终端（P0）、glob_files 隐藏目录（P2）、旧测试门禁迁移（P2）
+
+## 验收链修复：verify_subtask_evidence + 持久化（2026-08-27）
+
+- 问题 1：主 AI 从渲染文本抄 tool_call_id 导致截断，verify 失败。
+- 问题 2：_subagent_results 是内存表，进程重启后跨会话验收失败。
+- 问题 3：run_command 的 ToolCallRecord 只有 returncode，没有 stdout，「598 passed」等具体数字无法独立验证。
+- 修复 1：新增 verify_subtask_evidence(subtask_id)，主 AI 只传 subtask_id，Runtime 从结构化 AgentResult 取完整 tool_call_id 精确反查。verify_tool_call 保留为底层精确 primitive。
+- 修复 2：新增 forge/subagent_results_store.py，_subagent_results 持久化到 .forge/subagent_results.jsonl（append-only，last-wins，坏行跳过，缺文件正常启动）。
+- 修复 3：run_command payload 包含 stdout/stderr + stdout_truncated/stderr_truncated 标志。
+- system_prompt 重写验收规则：优先 verify_subtask_evidence；主 AI 不复制 UUID；verify 失败 ≠ 工程任务失败；禁止因验收失败重新 spawn；returncode=0 不能推导具体数字；stdout_truncated 不能当完整证据。
+- 验证：全量 618 passed。
+
+## 端到端行为验证（2026-08-27）
+
+### 跨会话验收验证
+
+- 重启 Forge 后输入「Verify the evidence for subtask sub_6304c7f108f1」
+- verify_subtask_evidence 直接返回 all_ok=True，证明 JSONL 持久化跨会话工作
+- 主 AI 只传 subtask_id，没有手写 UUID
+- 主 AI 诚实说明「没有任务的目标上下文，只验证证据链，不验证任务意图」
+
+### 测试套件数字验收验证
+
+- 输入英文「跑测试并精确报告 passed/failed 数字」
+- 子 AI 第一次用 /tmp 路径写输出失败（Termux 无 /tmp），改为管道 tail 成功
+- 子 AI 跑两次 pytest，分别拿到 618 passed in 31.66s 和 29.37s
+- 主 AI 用 verify_subtask_evidence 验完整证据链
+- 主 AI 发现第一条 record 的 stdout 是截断 preview，明确说「31.66s 不能独立确认」
+- 主 AI 用第二条 record 的完整 stdout「618 passed in 29.37s」作为独立证据
+- 英文汇报，符合语言跟随规则
+
+### 最长函数分析验证
+
+- 输入英文「找代码库最长的 3 个函数」
+- 主 AI 判断需扫描代码库，spawn 子 AI
+- 子 AI 用 AST 脚本统计 168 个 Python 文件、1497 个函数
+- 结果：make_intent_tools（1233 行）、make_read_tools（476 行）、make_meta_tools（341 行）
+- 子 AI 用 read_file 确认 docstring 和函数内容
+- 子 AI 发现 forge_rain.py / matrix_termux.py 不存在（glob 0 匹配）
+- 主 AI 验收：verify_subtask_evidence all_ok=True，11/11 evidence 有效
+- 主 AI 从 stdout 原文引用前三名精确数据
+- 主 AI 明确区分 FACT（函数名行数）和 INFERENCE（功能总结）
+- 主 AI 发现 working-set 记忆说 forge_rain.py 存在，但 glob 证据说不存在，采信工具证据
+
+## 关键行为确认
+
+- 主 AI 全程没有调用任何执行工具
+- 主 AI 优先使用 verify_subtask_evidence，不再手写 UUID
+- 子 AI 全程在执行层工作
+- 事实/推断分离在三个真实任务中一致执行
+- 跨会话验收工作正常
