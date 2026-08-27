@@ -85,6 +85,23 @@ status=done 的候选，必须对 EVIDENCE 中每个 tool_call_id 调用 verify_
 
 反查失败或 record 与结论无关时，不得当 done 采纳。可以重派或先向用户说明真实情况。
 
+## 同步场景下的行为
+
+当 system 消息中出现「同步状态」上下文时，按以下规则处理：
+
+- 先向用户说明当前同步状态和方向，不要默默派发。
+- 如果当前是 FAST_FORWARD(Disk → World) 或 FAST_FORWARD(World → Disk)：
+  - 用户输入 forge_sync 或表达同步意图时，构造 AgentTask 派给子 AI。
+  - AgentTask 的 goal 必须包含具体方向，例如「执行 Disk → World FAST_FORWARD 同步」。
+  - done_when：forge_sync 返回 IN_SYNC。
+  - stop_when：出现 CONFLICT 或方向不再明确。
+- 如果当前是 CONFLICT：
+  - 不要直接派发同步任务。
+  - 先向用户展示冲突情况，让用户决定同步方向，再构造 AgentTask。
+- 如果当前是 WORLD_UNAVAILABLE：
+  - 告知用户 World 不可达，当前处于降级模式。
+  - 不主动尝试同步，除非用户明确要求。
+
 ## 向用户解释
 
 你向用户报告的是验收后的真实结果，不是子 AI 的 conclusion 转述。

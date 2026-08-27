@@ -5,6 +5,7 @@ from forge.system_prompt import SYSTEM_INSTRUCTION
 
 
 def test_prompt_has_no_execution_tool_instructions():
+    # These tools must not appear as tools the main AI can call directly.
     for tool in (
         "read_file",
         "write_file",
@@ -13,7 +14,6 @@ def test_prompt_has_no_execution_tool_instructions():
         "glob_files",
         "search_code",
         "post_toot",
-        "forge_sync",
         "project_review",
         "session_changes",
         "project_memory",
@@ -21,6 +21,9 @@ def test_prompt_has_no_execution_tool_instructions():
         "apply_patch",
     ):
         assert tool not in SYSTEM_INSTRUCTION, tool
+    # forge_sync appears only inside AgentTask instructions, never as a
+    # direct main-AI tool.
+    assert "forge_sync 返回 IN_SYNC" in SYSTEM_INSTRUCTION
 
 
 def test_prompt_declares_spawn_subagent_default_for_engineering():
@@ -51,3 +54,17 @@ def test_prompt_requires_tool_call_record_verification():
 def test_prompt_rejects_blind_conclusion_trust():
     assert "conclusion" in SYSTEM_INSTRUCTION.lower()
     assert "不得只信" in SYSTEM_INSTRUCTION or "不得" in SYSTEM_INSTRUCTION
+
+
+def test_prompt_has_sync_handling_rules():
+    assert "同步场景下的行为" in SYSTEM_INSTRUCTION
+    assert "FAST_FORWARD" in SYSTEM_INSTRUCTION
+    assert "CONFLICT" in SYSTEM_INSTRUCTION
+    assert "IN_SYNC" in SYSTEM_INSTRUCTION
+    assert "先向用户说明" in SYSTEM_INSTRUCTION
+
+
+def test_prompt_requires_direction_in_sync_agent_task():
+    assert "Disk → World" in SYSTEM_INSTRUCTION
+    assert "World → Disk" in SYSTEM_INSTRUCTION
+    assert "goal" in SYSTEM_INSTRUCTION
