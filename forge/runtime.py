@@ -1281,6 +1281,7 @@ class Runtime:
                     agent_task,
                     project_root=workspace.project_root,
                     confirm_fn=_subagent_confirm,
+                    emit=self.emit,
                 )
                 # Machine precheck: re-verify evidence against on-disk ToolCallRecord
                 # before the main agent sees the result.

@@ -22,6 +22,7 @@ from forge.agent_abi import (
 from forge.constraint_enforcer import enforce
 from forge.core.sanitizer import sanitize_and_redact
 from forge.tools.schemas import EXECUTION_PLANE_TOOLS
+from forge.events import Event, EventType
 from forge.execution_gate import (
     ALLOW,
     PAUSE,
@@ -326,6 +327,7 @@ def run_subagent(
     *,
     project_root: str | os.PathLike = ".",
     confirm_fn=None,
+    emit=None,
 ) -> AgentResult:
     """Run an isolated tool loop; return machine-assembled AgentResult."""
     if not isinstance(task, AgentTask):
@@ -447,6 +449,11 @@ def run_subagent(
                 # Layer B: snapshot before execute.
                 # authorized write = confirmed PAUSE, or policy-ALLOW recovery tools.
                 authorized_write = confirmed_write or (tc.name in ("undo_last_tx",))
+                if emit is not None:
+                    try:
+                        emit(Event(EventType.TOOL_CALL_START, {"name": tc.name, "args": args}))
+                    except Exception:
+                        pass
                 before = _layer_b_snapshot(project_root, args, tool_name=tc.name)
                 result, tool_call_id = _execute_tool(
                     tools,
@@ -492,6 +499,20 @@ def run_subagent(
                             ),
                         )
 
+                if emit is not None:
+                    try:
+                        emit(
+                            Event(
+                                EventType.TOOL_CALL_END,
+                                {
+                                    "name": tc.name,
+                                    "success": getattr(result, "success", False),
+                                    "display": result.display or "",
+                                },
+                            )
+                        )
+                    except Exception:
+                        pass
                 display = result.display or ""
                 if tool_call_id:
                     display = f"tool_call_id={tool_call_id}\n{display}"
