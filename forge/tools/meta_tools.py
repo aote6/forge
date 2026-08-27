@@ -162,7 +162,13 @@ def make_meta_tools(workspace) -> dict:
         )
 
     def run_command(cmd: str, timeout: int = 60) -> ToolResult:
-        """执行 shell；保留尾部输出，并提取 Error/Traceback 切片。"""
+        """执行 shell；保留尾部输出，并提取 Error/Traceback 切片。
+
+        ToolCallRecord.output must retain ground-truth stdout/stderr so
+        independent verify can confirm concrete facts (e.g. \"598 passed\"),
+        not only returncode == 0. Large streams are size-capped with explicit
+        truncation flags; verifier must not treat truncated content as complete.
+        """
         try:
             danger = is_dangerous_command(cmd)
             if danger:
@@ -180,7 +186,9 @@ def make_meta_tools(workspace) -> dict:
                 text=True,
                 timeout=int(timeout) if timeout else 60,
             )
-            out = (r.stdout or "") + (r.stderr or "")
+            stdout_raw = r.stdout or ""
+            stderr_raw = r.stderr or ""
+            out = stdout_raw + stderr_raw
             tail = _truncate(out)
             slices = error_slices(out)
             body = tail
@@ -193,16 +201,41 @@ def make_meta_tools(workspace) -> dict:
                     update_memory(workspace.project_root, test_command=cmd.strip())
                 except Exception as e:
                     print(f"[local_tools] update_memory failed: {e}", file=sys.stderr)
-            return ToolResult.ok(
-                display=format_block(
-                    "run_command",
-                    "OK" if ok else "FAIL",
-                    {"cmd": cmd, "exit": r.returncode},
-                    body,
-                    hint="" if ok else "看 ERROR_SLICES / 尾部输出",
-                ),
-                payload={"returncode": r.returncode, "cmd": cmd},
-            ) if ok else ToolResult.fail(
+
+            # Ground-truth for ToolCallRecord: keep real streams with explicit
+            # truncation markers (MAX_OUTPUT_CHARS). Never silent-truncate.
+            from forge.tools._common import MAX_OUTPUT_CHARS
+
+            def _cap(s: str) -> tuple[str, bool]:
+                if len(s) > MAX_OUTPUT_CHARS:
+                    return s[-MAX_OUTPUT_CHARS:], True
+                return s, False
+
+            stdout_stored, stdout_truncated = _cap(stdout_raw)
+            stderr_stored, stderr_truncated = _cap(stderr_raw)
+            payload = {
+                "returncode": r.returncode,
+                "cmd": cmd,
+                "stdout": stdout_stored,
+                "stderr": stderr_stored,
+            }
+            if stdout_truncated:
+                payload["stdout_truncated"] = True
+            if stderr_truncated:
+                payload["stderr_truncated"] = True
+
+            if ok:
+                return ToolResult.ok(
+                    display=format_block(
+                        "run_command",
+                        "OK",
+                        {"cmd": cmd, "exit": r.returncode},
+                        body,
+                        hint="",
+                    ),
+                    payload=payload,
+                )
+            return ToolResult.fail(
                 display=format_block(
                     "run_command",
                     "FAIL",
@@ -210,7 +243,7 @@ def make_meta_tools(workspace) -> dict:
                     body,
                     hint="看 ERROR_SLICES；或 run_test_structured",
                 ),
-                payload={"returncode": r.returncode, "cmd": cmd},
+                payload=payload,
             )
         except Exception as e:
             return ToolResult.fail(

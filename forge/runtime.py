@@ -1286,6 +1286,11 @@ class Runtime:
                 # Machine precheck: re-verify evidence against on-disk ToolCallRecord
                 # before the main agent sees the result.
                 result = precheck_agent_result(workspace.project_root, result)
+                # Persist structured AgentResult by subtask_id so main agent can
+                # call verify_subtask_evidence(subtask_id) without re-emitting
+                # machine identity (tool_call_id) through LLM text.
+                if result.subtask_id:
+                    self._subagent_results[str(result.subtask_id)] = result.to_dict()
                 display = format_agent_result_for_parent(result)
                 return ToolResult.ok(
                     display=display,
@@ -1303,7 +1308,133 @@ class Runtime:
                     )
                 )
 
+        def verify_subtask_evidence(subtask_id: str) -> ToolResult:
+            """Machine verification of all Evidence for a subtask.
+
+            Input is only subtask_id. Runtime resolves the structured AgentResult
+            stored at spawn_subagent return, reads full tool_call_id values from
+            AgentResult.evidence, and performs exact ToolCallRecord lookups.
+            Does NOT require the main AI to re-emit UUIDs. Does NOT perform
+            semantic task-completion judgment — that remains the main agent's job.
+            """
+            from forge.tool_call_record import get_record
+            from forge.tools.display import format_block
+
+            sid = (subtask_id or "").strip()
+            if not sid:
+                return ToolResult.fail(
+                    display=format_block(
+                        "verify_subtask_evidence",
+                        "FAIL",
+                        {"reason": "subtask_id required"},
+                    ),
+                    payload={"subtask_id": sid, "found": False},
+                )
+            stored = self._subagent_results.get(sid)
+            if stored is None:
+                return ToolResult.fail(
+                    display=format_block(
+                        "verify_subtask_evidence",
+                        "FAIL",
+                        {
+                            "subtask_id": sid,
+                            "reason": "no structured AgentResult stored for subtask_id",
+                        },
+                    ),
+                    payload={"subtask_id": sid, "found": False, "evidence_results": []},
+                )
+
+            raw_evidence = stored.get("evidence") or []
+            evidence_results: list[dict] = []
+            all_ok = True
+            for item in raw_evidence:
+                if not isinstance(item, dict):
+                    continue
+                tc_id = str(item.get("tool_call_id") or "").strip()
+                if not tc_id:
+                    evidence_results.append(
+                        {
+                            "tool_call_id": "",
+                            "ok": False,
+                            "reason": "empty tool_call_id in evidence",
+                            "record": None,
+                            "evidence": item,
+                        }
+                    )
+                    all_ok = False
+                    continue
+                rec = get_record(workspace.project_root, tc_id)
+                ok = rec is not None
+                if ok and rec.get("subtask_id") and str(rec.get("subtask_id")) != sid:
+                    ok = False
+                if not ok:
+                    all_ok = False
+                evidence_results.append(
+                    {
+                        "tool_call_id": tc_id,
+                        "ok": ok,
+                        "reason": None if ok else "no ToolCallRecord found (exact id)",
+                        "record": rec if ok else None,
+                        "evidence": item,
+                    }
+                )
+
+            payload = {
+                "subtask_id": sid,
+                "found": True,
+                "agent_status": stored.get("status"),
+                "evidence_count": len(evidence_results),
+                "all_ok": all_ok and len(evidence_results) > 0,
+                "evidence_results": evidence_results,
+            }
+            body_lines = [
+                f"subtask_id: {sid}",
+                f"agent_status: {payload['agent_status']}",
+                f"evidence_count: {payload['evidence_count']}",
+                f"all_ok: {payload['all_ok']}",
+            ]
+            for er in evidence_results:
+                body_lines.append(
+                    f"- tool_call_id={er['tool_call_id']} ok={er['ok']}"
+                    + (f" reason={er['reason']}" if er.get("reason") else "")
+                )
+                if er.get("ok") and er.get("record"):
+                    rec = er["record"]
+                    body_lines.append(
+                        f"  tool_name={rec.get('tool_name')} status={rec.get('status')}"
+                    )
+                    out = rec.get("output")
+                    if isinstance(out, dict):
+                        if "returncode" in out:
+                            body_lines.append(f"  returncode={out.get('returncode')}")
+                        if "stdout" in out:
+                            stdout_preview = str(out.get("stdout") or "")
+                            if len(stdout_preview) > 500:
+                                stdout_preview = stdout_preview[:500] + "...(preview)"
+                            body_lines.append(f"  stdout={stdout_preview!r}")
+                        if out.get("stdout_truncated"):
+                            body_lines.append("  stdout_truncated=True")
+                        if "stderr" in out and out.get("stderr"):
+                            body_lines.append(
+                                f"  stderr={str(out.get('stderr'))[:200]!r}"
+                            )
+
+            if not evidence_results:
+                body_lines.append("(no evidence items in stored AgentResult)")
+
+            status_label = "OK" if payload["all_ok"] else "FAIL"
+            display = format_block(
+                "verify_subtask_evidence",
+                status_label,
+                {"subtask_id": sid, "all_ok": payload["all_ok"]},
+                "\n".join(body_lines),
+            )
+            if payload["all_ok"]:
+                return ToolResult.ok(display=display, payload=payload)
+            return ToolResult.fail(display=display, payload=payload)
+
         tools["spawn_subagent"] = spawn_subagent
+        tools["verify_subtask_evidence"] = verify_subtask_evidence
         self.executor = ToolExecutor(tools)
 
         self.conversation = Conversation()
@@ -1311,6 +1442,9 @@ class Runtime:
         self._handlers: dict = {t: [] for t in EventType}
         # Continuous Conversation + Pending Action Gate（唯一等待确认状态）
         self._pending_action: PendingAction | None = None
+        # Structured AgentResult by subtask_id (machine store; not LLM-reparsed).
+        # Enables verify_subtask_evidence(subtask_id) without re-emitting UUIDs.
+        self._subagent_results: dict[str, dict] = {}
 
     def _startup_sync_check(self):
         """启动时只做同步状态检测，不自动 replay receipt 写磁盘（决策 3/8）。

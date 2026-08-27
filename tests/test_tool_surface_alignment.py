@@ -54,6 +54,11 @@ def _full_registry(tmp_path: Path) -> tuple[dict, set[str]]:
         return None  # real impl lives in Runtime; signature is the contract
 
     tools["spawn_subagent"] = spawn_subagent
+
+    def verify_subtask_evidence(subtask_id: str):
+        return None  # real impl lives in Runtime; signature is the contract
+
+    tools["verify_subtask_evidence"] = verify_subtask_evidence
     return tools
 
 

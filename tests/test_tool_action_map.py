@@ -26,6 +26,7 @@ EXPECTED_TOOL_NAMES = [
     "spawn_subagent",
     "session_changes",
     "verify_tool_call",
+    "verify_subtask_evidence",
     "project_memory",
     "project_review",
     "web_fetch",

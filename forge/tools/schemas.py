@@ -552,17 +552,38 @@ CONTROL_PLANE_TOOL_DECLARATIONS = [
             "按 tool_call_id 独立反查 ToolCallRecord（只读）。"
             "返回 tool_name/input/output/status/error/subtask_id；"
             "不返回子 Agent 的 claim 或 conclusion。"
-            "验收 spawn_subagent 的 done 候选时必须对 evidence 中的 id 调用本工具。"
+            "精确匹配完整 tool_call_id；截断/前缀 ID 查不到。"
+            "优先使用 verify_subtask_evidence(subtask_id) 做整任务验收，"
+            "避免主 Agent 重新生成 UUID。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "tool_call_id": {
                     "type": "string",
-                    "description": "Evidence 中的 tool_call_id（如 tc_…）",
+                    "description": "Evidence 中的完整 tool_call_id（如 tc_…），必须精确匹配",
                 },
             },
             "required": ["tool_call_id"],
+        },
+    },
+    {
+        "name": "verify_subtask_evidence",
+        "description": (
+            "按 subtask_id 机器验收该子任务全部 Evidence（只读）。"
+            "主 Agent 只传 subtask_id；Runtime 内部从结构化 AgentResult 读取完整 "
+            "tool_call_id 并精确反查 ToolCallRecord。"
+            "不依赖主 Agent 复制 UUID。不做语义任务完成判断。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "subtask_id": {
+                    "type": "string",
+                    "description": "spawn_subagent 返回的 subtask_id",
+                },
+            },
+            "required": ["subtask_id"],
         },
     },
     SUBMIT_PLAN_DECLARATION,
