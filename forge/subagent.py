@@ -404,6 +404,28 @@ def run_subagent(
                     )
                     continue
 
+                # --- R2 Gate: SyncDecision pending blocks writes / forge_sync ---
+                from forge.runtime_state import sync_decision_pending_blocks
+                from forge.tools.schemas import MUTATION_TOOL_NAMES, RECONCILIATION_TOOL_NAMES
+
+                blocked, summary = sync_decision_pending_blocks(project_root)
+                if blocked and (
+                    tc.name in MUTATION_TOOL_NAMES
+                    or tc.name in RECONCILIATION_TOOL_NAMES
+                    or tc.name == "forge_sync"
+                ):
+                    messages.append(
+                        Message(
+                            role="tool",
+                            content=sanitize_and_redact(
+                                f"sync_decision pending: refused {tc.name}. {summary}"
+                            ),
+                            tool_call_id=getattr(tc, "id", None),
+                            name=tc.name,
+                        )
+                    )
+                    continue
+
                 # --- Execution Gate: confirmation layer (post-enforce) ---
                 gate = classify_for_confirmation(tc.name, args)
                 confirmed_write = False

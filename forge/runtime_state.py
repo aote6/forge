@@ -257,3 +257,17 @@ class RuntimeStateStore:
         st = RuntimeState()
         st.recovery = derive_recovery(st.phase, st.pending)
         return st
+
+
+def sync_decision_pending_blocks(project_root: str | Path) -> tuple[bool, str]:
+    """Gate helper: True when RuntimeState.pending.kind == sync_decision.
+
+    Used by Runtime tool loop, forge_sync, and subagent before mutations.
+    Does not invent a second state source — reads the same RuntimeStateStore.
+    """
+    store = RuntimeStateStore(project_root)
+    st = store.load()
+    if st.pending is not None and st.pending.kind == PENDING_KIND_SYNC_DECISION:
+        summary = st.pending.summary or "sync_decision pending"
+        return True, summary
+    return False, ""

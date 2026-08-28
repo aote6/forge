@@ -39,8 +39,20 @@ def make_tools(
             """显式同步：IN_SYNC 无操作 / FAST_FORWARD 安全推进 / CONFLICT 停止并出 diff。
 
             报告同时承载同步状态；只读状态查询可用 Runtime.sync_status() 或 CLI `status`。
+            R2: RuntimeState.pending.kind==sync_decision 时拒绝推进。
             """
             try:
+                from forge.runtime_state import sync_decision_pending_blocks
+
+                blocked, summary = sync_decision_pending_blocks(sync_layer.project_root)
+                if blocked:
+                    return ToolResult.fail(
+                        display=(
+                            "⛔ SyncDecision pending：同步策略点尚未决议，已拒绝 forge_sync 推进。\n"
+                            f"pending: {summary}\n"
+                            "请先 resolve_sync_decision(direction=disk_to_world|world_to_disk|abort)。"
+                        )
+                    )
                 # P2-1c 清账：先看是否正处在 Disk → World 分叉；若 forge_sync 成功把它
                 # FAST_FORWARD 回 World，则清掉对应的 direct_disk 待对账标记。
                 try:

@@ -1265,6 +1265,14 @@ class Runtime:
         )
         self.runtime_state = self._runtime_state_store.load()
         self.recovery = self.runtime_state.recovery
+
+        # R2: SyncDecision 持久化（.forge/sync_decision.json），与 RuntimeState.pending 对齐。
+        from forge.sync.decision import SyncDecisionStore
+
+        self._sync_decision_store = SyncDecisionStore(
+            project_root=workspace.project_root
+        )
+        self.sync_decision = self._sync_decision_store.load()
         path_map = getattr(self.world, "_path_map", None)
         file_projection = FileProjection(
             project_root=workspace.project_root,
@@ -1573,12 +1581,169 @@ class Runtime:
         )
 
     def sync_status(self):
-        """程序化同步状态查询（返回 SyncReport）。"""
-        return self.sync_layer.detect()
+        """程序化同步状态查询（返回 SyncReport）。
 
-    def sync(self):
-        """显式执行 `forge sync`：检测 → 依状态安全推进 / 报告冲突。"""
-        return self.sync_layer.sync()
+        R2: CONFLICT / FAST_FORWARD 时打开 SyncDecision + RuntimeState.pending。
+        """
+        report = self.sync_layer.detect()
+        self._maybe_open_sync_decision(report)
+        return report
+
+    def _maybe_open_sync_decision(self, report) -> None:
+        """detect 结果需要策略点时，写入 SyncDecision 与 RuntimeState.pending。
+
+        若同 basis 已有 decided/aborted 决议，不重复打开 pending（允许一次 forge_sync 推进）。
+        IN_SYNC 时清掉已完成的 decision 文件。
+        """
+        if getattr(self, "_sync_decision_store", None) is None:
+            return
+        if getattr(self, "_runtime_state_store", None) is None:
+            return
+        if getattr(self, "runtime_state", None) is None:
+            return
+        from forge.runtime_state import (
+            PHASE_AWAITING_USER,
+            PENDING_KIND_SYNC_DECISION,
+            Pending,
+        )
+        from forge.sync.decision import (
+            STATUS_ABORTED,
+            STATUS_DECIDED,
+            STATUS_PENDING,
+            SyncDecision,
+            needs_sync_decision,
+        )
+        from forge.sync.sync_layer import IN_SYNC
+
+        status = getattr(report, "status", None) or ""
+        if status == IN_SYNC:
+            existing = self._sync_decision_store.load()
+            if existing is not None:
+                self._sync_decision_store.clear()
+                self.sync_decision = None
+            rs = getattr(self, "runtime_state", None)
+            if (
+                rs is not None
+                and rs.pending is not None
+                and rs.pending.kind == PENDING_KIND_SYNC_DECISION
+            ):
+                self.runtime_state.pending = None
+                if self.runtime_state.phase == PHASE_AWAITING_USER:
+                    from forge.runtime_state import PHASE_IDLE
+                    self.runtime_state.phase = PHASE_IDLE
+                self.runtime_state.refresh_recovery()
+                self.recovery = self.runtime_state.recovery
+                self._runtime_state_store.save(self.runtime_state)
+            return
+
+        if not needs_sync_decision(status):
+            return
+
+        existing = self._sync_decision_store.load()
+        if existing is not None and existing.status == STATUS_PENDING:
+            decision = existing
+            # keep RuntimeState.pending aligned
+        elif (
+            existing is not None
+            and existing.status in (STATUS_DECIDED, STATUS_ABORTED)
+            and existing.basis == status
+        ):
+            # Already resolved for this basis — do not re-open Gate.
+            self.sync_decision = existing
+            return
+        else:
+            decision = SyncDecision.new_pending(basis=status)
+            self._sync_decision_store.save(decision)
+
+        self.sync_decision = decision
+        detail = getattr(report, "detail", "") or ""
+        summary = f"sync_decision required: basis={status}"
+        if detail:
+            summary = f"{summary} detail={detail}"
+        self.runtime_state.phase = PHASE_AWAITING_USER
+        self.runtime_state.pending = Pending(
+            kind=PENDING_KIND_SYNC_DECISION,
+            summary=summary.strip(),
+            payload={
+                "decision_id": decision.decision_id,
+                "basis": decision.basis,
+            },
+        )
+        self.runtime_state.refresh_recovery()
+        self.recovery = self.runtime_state.recovery
+        self._runtime_state_store.save(self.runtime_state)
+
+    def resolve_sync_decision(self, direction: str):
+        """完成同步策略决议：更新 SyncDecision，清除 RuntimeState.pending。
+
+        direction: disk_to_world | world_to_disk | abort
+        不自动执行 forge_sync；决议后 Gate 放行，由调用方再推进同步。
+        """
+        from forge.runtime_state import PHASE_IDLE
+        from forge.sync.decision import (
+            STATUS_PENDING,
+            SyncDecision,
+            VALID_DIRECTIONS,
+        )
+
+        direction = str(direction or "").strip()
+        if direction not in VALID_DIRECTIONS:
+            raise ValueError(
+                f"direction must be one of {sorted(VALID_DIRECTIONS)}, got {direction!r}"
+            )
+
+        decision = self._sync_decision_store.load()
+        if decision is None or decision.status != STATUS_PENDING:
+            # 仍清除可能残留的 pending，保持幂等
+            if self.runtime_state.pending is not None:
+                self.runtime_state.pending = None
+                if self.runtime_state.phase == "AWAITING_USER":
+                    self.runtime_state.phase = PHASE_IDLE
+                self.runtime_state.refresh_recovery()
+                self.recovery = self.runtime_state.recovery
+                self._runtime_state_store.save(self.runtime_state)
+            self.sync_decision = decision
+            return decision
+
+        decision.apply_direction(direction)
+        self._sync_decision_store.save(decision)
+        self.sync_decision = decision
+
+        self.runtime_state.pending = None
+        if self.runtime_state.phase == "AWAITING_USER":
+            self.runtime_state.phase = PHASE_IDLE
+        self.runtime_state.refresh_recovery()
+        self.recovery = self.runtime_state.recovery
+        self._runtime_state_store.save(self.runtime_state)
+        return decision
+
+    def _guard_sync_decision_pending(self, tool_name: str):
+        """R2 Gate: pending.kind==sync_decision 时拒绝写类工具与 forge_sync。"""
+        from forge.adapters.base import ToolResult
+        from forge.runtime_state import sync_decision_pending_blocks
+        from forge.tools.schemas import MUTATION_TOOL_NAMES, RECONCILIATION_TOOL_NAMES
+
+        ws = getattr(self, "workspace", None)
+        if ws is None or not getattr(ws, "project_root", None):
+            return None
+        try:
+            blocked, summary = sync_decision_pending_blocks(ws.project_root)
+        except Exception:
+            return None
+        if not blocked:
+            return None
+        # 只拦写/对账推进；只读工具放行
+        if tool_name not in MUTATION_TOOL_NAMES and tool_name not in RECONCILIATION_TOOL_NAMES:
+            if tool_name != "forge_sync":
+                return None
+        return ToolResult.fail(
+            display=(
+                "⛔ SyncDecision pending：同步策略点尚未决议，已拒绝写入与 forge_sync 推进。\n"
+                f"pending: {summary}\n"
+                "请先 resolve_sync_decision(direction=disk_to_world|world_to_disk|abort)。"
+            )
+        )
+
 
     def _guard_external_change(self, tool_name: str):
         """运行期间外部变更守卫：变更工具执行前检测外部磁盘/Git 变化。
@@ -1588,6 +1753,10 @@ class Runtime:
         由工具自己标注 mode=direct_disk）；World object 操作没有磁盘等价物，
         继续 STOP，不得伪装成 direct_disk。
         """
+        # R2: SyncDecision pending 优先于外部变更守卫
+        blocked = self._guard_sync_decision_pending(tool_name)
+        if blocked is not None:
+            return blocked
         if tool_name not in MUTATION_TOOL_NAMES:
             return None
         # forge_sync 是对账入口本身，不得被外部变更守卫拦截（否则无法解决冲突）。
@@ -1864,6 +2033,11 @@ class Runtime:
         if self.sync_layer is None:
             return ("execute", None)
 
+        # R2 Gate: SyncDecision pending blocks forge_sync advancement
+        blocked = self._guard_sync_decision_pending("forge_sync")
+        if blocked is not None:
+            return ("result", blocked)
+
         try:
             report = self.sync_layer.detect()
         except Exception as e:
@@ -1871,6 +2045,9 @@ class Runtime:
                 "result",
                 ToolResult.fail(display=f"forge_sync detect failed: {e}"),
             )
+
+        # R2: CONFLICT / FAST_FORWARD 打开 SyncDecision
+        self._maybe_open_sync_decision(report)
 
         status = report.status
         display = report.format() if hasattr(report, "format") else str(report)
@@ -1886,7 +2063,9 @@ class Runtime:
             if status == CONFLICT:
                 display = (
                     display
-                    + "\n建议: CONFLICT 时请明确决定以 World 还是 Disk/Git 为准，勿自动覆盖。"
+                    + "\n建议: CONFLICT 时请 resolve_sync_decision("
+                    "direction=disk_to_world|world_to_disk|abort)，"
+                    "再执行 forge_sync；勿自动覆盖。"
                 )
                 return ("result", ToolResult.fail(display=display, payload=payload))
             if status == IN_SYNC:
@@ -1895,6 +2074,22 @@ class Runtime:
             return ("result", ToolResult.fail(display=display, payload=payload))
 
         if status in (FAST_FORWARD_DISK_TO_WORLD, FAST_FORWARD_WORLD_TO_DISK):
+            # R2: if SyncDecision just opened (pending), stop — do not mix with Mutation Confirmation
+            from forge.runtime_state import PENDING_KIND_SYNC_DECISION
+
+            rs = getattr(self, "runtime_state", None)
+            if (
+                rs is not None
+                and rs.pending is not None
+                and rs.pending.kind == PENDING_KIND_SYNC_DECISION
+            ):
+                display = (
+                    display
+                    + "\nSyncDecision pending：请先 resolve_sync_decision("
+                    "direction=disk_to_world|world_to_disk|abort)，"
+                    "再调用 forge_sync 推进。"
+                )
+                return ("result", ToolResult.fail(display=display, payload=payload))
             summary = (
                 f"forge_sync 需要推进同步（{status}）\n"
                 f"{display}\n"
