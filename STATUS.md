@@ -1459,3 +1459,80 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - 子 AI 全程在执行层工作
 - 事实/推断分离在三个真实任务中一致执行
 - 跨会话验收工作正常
+
+## R1/R2/R3 架构闭合 + SyncDecision 真实闭环（2026-08-28）
+
+### 背景
+
+在完成三轮反审计后，确认 Forge 在「运行时生命周期」「同步决策」「AgentTask 机器边界」三根支柱上存在结构性缺口。审计收敛为最小原语 R1/R2/R3，并冻结不变量。
+
+### R3：AgentTask Contract 入口接线
+
+- 问题：spawn_subagent schema 只有 task 字符串，done_when/stop_when/not_allowed/scope 在生产入口不可达；constraints 恒为空。
+- 修复：
+  - schemas.py 暴露 goal/done_when/stop_when/not_allowed/scope/max_steps
+  - runtime.py 提取 _build_agent_task_from_spawn_args 纯函数
+  - spawn_subagent 闭包调用纯函数构造完整 AgentTask
+  - not_allowed/scope 折叠进 constraints，由 constraint_enforcer 强制
+- 测试：新增 tests/test_agent_task_contract_wiring.py；全量 630 passed。
+
+### R1：RuntimeState 最小持久化
+
+- 问题：运行时状态散落在栈帧、日志、WorkingSet，崩溃后无法判断「从哪里继续」。
+- 修复：
+  - 新增 forge/runtime_state.py：RuntimeState / Pending / Recovery / Store
+  - 持久化 .forge/runtime_state.json，只含 phase / active_subtask_id / pending
+  - recovery 不持久化，启动时由 phase + pending 推导
+  - 损坏文件安全回退 .broken，对齐 SyncState 模式
+- 测试：新增 tests/test_runtime_state.py；全量 640 passed。
+
+### R2：SyncDecision 最小闭环
+
+- 问题：CONFLICT/FAST_FORWARD 是用户决策点，但没有机器对象；Mutation Confirmation 被混同于同步方向决议。
+- 修复：
+  - 新增 forge/sync/decision.py：SyncDecision + SyncDecisionStore
+  - sync_status() 检测到 CONFLICT/FAST_FORWARD 时打开 decision + RuntimeState.pending
+  - Gate 在 pending.kind=sync_decision 时拒绝 mutation 和 forge_sync
+  - resolve_sync_decision(direction) 完成决议并清除 pending
+- 测试：新增 tests/test_sync_decision_r2.py；全量 650 passed。
+
+### R2 真实闭环暴露的缺口与修复
+
+- 缺口：resolve_sync_decision 只有 Runtime API，没有控制面工具，用户/主 AI 无法触达决策入口。
+- 真实验证：forge_sync 被 Gate 拦截，子 AI 报告 blocked，主 AI 无法完成决议，闭环断裂。
+- 修复：
+  - 新增控制面工具 resolve_sync_decision(direction)
+  - schema + tool_action_map + Runtime 注册 + system_prompt 行为规则
+  - 主 AI 必须得到用户明确方向后才能调用；子 AI 不可见该工具
+- 测试：更新相关测试；全量 652 passed。
+
+### 真实行为验证：FAST_FORWARD SyncDecision 闭环
+
+- 场景：FAST_FORWARD(Disk → World)
+- 链路：
+  1. 主 AI 说明方向唯一，请求用户确认
+  2. 用户确认后主 AI 调用 resolve_sync_decision(direction=disk_to_world)
+  3. pending 清除，status=decided
+  4. 主 AI 派子 AI 执行 forge_sync
+  5. forge_sync 弹 Mutation Confirmation，用户确认
+  6. forge_sync 返回 IN_SYNC（world_version=115, disk_synced_version=115）
+  7. 主 AI verify_subtask_evidence + verify_tool_call 验收通过
+- 关键点：
+  - SyncDecision 与 Mutation Confirmation 两层分离，各自独立确认
+  - 主 AI 未自行决定方向，用户是最终授权者
+  - pending 清除后 Gate 正确放行
+
+### 当前架构状态
+
+- R1 RuntimeState：最小持久化闭环 ✅
+- R2 SyncDecision：最小决策闭环 + 真实验证 ✅
+- R3 AgentTask Contract：入口接线 ✅
+- 未完成：durable pause / 子循环恢复 / 全局 stop / 控制面状态查询工具
+- 未完成产品能力：PTY 实时终端 / CLI -c / Termux 系统集成
+- 未清理技术债：主循环旧 PendingAction / 旧测试迁移 / glob_files 隐藏目录
+
+### 测试基线
+
+- 全量：652 passed
+- git diff --check：clean
+
