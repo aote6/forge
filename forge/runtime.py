@@ -1253,9 +1253,18 @@ class Runtime:
 
         from forge.sync.state import SyncState
         from forge.sync.sync_layer import SyncLayer
+        from forge.runtime_state import RuntimeStateStore
 
         # Sync metadata 权威状态（决策 1：.forge/sync_state.json，不放入 Veritas）。
         self.sync_state = SyncState(project_root=workspace.project_root)
+
+        # R1: RuntimeState 生命周期真相（.forge/runtime_state.json）。
+        # 启动只加载 + 推导 recovery；不自动续跑子循环、不消费 Gate。
+        self._runtime_state_store = RuntimeStateStore(
+            project_root=workspace.project_root
+        )
+        self.runtime_state = self._runtime_state_store.load()
+        self.recovery = self.runtime_state.recovery
         path_map = getattr(self.world, "_path_map", None)
         file_projection = FileProjection(
             project_root=workspace.project_root,
