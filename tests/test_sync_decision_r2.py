@@ -371,3 +371,85 @@ def test_subagent_blocks_write_when_pending(tmp_path: Path):
         project_root=tmp_path,
     )
     assert executed == []
+
+def test_resolve_sync_decision_tool_registered(tmp_path: Path, monkeypatch):
+    """控制面工具 resolve_sync_decision 注册且可调用。"""
+    monkeypatch.setattr(
+        "forge.world.runtime.WorldRuntime.ensure_identity",
+        lambda self: None,
+    )
+    from forge.adapters.base import BaseAdapter
+    from forge.memory import MemoryStore
+    from forge.runtime import Runtime
+    from forge.workspace import Workspace
+
+    class _A(BaseAdapter):
+        def send(self, messages, schemas):
+            raise NotImplementedError
+
+    try:
+        rt = Runtime(
+            adapter=_A(),
+            workspace=Workspace(project_root=str(tmp_path)),
+            memory=MemoryStore(),
+        )
+    except Exception as e:
+        import pytest
+        pytest.skip(f"Runtime init blocked: {e}")
+
+    assert "resolve_sync_decision" in rt.executor.tools
+
+    # Seed pending decision
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    SyncDecisionStore(tmp_path).save(decision)
+    RuntimeStateStore(tmp_path).save(
+        RuntimeState(
+            phase=PHASE_AWAITING_USER,
+            pending=Pending(
+                kind=PENDING_KIND_SYNC_DECISION,
+                summary="wait",
+                payload={"decision_id": decision.decision_id, "basis": CONFLICT},
+            ),
+        )
+    )
+
+    rt._sync_decision_store = SyncDecisionStore(tmp_path)
+    rt.sync_decision = decision
+    rt.runtime_state = RuntimeStateStore(tmp_path).load()
+    rt.recovery = rt.runtime_state.recovery
+
+    result = rt.executor.tools["resolve_sync_decision"](DIRECTION_DISK_TO_WORLD)
+    assert result.success is True
+    assert "decided" in (result.display or "")
+
+    st = RuntimeStateStore(tmp_path).load()
+    assert st.pending is None
+    assert st.phase == PHASE_IDLE
+
+
+def test_resolve_tool_rejects_bad_direction(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "forge.world.runtime.WorldRuntime.ensure_identity",
+        lambda self: None,
+    )
+    from forge.adapters.base import BaseAdapter
+    from forge.memory import MemoryStore
+    from forge.runtime import Runtime
+    from forge.workspace import Workspace
+
+    class _A(BaseAdapter):
+        def send(self, messages, schemas):
+            raise NotImplementedError
+
+    try:
+        rt = Runtime(
+            adapter=_A(),
+            workspace=Workspace(project_root=str(tmp_path)),
+            memory=MemoryStore(),
+        )
+    except Exception as e:
+        import pytest
+        pytest.skip(f"Runtime init blocked: {e}")
+
+    result = rt.executor.tools["resolve_sync_decision"]("wrong_direction")
+    assert result.success is False

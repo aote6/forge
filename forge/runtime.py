@@ -1514,8 +1514,32 @@ class Runtime:
                 return ToolResult.ok(display=display, payload=payload)
             return ToolResult.fail(display=display, payload=payload)
 
+        def resolve_sync_decision_tool(direction: str) -> ToolResult:
+            """控制面工具：完成 SyncDecision 决议。
+
+            主 AI 必须先得到用户明确方向，不得自行决定。
+            决议成功后只清除 pending，不自动执行 forge_sync。
+            """
+            from forge.adapters.base import ToolResult as TR
+
+            try:
+                decision = self.resolve_sync_decision(direction)
+            except ValueError as e:
+                return TR.fail(display=str(e))
+            if decision is None:
+                return TR.fail(display="没有待决议的 SyncDecision。")
+            return TR.ok(
+                display=(
+                    f"SyncDecision 已决议：direction={decision.direction} "
+                    f"status={decision.status}\n"
+                    "pending 已清除；现在可以调用 forge_sync 推进同步。"
+                ),
+                payload=decision.to_dict(),
+            )
+
         tools["spawn_subagent"] = spawn_subagent
         tools["verify_subtask_evidence"] = verify_subtask_evidence
+        tools["resolve_sync_decision"] = resolve_sync_decision_tool
         self.executor = ToolExecutor(tools)
 
         self.conversation = Conversation()

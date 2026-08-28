@@ -614,6 +614,28 @@ CONTROL_PLANE_TOOL_DECLARATIONS = [
             "required": ["subtask_id"],
         },
     },
+    {
+        "name": "resolve_sync_decision",
+        "description": (
+            "完成一次同步策略决议（SyncDecision）。"
+            "只在用户明确表达同步方向后调用；主 AI 不得自行决定方向。"
+            "direction 必须为 disk_to_world（以 Disk/Git 为准）、"
+            "world_to_disk（以 World 为准）或 abort（放弃本次同步）。"
+            "决议完成后 pending 清除，Gate 放行，之后才能调用 forge_sync 推进。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "direction": {
+                    "type": "string",
+                    "description": (
+                        "用户明确选择的方向：disk_to_world | world_to_disk | abort"
+                    ),
+                },
+            },
+            "required": ["direction"],
+        },
+    },
     SUBMIT_PLAN_DECLARATION,
 ]
 

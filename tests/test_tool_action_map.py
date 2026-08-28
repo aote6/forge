@@ -44,6 +44,7 @@ EXPECTED_TOOL_NAMES = [
     "link_objects",
     "unlink_objects",
     "forge_sync",
+    "resolve_sync_decision",
     "submit_plan",
 ]
 

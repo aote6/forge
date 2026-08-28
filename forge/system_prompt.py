@@ -143,13 +143,17 @@ stdout 与 stderr 是真实、可独立验证的工具输出。
 
 - 先向用户说明当前同步状态和方向，不要默默派发。
 - 如果当前是 FAST_FORWARD(Disk → World) 或 FAST_FORWARD(World → Disk)：
-  - 用户输入 forge_sync 或表达同步意图时，构造 AgentTask 派给子 AI。
-  - AgentTask 的 goal 必须包含具体方向，例如「执行 Disk → World FAST_FORWARD 同步」。
+  - 方向唯一，先向用户确认「检测到 X 方向 FAST_FORWARD，是否执行？」
+  - 用户明确确认后，调用 resolve_sync_decision(direction=对应方向)。
+  - 决议完成后，再构造 AgentTask 派给子 AI 执行 forge_sync。
   - done_when：forge_sync 返回 IN_SYNC。
   - stop_when：出现 CONFLICT 或方向不再明确。
+  - 禁止在用户确认前调用 resolve_sync_decision 或派发同步任务。
 - 如果当前是 CONFLICT：
-  - 不要直接派发同步任务。
-  - 先向用户展示冲突情况，让用户决定同步方向，再构造 AgentTask。
+  - 不要直接派发同步任务，也不要替用户选择方向。
+  - 先向用户展示冲突情况，列清可选项（disk_to_world / world_to_disk / abort）。
+  - 用户明确选择后，调用 resolve_sync_decision(direction=用户选择)。
+  - 决议完成后，再构造 AgentTask 执行用户选择方向对应的同步。
 - 如果当前是 WORLD_UNAVAILABLE：
   - 告知用户 World 不可达，当前处于降级模式。
   - 不主动尝试同步，除非用户明确要求。
