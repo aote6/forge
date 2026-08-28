@@ -532,18 +532,46 @@ CONTROL_PLANE_TOOL_DECLARATIONS = [
     {
         "name": "spawn_subagent",
         "description": (
-            "派生子 Agent 处理复杂探索/定位子任务。"
-            "子 Agent 有独立上下文与工具循环（只读+str_replace/write_file），"
-            "最多 15 步；只把最终结论返回给主 Agent，避免搜索过程污染上下文。"
-            "适合：跨多文件找 bug、梳理调用链、做小范围修复。"
+            "派生子 Agent 执行一个 AgentTask。"
+            "必须提供 goal / done_when / stop_when；"
+            "not_allowed 与 scope 由执行层 constraint_enforcer 强制，不是提示词。"
+            "子 Agent 有独立上下文与工具循环，最多 max_steps 步；"
+            "只把 AgentResult 返回给主 Agent。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "task": {"type": "string", "description": "给子 Agent 的明确子任务描述"},
-                "max_steps": {"type": "integer", "description": "默认 15，上限 15"},
+                "goal": {
+                    "type": "string",
+                    "description": "单一子任务目标（AgentTask.goal）",
+                },
+                "done_when": {
+                    "type": "string",
+                    "description": "什么可观察事实成立才算完成（AgentTask.done_when）",
+                },
+                "stop_when": {
+                    "type": "string",
+                    "description": "硬停止条件（AgentTask.stop_when）；满足后子循环立即终止",
+                },
+                "not_allowed": {
+                    "description": (
+                        "执行禁区，进入 AgentTask.constraints 并由 constraint_enforcer 强制。"
+                        "可为动作名（如 write/delete）或工具名字符串数组；"
+                        "也可为 {items:[...], level:machine|advisory} 对象。"
+                    ),
+                },
+                "scope": {
+                    "description": (
+                        "允许探索/修改范围，进入 constraints.scope.paths 白名单。"
+                        "可为路径字符串、路径字符串数组，或 {paths:[...], level?} 对象。"
+                    ),
+                },
+                "max_steps": {
+                    "type": "integer",
+                    "description": "子循环最大步数，默认 15，上限 15",
+                },
             },
-            "required": ["task"],
+            "required": ["goal", "done_when", "stop_when"],
         },
     },
     {

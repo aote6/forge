@@ -1177,6 +1177,47 @@ class ToolExecutor:
             return ToolResult.fail(display=f"工具执行异常: {type(e).__name__}: {e}")
 
 
+def _build_agent_task_from_spawn_args(
+    goal: str = "",
+    done_when: str = "",
+    stop_when: str = "",
+    not_allowed=None,
+    scope=None,
+    max_steps: int = 15,
+    task: str = "",
+):
+    """R3: 把 spawn_subagent 入口参数折叠成完整 AgentTask。
+
+    task 仅作 goal 的 legacy alias。
+    not_allowed / scope 折叠进 constraints，由 constraint_enforcer 在子循环内强制。
+    """
+    from forge.agent_abi import AgentTask
+
+    goal_text = (goal or task or "").strip()
+    constraints: dict = {}
+    if not_allowed is not None and not_allowed != "":
+        constraints["not_allowed"] = not_allowed
+    if scope is not None and scope != "":
+        if isinstance(scope, str):
+            constraints["scope"] = {"paths": [scope]}
+        elif isinstance(scope, (list, tuple)):
+            constraints["scope"] = {
+                "paths": [str(p) for p in scope if str(p).strip()]
+            }
+        elif isinstance(scope, dict):
+            constraints["scope"] = scope
+        else:
+            constraints["scope"] = {"paths": [str(scope)]}
+
+    return AgentTask(
+        goal=goal_text,
+        done_when=str(done_when or ""),
+        stop_when=str(stop_when or ""),
+        constraints=constraints,
+        max_steps=int(max_steps) if max_steps else 15,
+    )
+
+
 class Runtime:
     def __init__(
         self,
@@ -1250,8 +1291,23 @@ class Runtime:
             allow_mutation=True,
             sync_layer=self.sync_layer,
         )
-        def spawn_subagent(task: str, max_steps: int = 15) -> ToolResult:
-            """Run an isolated subagent tool-loop; return AgentResult summary text."""
+        def spawn_subagent(
+            goal: str = "",
+            done_when: str = "",
+            stop_when: str = "",
+            not_allowed=None,
+            scope=None,
+            max_steps: int = 15,
+            task: str = "",
+        ) -> ToolResult:
+            """Run an isolated subagent tool-loop; return AgentResult summary text.
+
+            AgentTask contract entry (R3):
+              goal / done_when / stop_when / not_allowed / scope / max_steps
+            ``task`` is a legacy alias for ``goal`` only (not a parallel contract).
+            not_allowed / scope fold into AgentTask.constraints and are enforced
+            by constraint_enforcer inside the subagent loop before tool execution.
+            """
             from forge.agent_abi import (
                 AgentTask,
                 format_agent_result_for_parent,
@@ -1261,9 +1317,14 @@ class Runtime:
             try:
                 schemas = list(EXECUTION_PLANE_TOOL_DECLARATIONS)
                 sub_tools = {k: v for k, v in tools.items() if k in EXECUTION_PLANE_TOOLS}
-                agent_task = AgentTask(
-                    goal=task or "",
-                    max_steps=int(max_steps) if max_steps else 15,
+                agent_task = _build_agent_task_from_spawn_args(
+                    goal=goal,
+                    done_when=done_when,
+                    stop_when=stop_when,
+                    not_allowed=not_allowed,
+                    scope=scope,
+                    max_steps=max_steps,
+                    task=task,
                 )
                 def _subagent_confirm(summary: str) -> bool:
                     """Host-side confirmation; delegates to CLI input provider."""

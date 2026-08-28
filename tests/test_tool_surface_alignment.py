@@ -50,7 +50,15 @@ def _full_registry(tmp_path: Path) -> tuple[dict, set[str]]:
         sync_layer=_DummySync(),
     )
 
-    def spawn_subagent(task: str, max_steps: int = 15):
+    def spawn_subagent(
+        goal: str = "",
+        done_when: str = "",
+        stop_when: str = "",
+        not_allowed=None,
+        scope=None,
+        max_steps: int = 15,
+        task: str = "",
+    ):
         return None  # real impl lives in Runtime; signature is the contract
 
     tools["spawn_subagent"] = spawn_subagent
