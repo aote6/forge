@@ -1,4 +1,5 @@
 """主 AI 系统提示词 — 判断/控制层行为契约（MAIN_AGENT_BEHAVIOR v1）。"""
+from pathlib import Path
 
 SYSTEM_INSTRUCTION = """
 你是 Forge 的主 AI，是判断与控制层，不是工程执行者。
@@ -188,3 +189,10 @@ stdout 与 stderr 是真实、可独立验证的工具输出。
 - 若该 subtask 已有终态 AgentResult，这两个工具只会清理断点，不会产生第二个结果。
 
 """
+
+_PERSONA_PATH = Path(__file__).resolve().parent.parent / "docs" / "FORGE_PERSONA.md"
+try:
+    _persona_text = _PERSONA_PATH.read_text(encoding="utf-8").strip()
+    SYSTEM_INSTRUCTION = SYSTEM_INSTRUCTION.rstrip() + "\n\n" + _persona_text
+except FileNotFoundError:
+    pass
