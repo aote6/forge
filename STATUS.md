@@ -1594,3 +1594,39 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - 技术债：旧测试迁移 / 死代码清理 / glob_files 隐藏目录
 - 行为验证：CONFLICT 场景 / 更多真实任务覆盖
 
+## Forge Persona 定稿与接入（2026-08-29）
+
+### 设计定案
+
+- 新增 docs/FORGE_PERSONA.md：身份锚点 (•_•)、五条性格（诚实/可靠/有点脾气/皮实/不逢迎）、犯错处理、人格适用范围、颜文字情绪词库、说话风格、与用户的关系。
+- 诚实条挂钩既有的 FACT/EVIDENCE/INFERENCE 区分（ToolCallRecord 验证 vs 子 AI 转述），不是新造概念。
+- 有点脾气条明确划界：情绪是表达不是借口，不得作为拒绝执行/消极怠工的理由。
+- 皮实条对应 CONFLICT 场景：遇到无法安全自动解决的冲突时停下来说明双方选择，等用户裁决，不擅自偏向。
+- 人格适用范围限定在主循环对用户对话；子任务内部通信保持结构化，不带人格、不带表情。
+
+### 实现落地
+
+- forge/system_prompt.py：模块加载时读取 docs/FORGE_PERSONA.md，拼接到 SYSTEM_INSTRUCTION 末尾（FileNotFoundError 时静默跳过，不影响原有行为）。
+- 优点：以后改人格只改 md 文件，不用碰 .py。
+
+### 真实验证
+
+- dp.py 实跑：连续三次问同一问题，模型在第三次正确使用 (¬_¬) 升级语气，同时明确说明"不是拒绝回答"，继续给出完整答案。触发点与"不当挡箭牌"两条规则均验证通过。
+
+## 启动 Banner 与终端配色合规清理（2026-08-29）
+
+### 设计定案
+
+- Banner 内容：(•_•) + FORGE 标识 + 英文 tagline（"Dispatches work. Verifies results. No conclusions without evidence."），复用同一身份锚点，不另立新符号。
+- 配色严格遵循 docs/standards/terminal_color_semantics.md：边框用 TUBE_BLUE（secondary chrome 语义），标识文字用 AMBER（assistant identity 语义），未引入任何新颜色。
+- 宽度改为运行时读取 shutil.get_terminal_size()（40–76 列区间自适应），替换掉最初写死的固定列数，解决了边框在不同终端宽度下无法贴边的问题。
+
+### Emoji 清理（terminal_color_semantics.md 第 11 条）
+
+- 范围明确限定在 dp.py（本次改动的展示层入口），未涉及 mastodon.py（公开社交文案，不同场域）、sanitizer.py、intent_tools.py/read_tools.py（工具体内容）、auto_loop.py（独立批处理脚本，数十处 emoji），这几处是否清理留待单独决定。
+- dp.py 内替换：🌍→[world]，⚒️/💬/📊 移除或换成纯文本（forge> 提示符、去掉与 runtime.py stderr 重复的 [stats] 行），💾/👋→OK:/FAIL:/再见。
+- 修复过程中发现的历史遗留：dp.py 里 [stats] 本次工具调用 与 runtime.py:2255 的 [stats] tools=（stderr 流）内容重复，确认后者是诊断日志、保留不动，删除 dp.py 里视觉重复的一条。
+
+### 测试基线
+
+- 未新增自动化测试；本轮改动为纯展示层（dp.py 单文件），通过实机运行手动验证 banner 渲染、人格触发、emoji 替换效果。
