@@ -98,12 +98,18 @@ RuntimeState.phase in {DISPATCHING, RUNNING_SUBTASK, PAUSED_SUBTASK}
 具体展开：
 
 checkpoint=C, phase=RUNNING_SUBTASK, active=C -> DECISION_REQUIRED
-checkpoint=C, phase=DISPATCHING, active=C -> DECISION_REQUIRED
-checkpoint=C, phase=PAUSED_SUBTASK, active=C -> DECISION_REQUIRED
 checkpoint=C, phase=IDLE -> INCONSISTENT
 checkpoint=C, phase=RUNNING_SUBTASK, active=Y -> INCONSISTENT
 checkpoint=C, phase=AWAITING_USER -> INCONSISTENT
 checkpoint=C, phase=COMPLETED / BLOCKED / ABORTED -> INCONSISTENT
+
+[DECISION] DISPATCHING 和 PAUSED_SUBTASK 不出现在实际可达判定里。
+
+- DISPATCHING 写入发生在进入 run_subagent 循环之前，而 checkpoint 只可能在
+  循环内第一次工具调用完成后才存在。两者在时序上不可能同时为真。
+- PAUSED_SUBTASK 从不被持久化写入，磁盘上永远不会读出这个值。
+
+它们保留在 RuntimeState.phase 枚举里，但不参与 SubtaskRecovery 的实际判定。
 
 ### 3.2 INCONSISTENT 的语义
 
@@ -140,6 +146,10 @@ IDLE
 ## 4. SubtaskCheckpoint 最小结构
 
 落点：.forge/subtask_checkpoint.json，单槽位，同一时刻至多一份。
+
+[DECISION] SubtaskCheckpointStore 必须使用原子写：先写 .tmp 再 replace，
+行为对齐 SyncDecisionStore。避免 checkpoint 自身 torn write 被
+「损坏即丢弃」规则悄悄吞掉一次本该可恢复的中断。
 
 subtask_id: string
 task: dict            # AgentTask.to_dict() 原样落盘
@@ -196,9 +206,37 @@ forge/subagent.py::_execute_tool() 成功返回、ToolCallRecord 已 write_recor
 
 ### 6.2 清除时机
 
-_finalize() 是唯一清除点，覆盖 run_subagent 所有正常退出路径（七种 exit_kind 全部清除）。
+[DECISION] SubtaskCheckpoint 是「AgentResult 成功持久化之前的保险」。
 
-PROCESS_INTERRUPTED 下 _finalize() 没机会执行，checkpoint 不会被清除。
+它不能在 _finalize() 内部清除。
+
+因为 _finalize() 只构造 AgentResult 对象，并不负责把它落盘。真正落盘发生在
+spawn_subagent 闭包更外层的 append_subagent_result() 调用。
+
+如果 checkpoint 在 _finalize() 里先被清除，而进程在 append_subagent_result()
+落盘前崩溃，就会出现：子任务实际已正常完成，但 checkpoint 没了，终态
+AgentResult 也没持久化，重启后无任何痕迹证明它发生过。
+
+这是最严重的丢失窗口。
+
+正确清除点必须满足：AgentResult 已成功写入 subagent_results.jsonl 之后。
+
+[DECISION] 唯一清除时机：
+
+spawn_subagent 闭包内，append_subagent_result() 成功返回之后，
+再调用 SubtaskCheckpointStore.clear()。
+
+顺序固定为：
+
+1. run_subagent 返回 AgentResult
+2. precheck_agent_result 完成
+3. append_subagent_result 落盘成功
+4. SubtaskCheckpointStore.clear()
+5. RuntimeState 复位 IDLE + active_subtask_id = None
+
+如果 append_subagent_result 落盘失败，checkpoint 保留，不进入清除流程。
+
+PROCESS_INTERRUPTED 下 checkpoint 不会被清除，这与既有语义一致。
 
 ## 7. restart 恢复流程
 
@@ -229,6 +267,12 @@ INCONSISTENT:
 
 resume_subtask(subtask_id):
 
+前置检查（DECISION_REQUIRED 和 INCONSISTENT 都必须先执行）：
+
+  0. 查询 subagent_results.jsonl 是否已有该 subtask_id 的终态 AgentResult
+     已有终态 -> 拒绝 resume，直接走清理路径（clear checkpoint + phase 复位 IDLE）
+     无终态 -> 继续
+
 DECISION_REQUIRED 时：
   1. 校验 subtask_id 与 checkpoint 一致，attempt_count < 3
   2. 从 checkpoint.task 重建 AgentTask
@@ -242,6 +286,9 @@ INCONSISTENT 时：
   - 先执行 §7 的事实校验
   - 校验通过才允许 resume
   - 校验失败只允许 abort
+
+[DECISION] resume 和 abort 必须有对称的终态检查。任何一条路径都不能在
+已有终态 AgentResult 的情况下产生第二个 AgentResult。
 
 abort_subtask(subtask_id):
 
@@ -258,6 +305,16 @@ abort_subtask(subtask_id):
 ### 7.4 如何避免把旧推理当事实
 
 事实摘要只允许来自 ToolCallRecord（tool_call_id / tool_name / status），禁止包含旧子 AI 自己写的 CONCLUSION/EVIDENCE/UNCERTAIN/NEXT。
+
+[DECISION] 事实摘要的读取范围：该 subtask_id 的全部 ToolCallRecord，
+不是只读到 checkpoint.last_tool_call_id 为止。
+
+理由：ToolCallRecord 落盘和 checkpoint.last_tool_call_id 推进是两条相邻但
+独立的语句。崩溃可能发生在 ToolCallRecord 已落盘、checkpoint 指针还未推进
+之间。如果摘要只读到指针，这条已真实发生且可能有副作用的调用会从摘要里
+消失，新子 AI 可能重复执行它。
+
+读取全部记录，确保任何已发生的工具调用都不会从恢复上下文中漏掉。
 
 ## 8. 副作用重复的缓解边界
 
