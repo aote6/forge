@@ -1200,10 +1200,13 @@ def _build_agent_task_from_spawn_args(
         constraints["not_allowed"] = not_allowed
     if scope is not None and scope != "":
         if isinstance(scope, str):
-            constraints["scope"] = {"paths": [scope]}
+            # 主 AI 可能传逗号分隔字符串："forge/a.py, forge"
+            # 拆成多个路径前缀，避免被当成一个带逗号的完整前缀。
+            parts = [s.strip() for s in scope.split(",") if s.strip()]
+            constraints["scope"] = {"paths": parts or [scope.strip()]}
         elif isinstance(scope, (list, tuple)):
             constraints["scope"] = {
-                "paths": [str(p) for p in scope if str(p).strip()]
+                "paths": [str(p).strip() for p in scope if str(p).strip()]
             }
         elif isinstance(scope, dict):
             constraints["scope"] = scope

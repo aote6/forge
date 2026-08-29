@@ -563,7 +563,8 @@ CONTROL_PLANE_TOOL_DECLARATIONS = [
                 "scope": {
                     "description": (
                         "允许探索/修改范围，进入 constraints.scope.paths 白名单。"
-                        "可为路径字符串、路径字符串数组，或 {paths:[...], level?} 对象。"
+                        "推荐传路径字符串数组，如 ['forge/a.py', 'forge/']。"
+                        "兼容逗号分隔字符串（会被拆分为多个路径）或 {paths:[...], level?} 对象。"
                     ),
                 },
                 "max_steps": {

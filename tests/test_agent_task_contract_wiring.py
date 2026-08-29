@@ -251,6 +251,19 @@ def test_scope_string_and_list_folding():
     assert _spawn_task(scope={"paths": ["x/"]}).constraints["scope"]["paths"] == ["x/"]
 
 
+def test_scope_comma_string_split():
+    task = _spawn_task(scope="forge/subtask_checkpoint.py, forge")
+    assert task.constraints["scope"]["paths"] == [
+        "forge/subtask_checkpoint.py",
+        "forge",
+    ]
+
+
+def test_scope_single_string_not_split():
+    task = _spawn_task(scope="forge/subtask_checkpoint.py")
+    assert task.constraints["scope"]["paths"] == ["forge/subtask_checkpoint.py"]
+
+
 def test_legacy_task_alias_fills_goal_only():
     task = _spawn_task(
         task="legacy goal",
