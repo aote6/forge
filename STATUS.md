@@ -1536,3 +1536,61 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - 全量：652 passed
 - git diff --check：clean
 
+## R1 phase 生命周期驱动修复（2026-08-29）
+
+- 问题：R1 定义了 phase=RUNNING_SUBTASK 和 active_subtask_id，但 spawn_subagent 从未写入。字段定义存在，生命周期未驱动。
+- 修复：
+  - spawn 前：phase=DISPATCHING + active_subtask_id
+  - 进入 run_subagent 前：phase=RUNNING_SUBTASK
+  - append_ok 后：phase=IDLE + active_subtask_id=None
+  - except 路径：复位 IDLE
+- 测试：全量 652 passed。
+
+## Durable Pause 设计与实现（2026-08-29）
+
+### 设计定案
+
+- 新增 docs/DURABLE_PAUSE_DESIGN.md，经三轮审计修正：
+  - 第一轮：Claude 初版设计，发现 phase 未驱动的前置缺口
+  - 第二轮：Grok 审计抓出两个硬伤——checkpoint 清除早于 AgentResult 落盘；resume 缺终态检查
+  - 第三轮：修正时序不变量、死分支、事实摘要读取范围、原子写要求
+- 最终裁定：INCONSISTENT 不删除只降级事实验证；checkpoint 永不覆盖终态 AgentResult；副作用只缓解不保证 exactly-once。
+
+### 实现落地
+
+- 新增 forge/subtask_checkpoint.py：SubtaskCheckpoint / Store / derive_subtask_recovery / 事实验证 / 事实摘要
+- AgentTask.from_dict 对称构造
+- list_records_for_subtask 全量只读
+- run_subagent 在 Layer B 通过后写入 checkpoint
+- spawn 闭包在 append_ok 后 clear checkpoint + 复位 phase
+- resume_subtask / abort_subtask 控制面工具
+- abort_subtask 补 append 失败保护：不 clear checkpoint
+
+### 真实 smoke 验证
+
+- 场景：发现残留 checkpoint（sub_b8933d2e20a8），RuntimeState=IDLE
+- 派生结果：INCONSISTENT，事实校验通过
+- 用户明确要求放弃后，abort_subtask 合成 blocked 结果、清理 checkpoint、复位 phase
+- 落盘验证：runtime_state=IDLE、checkpoint 删除、subagent_results 有 blocked 终态
+
+### 测试基线
+
+- 全量：666 passed
+- Durable Pause 专项：14 passed
+- git diff --check：clean
+
+## 架构主线完成
+
+三根支柱 + 子 AI 恢复全部闭环：
+
+- R1 RuntimeState：最小持久化 + phase 生命周期 ✅
+- R2 SyncDecision：决策对象 + Gate + 真实闭环 ✅
+- R3 AgentTask Contract：入口接线 + enforce ✅
+- Durable Pause：断点 + 恢复 + 真实 smoke ✅
+
+剩余为产品能力和技术债：
+
+- 产品：PTY 实时终端 / CLI -c / Termux 系统集成
+- 技术债：旧测试迁移 / 死代码清理 / glob_files 隐藏目录
+- 行为验证：CONFLICT 场景 / 更多真实任务覆盖
+
