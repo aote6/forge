@@ -118,6 +118,41 @@ def get_record(project_root: str | os.PathLike, tool_call_id: str) -> dict[str, 
         return None
 
 
+def list_records_for_subtask(
+    project_root: str | os.PathLike, subtask_id: str
+) -> list[dict[str, Any]]:
+    """Return all ToolCallRecord dicts for a subtask_id (append order).
+
+    Missing file / corrupt lines → skipped. Never raises.
+    Used by Durable Pause fact summary (design §7.4): read the FULL set
+    for the subtask, not only up to checkpoint.last_tool_call_id.
+    """
+    path = _records_path(project_root)
+    out: list[dict[str, Any]] = []
+    if not path.exists():
+        return out
+    sid = str(subtask_id or "").strip()
+    if not sid:
+        return out
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    obj = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if str(obj.get("subtask_id") or "") == sid:
+                    out.append(obj)
+    except Exception:
+        return out
+    return out
+
+
 def current_timestamp() -> float:
     """UTC unix timestamp, factored out so callers don't import time directly."""
     return time.time()

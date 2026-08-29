@@ -1268,6 +1268,36 @@ class Runtime:
         self.runtime_state = self._runtime_state_store.load()
         self.recovery = self.runtime_state.recovery
 
+        # Durable Pause: load SubtaskCheckpoint + derive SubtaskRecovery (§7).
+        from forge.subtask_checkpoint import (
+            SubtaskCheckpointStore,
+            derive_subtask_recovery,
+            validate_checkpoint_facts,
+            SUBTASK_RECOVERY_INCONSISTENT,
+        )
+        self._subtask_checkpoint_store = SubtaskCheckpointStore(
+            project_root=workspace.project_root
+        )
+        _cp = self._subtask_checkpoint_store.load()
+        self.subtask_recovery = derive_subtask_recovery(
+            _cp,
+            self.runtime_state.phase,
+            self.runtime_state.active_subtask_id,
+        )
+        if (
+            self.subtask_recovery.mode == SUBTASK_RECOVERY_INCONSISTENT
+            and self.subtask_recovery.checkpoint is not None
+        ):
+            fact_ok = validate_checkpoint_facts(
+                workspace.project_root, self.subtask_recovery.checkpoint
+            )
+            self.subtask_recovery = type(self.subtask_recovery)(
+                mode=self.subtask_recovery.mode,
+                checkpoint=self.subtask_recovery.checkpoint,
+                reason=self.subtask_recovery.reason,
+                fact_valid=fact_ok,
+            )
+
         # R2: SyncDecision 持久化（.forge/sync_decision.json），与 RuntimeState.pending 对齐。
         from forge.sync.decision import SyncDecisionStore
 
@@ -1399,13 +1429,20 @@ class Runtime:
                     from forge.subagent_results_store import append_subagent_result
                     append_ok = append_subagent_result(workspace.project_root, ar_dict)
 
-                    # R1 phase lifecycle: reset to IDLE after result persisted
-                    if append_ok and getattr(self, "_runtime_state_store", None) is not None:
-                        self.runtime_state.phase = PHASE_IDLE
-                        self.runtime_state.active_subtask_id = None
-                        self.runtime_state.refresh_recovery()
-                        self.recovery = self.runtime_state.recovery
-                        self._runtime_state_store.save(self.runtime_state)
+                    # Durable Pause §6.2: clear checkpoint ONLY after append success.
+                    if append_ok:
+                        try:
+                            if getattr(self, "_subtask_checkpoint_store", None) is not None:
+                                self._subtask_checkpoint_store.clear()
+                        except Exception:
+                            pass
+                        # R1 phase lifecycle: reset to IDLE after result persisted
+                        if getattr(self, "_runtime_state_store", None) is not None:
+                            self.runtime_state.phase = PHASE_IDLE
+                            self.runtime_state.active_subtask_id = None
+                            self.runtime_state.refresh_recovery()
+                            self.recovery = self.runtime_state.recovery
+                            self._runtime_state_store.save(self.runtime_state)
                 display = format_agent_result_for_parent(result)
                 return ToolResult.ok(
                     display=display,
@@ -1581,9 +1618,258 @@ class Runtime:
                 payload=decision.to_dict(),
             )
 
+
+        def resume_subtask(subtask_id: str = "") -> ToolResult:
+            """Resume an interrupted subtask from SubtaskCheckpoint (Durable Pause).
+
+            Requires explicit user intent via main AI. Never auto-resumes.
+            """
+            from forge.agent_abi import (
+                AgentTask,
+                AgentResult,
+                format_agent_result_for_parent,
+                precheck_agent_result,
+                STATUS_BLOCKED,
+            )
+            from forge.subagent import run_subagent
+            from forge.subagent_results_store import (
+                load_subagent_results,
+                append_subagent_result,
+            )
+            from forge.subtask_checkpoint import (
+                MAX_RESUME_ATTEMPTS,
+                SUBTASK_RECOVERY_DECISION_REQUIRED,
+                SUBTASK_RECOVERY_INCONSISTENT,
+                SUBTASK_RECOVERY_NONE,
+                build_prior_facts_summary,
+                derive_subtask_recovery,
+                validate_checkpoint_facts,
+            )
+            from forge.runtime_state import PHASE_IDLE, PHASE_RUNNING_SUBTASK
+
+            sid = str(subtask_id or "").strip()
+            if not sid:
+                return ToolResult.fail(display="resume_subtask: subtask_id required")
+
+            store = getattr(self, "_subtask_checkpoint_store", None)
+            if store is None:
+                return ToolResult.fail(display="resume_subtask: checkpoint store unavailable")
+
+            # 0. Terminal AgentResult guard (design §7.2) — both paths.
+            existing = load_subagent_results(workspace.project_root).get(sid)
+            if existing is not None:
+                store.clear()
+                if getattr(self, "_runtime_state_store", None) is not None:
+                    self.runtime_state.phase = PHASE_IDLE
+                    self.runtime_state.active_subtask_id = None
+                    self.runtime_state.refresh_recovery()
+                    self.recovery = self.runtime_state.recovery
+                    self._runtime_state_store.save(self.runtime_state)
+                return ToolResult.ok(
+                    display=(
+                        f"resume_subtask: subtask_id={sid} already has terminal "
+                        f"AgentResult (status={existing.get('status')}); "
+                        "checkpoint cleared, no second result written."
+                    ),
+                    payload={"resumed": False, "reason": "already_terminal"},
+                )
+
+            cp = store.load()
+            if cp is None:
+                return ToolResult.fail(
+                    display="resume_subtask: no SubtaskCheckpoint present"
+                )
+            if cp.subtask_id != sid:
+                return ToolResult.fail(
+                    display=(
+                        f"resume_subtask: checkpoint subtask_id={cp.subtask_id} "
+                        f"!= requested {sid}"
+                    )
+                )
+
+            # Refresh recovery classification
+            recovery = derive_subtask_recovery(
+                cp, self.runtime_state.phase, self.runtime_state.active_subtask_id
+            )
+            if recovery.mode == SUBTASK_RECOVERY_INCONSISTENT:
+                if not validate_checkpoint_facts(workspace.project_root, cp):
+                    return ToolResult.fail(
+                        display=(
+                            "resume_subtask: INCONSISTENT and fact check failed; "
+                            "only abort_subtask is allowed"
+                        )
+                    )
+            elif recovery.mode == SUBTASK_RECOVERY_NONE:
+                return ToolResult.fail(
+                    display="resume_subtask: no recoverable checkpoint"
+                )
+
+            if cp.attempt_count >= MAX_RESUME_ATTEMPTS:
+                return ToolResult.fail(
+                    display=(
+                        f"resume_subtask: attempt_count={cp.attempt_count} "
+                        f">= {MAX_RESUME_ATTEMPTS}; abort instead"
+                    )
+                )
+
+            # Increment attempt_count and persist before re-run
+            cp.attempt_count = int(cp.attempt_count) + 1
+            store.save(cp)
+
+            task = AgentTask.from_dict(cp.task)
+            # Keep original subtask_id identity
+            task.subtask_id = sid
+            facts = build_prior_facts_summary(workspace.project_root, sid)
+            if facts:
+                task.goal = (task.goal or "").rstrip() + "\n\n" + facts
+
+            if getattr(self, "_runtime_state_store", None) is not None:
+                self.runtime_state.phase = PHASE_RUNNING_SUBTASK
+                self.runtime_state.active_subtask_id = sid
+                self.runtime_state.refresh_recovery()
+                self.recovery = self.runtime_state.recovery
+                self._runtime_state_store.save(self.runtime_state)
+
+            schemas = list(EXECUTION_PLANE_TOOL_DECLARATIONS)
+            sub_tools = {k: v for k, v in tools.items() if k in EXECUTION_PLANE_TOOLS}
+
+            def _subagent_confirm(summary: str) -> bool:
+                if self._confirm_provider is None:
+                    return False
+                try:
+                    return bool(self._confirm_provider(summary))
+                except Exception:
+                    return False
+
+            try:
+                result = run_subagent(
+                    self.adapter,
+                    sub_tools,
+                    schemas,
+                    task,
+                    project_root=workspace.project_root,
+                    confirm_fn=_subagent_confirm,
+                    emit=self.emit,
+                )
+                result = precheck_agent_result(workspace.project_root, result)
+                if result.subtask_id:
+                    ar_dict = result.to_dict()
+                    self._subagent_results[str(result.subtask_id)] = ar_dict
+                    append_ok = append_subagent_result(
+                        workspace.project_root, ar_dict
+                    )
+                    if append_ok:
+                        store.clear()
+                        if getattr(self, "_runtime_state_store", None) is not None:
+                            self.runtime_state.phase = PHASE_IDLE
+                            self.runtime_state.active_subtask_id = None
+                            self.runtime_state.refresh_recovery()
+                            self.recovery = self.runtime_state.recovery
+                            self._runtime_state_store.save(self.runtime_state)
+                display = format_agent_result_for_parent(result)
+                return ToolResult.ok(
+                    display=display,
+                    payload={
+                        "resumed": True,
+                        "agent_result": result.to_dict(),
+                    },
+                )
+            except Exception as e:
+                if getattr(self, "_runtime_state_store", None) is not None:
+                    try:
+                        self.runtime_state.phase = PHASE_IDLE
+                        self.runtime_state.active_subtask_id = None
+                        self.runtime_state.refresh_recovery()
+                        self.recovery = self.runtime_state.recovery
+                        self._runtime_state_store.save(self.runtime_state)
+                    except Exception:
+                        pass
+                return ToolResult.fail(
+                    display=f"resume_subtask failed: {e}"
+                )
+
+        def abort_subtask(subtask_id: str = "") -> ToolResult:
+            """Abort an interrupted subtask; clear checkpoint (Durable Pause).
+
+            If terminal AgentResult already exists: clean only, no second result.
+            Else: synthesize blocked / abandoned_after_process_interrupt.
+            """
+            from forge.agent_abi import AgentResult, STATUS_BLOCKED
+            from forge.subagent_results_store import (
+                load_subagent_results,
+                append_subagent_result,
+            )
+            from forge.runtime_state import PHASE_IDLE
+
+            sid = str(subtask_id or "").strip()
+            if not sid:
+                return ToolResult.fail(display="abort_subtask: subtask_id required")
+
+            store = getattr(self, "_subtask_checkpoint_store", None)
+            existing = load_subagent_results(workspace.project_root).get(sid)
+
+            def _clean_phase_and_checkpoint():
+                if store is not None:
+                    store.clear()
+                if getattr(self, "_runtime_state_store", None) is not None:
+                    self.runtime_state.phase = PHASE_IDLE
+                    self.runtime_state.active_subtask_id = None
+                    self.runtime_state.refresh_recovery()
+                    self.recovery = self.runtime_state.recovery
+                    self._runtime_state_store.save(self.runtime_state)
+
+            if existing is not None:
+                _clean_phase_and_checkpoint()
+                return ToolResult.ok(
+                    display=(
+                        f"abort_subtask: subtask_id={sid} already has terminal "
+                        f"AgentResult (status={existing.get('status')}); "
+                        "checkpoint cleared, no second result written."
+                    ),
+                    payload={"aborted": True, "synthesized": False},
+                )
+
+            # Synthesize blocked result
+            ar = AgentResult(
+                subtask_id=sid,
+                status=STATUS_BLOCKED,
+                conclusion="subtask abandoned after process interrupt",
+                evidence=(),
+                uncertain="",
+                next="",
+                stop_when_met=False,
+                status_reason="abandoned_after_process_interrupt",
+                raw_conclusion="",
+            )
+            ar_dict = ar.to_dict()
+            append_ok = append_subagent_result(workspace.project_root, ar_dict)
+            if not append_ok:
+                return ToolResult.fail(
+                    display=(
+                        f"abort_subtask: failed to persist blocked result for "
+                        f"{sid}; checkpoint retained, abort can be retried."
+                    )
+                )
+            self._subagent_results[sid] = ar_dict
+            _clean_phase_and_checkpoint()
+            return ToolResult.ok(
+                display=(
+                    f"abort_subtask: synthesized blocked result for {sid} "
+                    f"(status_reason=abandoned_after_process_interrupt); "
+                    "checkpoint cleared."
+                ),
+                payload={
+                    "aborted": True,
+                    "synthesized": True,
+                    "agent_result": ar_dict,
+                },
+            )
+
         tools["spawn_subagent"] = spawn_subagent
         tools["verify_subtask_evidence"] = verify_subtask_evidence
         tools["resolve_sync_decision"] = resolve_sync_decision_tool
+        tools["resume_subtask"] = resume_subtask
+        tools["abort_subtask"] = abort_subtask
         self.executor = ToolExecutor(tools)
 
         self.conversation = Conversation()

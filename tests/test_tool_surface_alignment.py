@@ -72,6 +72,16 @@ def _full_registry(tmp_path: Path) -> tuple[dict, set[str]]:
         return None  # real impl lives in Runtime; signature is the contract
 
     tools["resolve_sync_decision"] = resolve_sync_decision
+
+    def resume_subtask(subtask_id: str = ""):
+        return None  # real impl lives in Runtime; signature is the contract
+
+    tools["resume_subtask"] = resume_subtask
+
+    def abort_subtask(subtask_id: str = ""):
+        return None  # real impl lives in Runtime; signature is the contract
+
+    tools["abort_subtask"] = abort_subtask
     return tools
 
 

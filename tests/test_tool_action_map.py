@@ -45,6 +45,8 @@ EXPECTED_TOOL_NAMES = [
     "unlink_objects",
     "forge_sync",
     "resolve_sync_decision",
+    "resume_subtask",
+    "abort_subtask",
     "submit_plan",
 ]
 

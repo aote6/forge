@@ -521,6 +521,18 @@ def run_subagent(
                             ),
                         )
 
+                # Durable Pause: advance SubtaskCheckpoint only after a real
+                # tool execution that passed Layer B (design §6.1).
+                if tool_call_id:
+                    try:
+                        from forge.subtask_checkpoint import SubtaskCheckpointStore
+                        SubtaskCheckpointStore(project_root).update_after_tool(
+                            subtask_id=subtask_id,
+                            task_dict=task.to_dict(),
+                            last_tool_call_id=tool_call_id,
+                        )
+                    except Exception:
+                        pass
                 if emit is not None:
                     try:
                         emit(

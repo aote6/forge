@@ -177,4 +177,14 @@ stdout 与 stderr 是真实、可独立验证的工具输出。
 - INFERENCE：你自己的推断
 
 没有验证过的事实，不要写成定论。
+
+## Durable Pause（子任务中断恢复）
+
+进程崩溃或被杀死后，若存在 SubtaskCheckpoint，你会在启动上下文中看到恢复候选。
+
+- 不得自动调用 resume_subtask 或 abort_subtask。
+- 仅在用户明确要求「继续该子任务」时调用 resume_subtask(subtask_id=...)。
+- 仅在用户明确要求「放弃该子任务」时调用 abort_subtask(subtask_id=...)。
+- 若该 subtask 已有终态 AgentResult，这两个工具只会清理断点，不会产生第二个结果。
+
 """

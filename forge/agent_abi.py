@@ -86,6 +86,32 @@ class AgentTask:
             "max_steps": self.max_steps,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "AgentTask":
+        """Symmetric to to_dict for Durable Pause resume reconstruction."""
+        if not isinstance(data, dict):
+            data = {}
+        constraints = data.get("constraints")
+        if not isinstance(constraints, dict):
+            constraints = {}
+        try:
+            max_steps = int(data.get("max_steps") or 15)
+        except (TypeError, ValueError):
+            max_steps = 15
+        if max_steps < 1:
+            max_steps = 15
+        sid = data.get("subtask_id")
+        if sid is not None:
+            sid = str(sid).strip() or None
+        return cls(
+            goal=str(data.get("goal") or ""),
+            subtask_id=sid,
+            constraints=dict(constraints),
+            stop_when=str(data.get("stop_when") or ""),
+            done_when=str(data.get("done_when") or ""),
+            max_steps=max_steps,
+        )
+
 
 @dataclass(frozen=True)
 class AgentResult:

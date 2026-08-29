@@ -636,6 +636,43 @@ CONTROL_PLANE_TOOL_DECLARATIONS = [
             "required": ["direction"],
         },
     },
+    {
+        "name": "resume_subtask",
+        "description": (
+            "恢复因进程中断而留下的子任务断点（Durable Pause）。"
+            "仅在用户明确要求继续时调用。需传入 checkpoint 中的 subtask_id。"
+            "若该 subtask 已有终态 AgentResult 则只清理、不产生第二个结果。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "subtask_id": {
+                    "type": "string",
+                    "description": "要恢复的 subtask_id（来自 SubtaskCheckpoint）",
+                },
+            },
+            "required": ["subtask_id"],
+        },
+    },
+    {
+        "name": "abort_subtask",
+        "description": (
+            "放弃因进程中断而留下的子任务断点（Durable Pause）。"
+            "仅在用户明确要求放弃时调用。"
+            "若已有终态 AgentResult 则只清理；否则合成 blocked/"
+            "abandoned_after_process_interrupt。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "subtask_id": {
+                    "type": "string",
+                    "description": "要放弃的 subtask_id",
+                },
+            },
+            "required": ["subtask_id"],
+        },
+    },
     SUBMIT_PLAN_DECLARATION,
 ]
 

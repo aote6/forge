@@ -47,6 +47,8 @@ TOOL_ACTION_MAP: list[dict[str, str]] = [
     {"tool_name": "unlink_objects", "action": "world_write", "path_field": "", "command_class_rule": ""},
     {"tool_name": "forge_sync", "action": "reconciliation", "path_field": "", "command_class_rule": ""},
     {"tool_name": "resolve_sync_decision", "action": "control", "path_field": "", "command_class_rule": ""},
+    {"tool_name": "resume_subtask", "action": "control", "path_field": "", "command_class_rule": ""},
+    {"tool_name": "abort_subtask", "action": "control", "path_field": "", "command_class_rule": ""},
     {"tool_name": "submit_plan", "action": "control", "path_field": "", "command_class_rule": ""},
 ]
 
