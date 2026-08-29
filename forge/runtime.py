@@ -1185,6 +1185,7 @@ def _build_agent_task_from_spawn_args(
     scope=None,
     max_steps: int = 15,
     task: str = "",
+    subtask_id: str | None = None,
 ):
     """R3: 把 spawn_subagent 入口参数折叠成完整 AgentTask。
 
@@ -1211,6 +1212,7 @@ def _build_agent_task_from_spawn_args(
 
     return AgentTask(
         goal=goal_text,
+        subtask_id=subtask_id,
         done_when=str(done_when or ""),
         stop_when=str(stop_when or ""),
         constraints=constraints,
@@ -1331,9 +1333,25 @@ class Runtime:
                 precheck_agent_result,
             )
             from forge.subagent import run_subagent
+            import uuid
             try:
                 schemas = list(EXECUTION_PLANE_TOOL_DECLARATIONS)
                 sub_tools = {k: v for k, v in tools.items() if k in EXECUTION_PLANE_TOOLS}
+
+                # R1 phase lifecycle: DISPATCHING before spawning
+                from forge.runtime_state import (
+                    PHASE_DISPATCHING,
+                    PHASE_IDLE,
+                    PHASE_RUNNING_SUBTASK,
+                )
+                subtask_id = f"sub_{uuid.uuid4().hex[:12]}"
+                if getattr(self, "_runtime_state_store", None) is not None:
+                    self.runtime_state.phase = PHASE_DISPATCHING
+                    self.runtime_state.active_subtask_id = subtask_id
+                    self.runtime_state.refresh_recovery()
+                    self.recovery = self.runtime_state.recovery
+                    self._runtime_state_store.save(self.runtime_state)
+
                 agent_task = _build_agent_task_from_spawn_args(
                     goal=goal,
                     done_when=done_when,
@@ -1342,7 +1360,15 @@ class Runtime:
                     scope=scope,
                     max_steps=max_steps,
                     task=task,
+                    subtask_id=subtask_id,
                 )
+
+                # R1 phase lifecycle: RUNNING_SUBTASK before entering sub-loop
+                if getattr(self, "_runtime_state_store", None) is not None:
+                    self.runtime_state.phase = PHASE_RUNNING_SUBTASK
+                    self.runtime_state.refresh_recovery()
+                    self.recovery = self.runtime_state.recovery
+                    self._runtime_state_store.save(self.runtime_state)
                 def _subagent_confirm(summary: str) -> bool:
                     """Host-side confirmation; delegates to CLI input provider."""
                     if self._confirm_provider is None:
@@ -1371,7 +1397,15 @@ class Runtime:
                     ar_dict = result.to_dict()
                     self._subagent_results[str(result.subtask_id)] = ar_dict
                     from forge.subagent_results_store import append_subagent_result
-                    append_subagent_result(workspace.project_root, ar_dict)
+                    append_ok = append_subagent_result(workspace.project_root, ar_dict)
+
+                    # R1 phase lifecycle: reset to IDLE after result persisted
+                    if append_ok and getattr(self, "_runtime_state_store", None) is not None:
+                        self.runtime_state.phase = PHASE_IDLE
+                        self.runtime_state.active_subtask_id = None
+                        self.runtime_state.refresh_recovery()
+                        self.recovery = self.runtime_state.recovery
+                        self._runtime_state_store.save(self.runtime_state)
                 display = format_agent_result_for_parent(result)
                 return ToolResult.ok(
                     display=display,
@@ -1381,6 +1415,16 @@ class Runtime:
                     },
                 )
             except Exception as e:
+                # R1 phase lifecycle: reset on spawn failure
+                if getattr(self, "_runtime_state_store", None) is not None:
+                    try:
+                        self.runtime_state.phase = PHASE_IDLE
+                        self.runtime_state.active_subtask_id = None
+                        self.runtime_state.refresh_recovery()
+                        self.recovery = self.runtime_state.recovery
+                        self._runtime_state_store.save(self.runtime_state)
+                    except Exception:
+                        pass
                 return ToolResult.fail(
                     display=(
                         "spawn_subagent failed: "
