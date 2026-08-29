@@ -264,6 +264,21 @@ def test_scope_single_string_not_split():
     assert task.constraints["scope"]["paths"] == ["forge/subtask_checkpoint.py"]
 
 
+def test_scope_comma_string_with_whitespace_filters_empty():
+    task = _spawn_task(scope="forge/a.py, , forge/ ,")
+    assert task.constraints["scope"]["paths"] == ["forge/a.py", "forge/"]
+
+
+def test_read_file_allowed_after_comma_scope_split():
+    task = _spawn_task(scope="forge/subtask_checkpoint.py, forge")
+    d = enforce("read_file", {"path": "forge/subtask_checkpoint.py"}, task.constraints)
+    assert d.allowed is True
+    d2 = enforce("read_file", {"path": "forge/runtime.py"}, task.constraints)
+    assert d2.allowed is True
+    d3 = enforce("read_file", {"path": "tests/x.py"}, task.constraints)
+    assert d3.allowed is False
+
+
 def test_legacy_task_alias_fills_goal_only():
     task = _spawn_task(
         task="legacy goal",
