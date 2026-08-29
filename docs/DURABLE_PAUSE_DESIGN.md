@@ -256,6 +256,10 @@ INCONSISTENT:
   - checkpoint.last_tool_call_id 是否存在？
   - 是否属于同一个 subtask_id？
   - 是否是该 subtask 已完成记录中的合法恢复边界？
+    [DECISION] 合法恢复边界 := get_record(last_tool_call_id) 存在
+    且 record.subtask_id == checkpoint.subtask_id。
+    不要求它是该 subtask 最后一条记录，因为 checkpoint 指针可能落后于
+    最后一次成功 write_record。
   - 校验通过 -> 作为可恢复候选，呈现给用户
   - 校验不通过 -> 只能 abort
 
