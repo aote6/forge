@@ -7,6 +7,7 @@
 """
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -18,7 +19,7 @@ from forge.events import EventType
 from forge.adapters.deepseek import DeepSeekAdapter
 from forge.tui_input import read_multiline_input
 from forge.terminal_present import TerminalPresenter
-from forge.terminal_color import ALARM, AMBER, PHOSPHOR, paint
+from forge.terminal_color import ALARM, AMBER, PHOSPHOR, TUBE_BLUE, paint
 
 project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 adapter = DeepSeekAdapter(
@@ -99,10 +100,41 @@ def _print_world_summary(runtime: Runtime) -> None:
         if "world_info" in tools:
             r = tools["world_info"]()
             if r.success:
-                print(f"🌍 {r.display.split(chr(10))[0][:120]}")
+                print(f"[world] {r.display.split(chr(10))[0][:120]}")
                 return
     except Exception as e:
-        print(f"🌍 世界: (不可用: {e})")
+        print(f"[world] 世界: (不可用: {e})")
+
+
+def _print_banner(tag: str, model_name: str, project_root: str) -> None:
+    """Startup identity banner. Border=TUBE_BLUE (secondary chrome),
+    mark=AMBER (assistant identity), per terminal_color_semantics.md.
+    Width follows the live terminal size so the box fills the screen
+    instead of a hardcoded column count."""
+    cols = shutil.get_terminal_size(fallback=(52, 24)).columns
+    width = max(40, min(cols, 76))
+    inner = width - 2
+
+    def row(content: str = "") -> str:
+        return paint("│", TUBE_BLUE) + paint(content.center(inner), AMBER) + paint("│", TUBE_BLUE)
+
+    top = paint("┌" + "─" * inner + "┐", TUBE_BLUE)
+    bottom = paint("└" + "─" * inner + "┘", TUBE_BLUE)
+    divider = paint("├" + "─" * inner + "┤", TUBE_BLUE)
+
+    print(top)
+    print(row())
+    print(row("(•_•)"))
+    print(row("FORGE"))
+    print(row())
+    print(divider)
+    print(row())
+    print(row("Dispatches work. Verifies results."))
+    print(row("No conclusions without evidence."))
+    print(row())
+    print(bottom)
+    print(f"使用 {tag} ({model_name})")
+    print(f"项目: {project_root}")
 
 
 def _save_conversation_history(runtime: Runtime) -> None:
@@ -184,8 +216,7 @@ def main():
     if len(sys.argv) >= 3 and sys.argv[1] in ("sync", "status"):
         action = sys.argv[1]
         root = sys.argv[2]
-        print(f"🔌 使用 {tag} ({adapter.model_name})")
-        print(f"📁 项目: {os.path.abspath(os.path.expanduser(root))}")
+        _print_banner(tag, adapter.model_name, os.path.abspath(os.path.expanduser(root)))
         workspace = Workspace(project_root=root)
         memory = MemoryStore()
         runtime = Runtime(adapter, workspace, memory)
@@ -199,8 +230,7 @@ def main():
                 pass
         return
 
-    print(f"🔌 使用 {tag} ({adapter.model_name})")
-    print(f"📁 项目: {os.path.abspath(os.path.expanduser(project_root))}")
+    _print_banner(tag, adapter.model_name, os.path.abspath(os.path.expanduser(project_root)))
     workspace = Workspace(project_root=project_root)
     memory = MemoryStore()
 
@@ -242,13 +272,13 @@ def main():
     _check_veritas(runtime)
     _print_world_summary(runtime)
 
-    print("⚒️ Forge | 工具循环 | 输入 q 退出")
+    print("Forge | 工具循环 | 输入 q 退出")
     print("  工具输出会即时显示（last 看全文）；后台自检默认关 (FORGE_HEALTH_CHECK=1 开启)")
-    print("=" * 40)
+    print(paint("─" * max(40, min(shutil.get_terminal_size(fallback=(40, 24)).columns, 76)), TUBE_BLUE))
 
     while True:
         try:
-            user_input = read_multiline_input("\n💬 > ")
+            user_input = read_multiline_input("\nforge> ")
             if user_input is None:  # EOF / Ctrl+D 空输入：退出
                 user_input = "q"
             if not user_input.strip():
@@ -268,10 +298,10 @@ def main():
                 try:
                     runtime.save_session_summary()
                     _save_conversation_history(runtime)
-                    print("💾 已保存会话历史 (.forge/conversation_history.json)")
+                    print("OK: 已保存会话历史 (.forge/conversation_history.json)")
                 except Exception as e:
-                    print(f"💾 保存失败: {e}")
-                print("👋")
+                    print(f"FAIL: 保存失败: {e}")
+                print("再见")
                 break
             try:
                 notes = _collect_health_notes(runtime)
@@ -281,7 +311,7 @@ def main():
                 pass
             response = runtime.run(user_input)
             n = getattr(runtime, "_last_tool_calls", 0)
-            print(f"\n📊 本次工具调用: {n}")
+            # per-turn tool count already logged by runtime.py (stderr); dropped duplicate stdout line here
             if response:
                 presenter.show_assistant(
                     response,
@@ -293,7 +323,7 @@ def main():
                 _save_conversation_history(runtime)
             except Exception:
                 pass
-            print("\n👋")
+            print("\n再见")
             break
         except Exception as e:
             import traceback
