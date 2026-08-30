@@ -129,6 +129,43 @@ run_command 的 cmd 参数做静态前缀分类。
 
 调用后有变化但未走 WRITE_CONFIRM → 标记未授权变更。
 
+#### 实现规格（v1，2026-08-30 冻结）
+
+观察边界：project_root 内工程树，不依赖工具参数（args）推测影响路径。
+
+快照对象：workspace metadata manifest。
+
+- key：相对 project_root 的 posix 路径
+- value：kind（file/dir/symlink/other）、mtime_ns、size、symlink target
+- 不做全仓 content hash
+
+排除目录（整树 prune，不进入 manifest）：
+
+.git、__pycache__、.pytest_cache、.mypy_cache、.pyright、.ruff_cache、
+.venv、venv、node_modules、.tox、.nox、dist、build、.eggs、.idea、
+.vscode、.forge
+
+symlink 规则：
+
+- 记录 link 自身（kind=symlink + target）
+- 不跟随目录 symlink
+- 不遍历 project_root 之外
+
+对称 diff：
+
+changed = paths where before[p] != after[p]，使用 before.keys() | after.keys()，
+必须捕获新增、删除、修改（含空目录）。
+
+授权判定：
+
+- confirmed_write / recovery → 不报 unauthorized
+- VERIFY → changed − VERIFY_SIDE_EFFECT_PATTERNS，剩余非空 → unauthorized_world_change
+- 其他 ALLOW / READ_ONLY → changed 非空 → unauthorized_world_change
+
+manifest 不进入 LLM 消息、不写入 SubtaskCheckpoint。
+
+实现位置：forge/workspace_manifest.py。
+
 ### 4.2.1 「世界变化」的定义
 
 Layer B 的「世界变化」指工程世界的实质变化，不是文件系统任何字节变化。
