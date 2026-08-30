@@ -1665,3 +1665,22 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - 升级裁决：主 AI 调用 request_human_intervention，turn boundary 生效，用户 modify 后旧授权作废并重新规划派发。
 - 后续子任务执行 + verify_subtask_evidence 验收链路正常。
 
+## 死代码清理 + Layer B 观察边界修复（2026-08-30）
+
+### Git 确认死代码清理
+
+- 问题：GIT_CONFIRM_COMMANDS + needs_git_confirmation 无活调用方；_PAUSE_CLASSES / _normalize_cmd / COMMAND_CLASS_UNKNOWN import 未使用。确认机制已统一为 command_class_prefixes → execution_gate。
+- 修复：删除上述死代码。确认链路保持 command_class_prefixes → resolve_run_command_gate → classify_for_confirmation → subagent → PAUSE。
+- 测试：全量 692 passed。
+
+### Layer B 观察边界修复（run_command 盲区）
+
+- 问题：原 _layer_b_snapshot 从 args 的 path/file/target/edits 提取快照路径。run_command 参数只有 cmd，before/after 恒为空，Layer B 对 shell 写工程文件失明。与 MAIN_SUBAGENT_IMPLEMENTATION_DESIGN.md §4.2「执行面工具调用前后取状态快照、不依赖 tool_name 名单」不一致。
+- 修复：
+  - 新增 forge/workspace_manifest.py：全 workspace metadata manifest（kind/mtime_ns/size/symlink target），排除 .git、cache、venv、.forge 等噪声目录。
+  - 对称 diff：before.keys() | after.keys()，捕获新增、删除、修改。
+  - run_subagent 执行前后改用 build_workspace_manifest，不再依赖 args 路径。
+  - VERIFY 授权副作用继续用 changed - patterns 减法。
+  - confirmed_write / recovery 行为不变。
+- 测试：新增 tests/test_layer_b_workspace_manifest.py，含 run_command 改文件被 Layer B 捕获的集成测试。全量 703 passed。
+
