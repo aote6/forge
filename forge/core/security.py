@@ -112,17 +112,6 @@ DANGEROUS_COMMAND_PATTERNS = [
     ),
 ]
 
-GIT_CONFIRM_COMMANDS = [
-    r"\bgit\s+push\b(?!.*--force|.*-f\b)",
-    r"\bgit\s+commit\b",
-    r"\bgit\s+tag\b",
-    r"\bgit\s+merge\b",
-    r"\bgit\s+rebase\b",
-    r"\bgit\s+reset\b",
-    r"\bgit\s+stash\s+drop\b",
-    r"\bgit\s+branch\s+-[dD]\b",
-]
-
 def is_blocked_path(path: str) -> str | None:
     """返回命中的规则字符串，未命中返回 None。使用 expanduser + resolve 跟随符号链接。"""
     try:
@@ -150,13 +139,6 @@ def is_dangerous_command(cmd: str) -> str | None:
             re.IGNORECASE,
         ):
             return "命令参数含敏感路径"
-    return None
-
-
-def needs_git_confirmation(cmd: str) -> str | None:
-    for pattern in GIT_CONFIRM_COMMANDS:
-        if re.search(pattern, cmd):
-            return pattern
     return None
 
 

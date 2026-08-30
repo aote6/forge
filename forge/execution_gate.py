@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import Any
 
 from forge.command_class_prefixes import (
-    COMMAND_CLASS_UNKNOWN,
     resolve_command_class,
 )
 from forge.tools.schemas import MUTATION_TOOL_NAMES, RECONCILIATION_TOOL_NAMES
@@ -23,9 +22,6 @@ PAUSE = "PAUSE"
 
 # Prefix classes treated as read-only at the confirmation layer
 _READ_ONLY_CLASSES = frozenset({"test", "vcs_read", "read_only", "type_check"})
-
-# Prefix classes that require user confirmation
-_PAUSE_CLASSES = frozenset({"vcs_write", "destructive", "destructive_write", "unknown"})
 
 # Explicit mutation tool names → always PAUSE (undo_last_tx is recovery → ALLOW)
 _RECOVERY_TOOLS = frozenset({"undo_last_tx"})
@@ -77,11 +73,6 @@ VERIFY_SIDE_EFFECT_PATTERNS: dict[str, frozenset[str]] = {
 
 
 
-def _normalize_cmd(cmd: str) -> str:
-    return " ".join((cmd or "").strip().split())
-
-
-# resolve_command_class imported from forge.command_class_prefixes
 def resolve_run_command_gate(cmd: str) -> str:
     """Layer A: ALLOW for read-only classes; PAUSE otherwise."""
     cls = resolve_command_class(cmd)
