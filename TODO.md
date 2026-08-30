@@ -65,12 +65,6 @@
 
 ### 运行时生命周期（R1 后续）
 
-- [ ] durable pause / 子循环恢复未实现。
-  - 现状：R1 最小闭环已持久化 phase + active_subtask_id + pending，但子循环栈内状态不可恢复。
-  - 影响：子 AI 执行中崩溃后无法从断点继续，只能重新 spawn。
-  - 建议方向：先定义 durable pending 的最小形态，再决定是否持久化子循环消息和 PC。
-  - 优先级：P2
-
 - [ ] 控制面缺少 `get_runtime_state()` 工具。
   - 现状：RuntimeState 已持久化，但主 AI 无法通过工具查询当前 phase / pending / active_subtask。
   - 影响：主 AI 状态感知仍靠对话历史和 sync hint，没有机器事实入口。
