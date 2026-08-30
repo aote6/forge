@@ -1630,3 +1630,38 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 ### 测试基线
 
 - 未新增自动化测试；本轮改动为纯展示层（dp.py 单文件），通过实机运行手动验证 banner 渲染、人格触发、emoji 替换效果。
+
+## Human Intervention：主 AI → 人类升级通道（2026-08-30）
+
+### 契约冻结
+
+- 新增 docs/HUMAN_INTERVENTION_CONTRACT.md v1，按文档治理规则归类为 Contract（与 RUNTIME_STATE_CONTRACT 同级）。
+- 核心语义：human_intervention 是主 AI 主动、可持久、用户直接裁决的任务级升级，不是 AI 拒绝权、不是 PendingAction、不是 Durable Pause。
+- 复用 phase=AWAITING_USER + pending.kind=human_intervention，不新增 phase，不改 AgentResult 三值。
+
+### Phase 1：最小闭环实现
+
+- runtime_state.py：pending.kind 扩展为 sync_decision | human_intervention；derive_recovery 支持 human 恢复。
+- schemas.py：request_human_intervention / resolve_human_intervention 控制面工具。
+- runtime.py：打开/裁决 handler、turn boundary、Gate 拦截任务推进、ABORTED→IDLE、与 sync pending 互斥。
+- 用户裁决机器解析 continue / modify / abort，不经过主 AI 自然语言翻译。
+- modify 必填 user_note；abort 后 phase=ABORTED，下一条新任务输入才回 IDLE。
+- 测试：tests/test_human_intervention.py 新增，全量 684 passed。
+
+### Phase 2：决策流接入
+
+- 触发窗口：必须已有 spawn_subagent + verify_subtask_evidence，分叉来自 need_decision 或 blocked 多路径证据；禁止零 spawn 编造 A/B。
+- payload 自动写入 original_goal / source_subtask_ids / evidence_digest（不扩 API）。
+- continue 恢复 WorkingSet.goal=original_goal，防止目标漂移。
+- modify 在 original_goal + user_note 上重新规划，旧路径授权作废。
+- abort 不继续执行。
+- source_subtask_ids 只收集 need_decision / blocked，done 被排除。
+- system_prompt 与 MAIN_AGENT_BEHAVIOR.md §9 同步行为契约。
+- 测试：test_human_intervention.py 扩到 22 passed；全量 692 passed。
+
+### 真实验证
+
+- 模糊任务「改一个文件」：主 AI 正确澄清，未擅自修改。
+- 升级裁决：主 AI 调用 request_human_intervention，turn boundary 生效，用户 modify 后旧授权作废并重新规划派发。
+- 后续子任务执行 + verify_subtask_evidence 验收链路正常。
+

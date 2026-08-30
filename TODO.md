@@ -83,12 +83,6 @@
   - 建议：基于 RuntimeState 设计全局信号（STOP / PAUSE / ABORT）。
   - 优先级：P2
 
-- [ ] 主 AI 缺少「升级到人类」的主动求救通道。
-  - 发现场景：AI 死锁或状态卡住时，无法主动请求人类介入。
-  - 影响：只能正常执行、被拒绝、返回 blocked/need_decision，没有主 AI → 用户的升级通道。
-  - 建议：新增控制面工具 request_human_intervention(reason)。
-  - 优先级：P1
-
 ### 主从分工 / 行为契约
 
 - [ ] Forge 缺少「语义级风险提示」，只能在极危险命令上硬拦截。
