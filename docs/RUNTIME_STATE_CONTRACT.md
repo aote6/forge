@@ -92,7 +92,7 @@ phase 不要求固定线性转换。
 
 ### 2.3 pending
 
-kind: sync_decision | execution_pause | null
+kind: sync_decision | human_intervention | execution_pause | null
 summary: string
 payload: dict
 
@@ -105,6 +105,13 @@ sync_decision
 - 同步策略点等待用户决议，必须持久化
 - 所有方是 RuntimeState.pending
 - 在 decided 之前，Gate 必须拒绝写类工具与 forge_sync 推进
+
+human_intervention
+- 主 AI 主动升级用户的任务级裁决，必须持久化
+- 所有方是 RuntimeState.pending
+- 详见 docs/HUMAN_INTERVENTION_CONTRACT.md
+- 未 resolve 前 Gate 拒绝 mutation / reconciliation / forge_sync / spawn_subagent / resume_subtask
+- 与 sync_decision 同一时刻至多一个 durable pending
 
 payload 只存最小续跑所需信息，不存栈对象、不存模型消息。
 
@@ -137,6 +144,10 @@ recovery 不写入 runtime_state.json。
 崩溃前 phase 为 AWAITING_USER 且 pending.kind 为 sync_decision
 恢复模式为 decision_required
 行为: 重新检测 sync，提示用户决策
+
+崩溃前 phase 为 AWAITING_USER 且 pending.kind 为 human_intervention
+恢复模式为 decision_required
+行为: 重新展示 reason，等待用户 continue / modify / abort（不自动 resolve）
 
 崩溃前 phase 为 COMPLETED 或 BLOCKED 或 ABORTED
 恢复模式为 none

@@ -47,6 +47,8 @@ EXPECTED_TOOL_NAMES = [
     "resolve_sync_decision",
     "resume_subtask",
     "abort_subtask",
+    "request_human_intervention",
+    "resolve_human_intervention",
     "submit_plan",
 ]
 

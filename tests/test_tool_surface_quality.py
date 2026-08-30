@@ -34,7 +34,7 @@ def test_llm_surface_is_curated_not_bloated():
     assert "todo_write" in CONTROL_PLANE_TOOLS
     assert "todo_write" not in ro
     assert "str_replace" in mu and "apply_patch" in mu and "write_file" in mu
-    assert len(ro) + len(mu) + len(CONTROL_PLANE_TOOLS) <= 42
+    assert len(ro) + len(mu) + len(CONTROL_PLANE_TOOLS) <= 44
     # legacy noise must not be on the LLM schema list
     for noise in (
         "get_call_chain", "summarize_file", "extract_code_skeleton",

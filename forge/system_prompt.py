@@ -179,6 +179,15 @@ stdout 与 stderr 是真实、可独立验证的工具输出。
 
 没有验证过的事实，不要写成定论。
 
+## Human Intervention（主 AI → 用户升级）
+
+当你判断当前任务无法可靠继续，且需要用户明确裁决时，调用 request_human_intervention(reason=...)。
+
+- 这是请求用户决策，不是拒绝执行、不是逃避任务。
+- 成功后当前回合立即结束；用户将直接输入 continue / modify <新指示> / abort。
+- 不要用自然语言猜测用户对升级请求的裁决。
+- 不得在已有 durable pending、active_subtask 或写确认 PendingAction 时调用。
+
 ## Durable Pause（子任务中断恢复）
 
 进程崩溃或被杀死后，若存在 SubtaskCheckpoint，你会在启动上下文中看到恢复候选。

@@ -2,26 +2,20 @@
 
 落点：`<project_root>/.forge/runtime_state.json`
 
-契约：docs/RUNTIME_STATE_CONTRACT.md（R1 最小闭环）
+契约：docs/RUNTIME_STATE_CONTRACT.md；docs/HUMAN_INTERVENTION_CONTRACT.md
 
 字段：
   - phase: 当前阶段（见 PHASE_*）
   - active_subtask_id: 正在跑的子任务 id，或 None
-  - pending: 仅持久化 kind=sync_decision；execution_pause 不进本文件
+  - pending: 可持久化 kind=sync_decision | human_intervention；execution_pause 不进本文件
 
 recovery 不写入本文件。启动时由 derive_recovery(phase, pending) 推导。
-
-R1 不做：
-  - durable pause
-  - 子循环栈恢复
-  - Gate 消费 pending
-  - SyncDecision 对象
 """
 from __future__ import annotations
 
 import json
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -48,9 +42,17 @@ VALID_PHASES = frozenset(
     }
 )
 
-# ── pending.kind（R1 持久化只允许 sync_decision）──────────────────
+# ── pending.kind（可持久化）───────────────────────────────────────
 PENDING_KIND_SYNC_DECISION = "sync_decision"
+PENDING_KIND_HUMAN_INTERVENTION = "human_intervention"
 # execution_pause 仅进程内，永不写入 runtime_state.json
+
+DURABLE_PENDING_KINDS = frozenset(
+    {
+        PENDING_KIND_SYNC_DECISION,
+        PENDING_KIND_HUMAN_INTERVENTION,
+    }
+)
 
 # ── recovery.mode（契约 §2.4，不持久化）───────────────────────────
 RECOVERY_NONE = "none"
@@ -62,7 +64,7 @@ RUNTIME_STATE_RELATIVE = Path(".forge") / "runtime_state.json"
 
 @dataclass
 class Pending:
-    """RuntimeState.pending — 仅 sync_decision 可持久化。"""
+    """RuntimeState.pending — sync_decision | human_intervention 可持久化。"""
 
     kind: str
     summary: str = ""
@@ -82,14 +84,13 @@ class Pending:
         if not isinstance(data, dict):
             return None
         kind = str(data.get("kind") or "").strip()
-        # R1: only persist/accept sync_decision on the durable path
-        if kind != PENDING_KIND_SYNC_DECISION:
+        if kind not in DURABLE_PENDING_KINDS:
             return None
         payload = data.get("payload")
         if not isinstance(payload, dict):
             payload = {}
         return cls(
-            kind=PENDING_KIND_SYNC_DECISION,
+            kind=kind,
             summary=str(data.get("summary") or ""),
             payload=dict(payload),
         )
@@ -110,7 +111,7 @@ def derive_recovery(
     phase: str,
     pending: Pending | None,
 ) -> Recovery:
-    """从持久化的 phase + pending 推导 recovery（契约 §2.4）。
+    """从持久化的 phase + pending 推导 recovery。
 
     不执行任何恢复动作，只表达“上次是否留下未完成状态”。
     """
@@ -124,6 +125,11 @@ def derive_recovery(
             return Recovery(
                 mode=RECOVERY_DECISION_REQUIRED,
                 reason="pending sync_decision awaits user resolution",
+            )
+        if pending is not None and pending.kind == PENDING_KIND_HUMAN_INTERVENTION:
+            return Recovery(
+                mode=RECOVERY_DECISION_REQUIRED,
+                reason="pending human_intervention awaits user resolution",
             )
         # awaiting user without durable pending → treat as clean start
         return Recovery(
@@ -271,3 +277,26 @@ def sync_decision_pending_blocks(project_root: str | Path) -> tuple[bool, str]:
         summary = st.pending.summary or "sync_decision pending"
         return True, summary
     return False, ""
+
+
+def human_intervention_pending_blocks(project_root: str | Path) -> tuple[bool, str]:
+    """Gate helper: True when RuntimeState.pending.kind == human_intervention."""
+    store = RuntimeStateStore(project_root)
+    st = store.load()
+    if st.pending is not None and st.pending.kind == PENDING_KIND_HUMAN_INTERVENTION:
+        summary = st.pending.summary or "human_intervention pending"
+        return True, summary
+    return False, ""
+
+
+def durable_pending_blocks(project_root: str | Path) -> tuple[bool, str, str | None]:
+    """Any durable RuntimeState.pending.
+
+    Returns (blocked, summary, kind_or_none).
+    """
+    store = RuntimeStateStore(project_root)
+    st = store.load()
+    if st.pending is not None and st.pending.kind in DURABLE_PENDING_KINDS:
+        summary = st.pending.summary or f"{st.pending.kind} pending"
+        return True, summary, st.pending.kind
+    return False, "", None

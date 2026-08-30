@@ -82,6 +82,20 @@ def _full_registry(tmp_path: Path) -> tuple[dict, set[str]]:
         return None  # real impl lives in Runtime; signature is the contract
 
     tools["abort_subtask"] = abort_subtask
+
+    def request_human_intervention(
+        reason: str = "",
+        options_context: str = "",
+        proposed_next: str = "",
+    ):
+        return None  # real impl lives in Runtime; signature is the contract
+
+    tools["request_human_intervention"] = request_human_intervention
+
+    def resolve_human_intervention(decision: str = "", user_note: str = ""):
+        return None  # real impl lives in Runtime; signature is the contract
+
+    tools["resolve_human_intervention"] = resolve_human_intervention
     return tools
 
 

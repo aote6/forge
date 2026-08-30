@@ -1378,6 +1378,10 @@ class Runtime:
                     PHASE_RUNNING_SUBTASK,
                 )
                 subtask_id = f"sub_{uuid.uuid4().hex[:12]}"
+                # Gate: human_intervention pending blocks spawn
+                _hi = self._guard_human_intervention_pending("spawn_subagent")
+                if _hi is not None:
+                    return _hi
                 if getattr(self, "_runtime_state_store", None) is not None:
                     self.runtime_state.phase = PHASE_DISPATCHING
                     self.runtime_state.active_subtask_id = subtask_id
@@ -1654,6 +1658,10 @@ class Runtime:
             if not sid:
                 return ToolResult.fail(display="resume_subtask: subtask_id required")
 
+            _hi = self._guard_human_intervention_pending("resume_subtask")
+            if _hi is not None:
+                return _hi
+
             store = getattr(self, "_subtask_checkpoint_store", None)
             if store is None:
                 return ToolResult.fail(display="resume_subtask: checkpoint store unavailable")
@@ -1868,11 +1876,36 @@ class Runtime:
                 },
             )
 
+
+        def request_human_intervention_tool(
+            reason: str = "",
+            options_context: str = "",
+            proposed_next: str = "",
+        ):
+            from forge.adapters.base import ToolResult as TR
+            return self.request_human_intervention(
+                reason=reason,
+                options_context=options_context or None,
+                proposed_next=proposed_next or None,
+            )
+
+        def resolve_human_intervention_tool(
+            decision: str = "",
+            user_note: str = "",
+        ):
+            from forge.adapters.base import ToolResult as TR
+            return self.resolve_human_intervention(
+                decision=decision,
+                user_note=user_note or None,
+            )
+
         tools["spawn_subagent"] = spawn_subagent
         tools["verify_subtask_evidence"] = verify_subtask_evidence
         tools["resolve_sync_decision"] = resolve_sync_decision_tool
         tools["resume_subtask"] = resume_subtask
         tools["abort_subtask"] = abort_subtask
+        tools["request_human_intervention"] = request_human_intervention_tool
+        tools["resolve_human_intervention"] = resolve_human_intervention_tool
         self.executor = ToolExecutor(tools)
 
         self.conversation = Conversation()
@@ -2012,6 +2045,15 @@ class Runtime:
             decision = SyncDecision.new_pending(basis=status)
             self._sync_decision_store.save(decision)
 
+        # Mutual exclusion: do not open sync_decision over human_intervention
+        from forge.runtime_state import PENDING_KIND_HUMAN_INTERVENTION as _PHI
+        if (
+            self.runtime_state.pending is not None
+            and self.runtime_state.pending.kind == _PHI
+        ):
+            self.sync_decision = decision
+            return
+
         self.sync_decision = decision
         detail = getattr(report, "detail", "") or ""
         summary = f"sync_decision required: basis={status}"
@@ -2074,6 +2116,298 @@ class Runtime:
         self._runtime_state_store.save(self.runtime_state)
         return decision
 
+    def request_human_intervention(
+        self,
+        reason: str = "",
+        options_context: str | None = None,
+        proposed_next: str | None = None,
+    ):
+        """Open durable human_intervention pending and end the current AI turn.
+
+        Preconditions (HUMAN_INTERVENTION_CONTRACT):
+          - phase == IDLE
+          - no durable pending
+          - active_subtask_id is None
+          - _pending_action is None
+        """
+        import time
+        from forge.adapters.base import ToolResult as TR
+        from forge.runtime_state import (
+            PHASE_AWAITING_USER,
+            PHASE_IDLE,
+            PENDING_KIND_HUMAN_INTERVENTION,
+            PENDING_KIND_SYNC_DECISION,
+            Pending,
+        )
+
+        reason = str(reason or "").strip()
+        if not reason:
+            return TR.fail(display="request_human_intervention: reason is required")
+
+        if getattr(self, "_pending_action", None) is not None:
+            return TR.fail(
+                display=(
+                    "request_human_intervention: refused — in-process PendingAction "
+                    "exists; finish write confirmation first."
+                )
+            )
+
+        rs = getattr(self, "runtime_state", None)
+        store = getattr(self, "_runtime_state_store", None)
+        if rs is None or store is None:
+            return TR.fail(display="request_human_intervention: RuntimeState unavailable")
+
+        if rs.phase != PHASE_IDLE:
+            return TR.fail(
+                display=(
+                    f"request_human_intervention: refused — phase is {rs.phase!r}, "
+                    "must be IDLE"
+                )
+            )
+        if rs.active_subtask_id is not None:
+            return TR.fail(
+                display=(
+                    "request_human_intervention: refused — active_subtask_id is set; "
+                    "finish or abort the subtask first."
+                )
+            )
+        if rs.pending is not None:
+            return TR.fail(
+                display=(
+                    f"request_human_intervention: refused — durable pending already "
+                    f"open (kind={rs.pending.kind})"
+                )
+            )
+
+        opts = str(options_context or "").strip() or None
+        prop = str(proposed_next or "").strip() or None
+        payload = {
+            "reason": reason,
+            "requested_at": time.time(),
+        }
+        if opts:
+            payload["options_context"] = opts
+        if prop:
+            payload["proposed_next"] = prop
+
+        summary = f"human_intervention: {reason}"
+        if len(summary) > 200:
+            summary = summary[:197] + "..."
+
+        rs.phase = PHASE_AWAITING_USER
+        rs.pending = Pending(
+            kind=PENDING_KIND_HUMAN_INTERVENTION,
+            summary=summary,
+            payload=payload,
+        )
+        rs.refresh_recovery()
+        self.recovery = rs.recovery
+        try:
+            store.save(rs)
+        except Exception as e:
+            # roll back in-memory on save failure — no false success
+            rs.phase = PHASE_IDLE
+            rs.pending = None
+            rs.refresh_recovery()
+            self.recovery = rs.recovery
+            return TR.fail(
+                display=f"request_human_intervention: persist failed: {e}"
+            )
+
+        display = self._format_human_intervention_prompt(payload)
+        return TR.ok(
+            display=display,
+            payload={
+                "human_intervention": True,
+                "turn_boundary": True,
+                "pending": rs.pending.to_dict(),
+            },
+        )
+
+    def resolve_human_intervention(
+        self,
+        decision: str = "",
+        user_note: str | None = None,
+    ):
+        """Resolve durable human_intervention pending."""
+        from forge.adapters.base import ToolResult as TR
+        from forge.runtime_state import (
+            PHASE_ABORTED,
+            PHASE_IDLE,
+            PENDING_KIND_HUMAN_INTERVENTION,
+        )
+
+        decision = str(decision or "").strip().lower()
+        if decision not in ("continue", "modify", "abort"):
+            return TR.fail(
+                display=(
+                    "resolve_human_intervention: decision must be "
+                    "continue | modify | abort"
+                )
+            )
+        note = str(user_note or "").strip()
+        if decision == "modify" and not note:
+            return TR.fail(
+                display=(
+                    "resolve_human_intervention: user_note is required and "
+                    "must be non-empty when decision=modify"
+                )
+            )
+
+        rs = getattr(self, "runtime_state", None)
+        store = getattr(self, "_runtime_state_store", None)
+        if rs is None or store is None:
+            return TR.fail(display="resolve_human_intervention: RuntimeState unavailable")
+        if rs.pending is None or rs.pending.kind != PENDING_KIND_HUMAN_INTERVENTION:
+            return TR.fail(
+                display="resolve_human_intervention: no human_intervention pending"
+            )
+
+        if decision in ("continue", "modify"):
+            rs.phase = PHASE_IDLE
+        else:
+            rs.phase = PHASE_ABORTED
+        rs.pending = None
+        rs.refresh_recovery()
+        self.recovery = rs.recovery
+        try:
+            store.save(rs)
+        except Exception as e:
+            return TR.fail(
+                display=f"resolve_human_intervention: persist failed: {e}"
+            )
+
+        return TR.ok(
+            display=(
+                f"human_intervention resolved: decision={decision}"
+                + (f" user_note={note!r}" if note else "")
+            ),
+            payload={
+                "decision": decision,
+                "user_note": note or None,
+                "phase": rs.phase,
+            },
+        )
+
+    @staticmethod
+    def _format_human_intervention_prompt(payload: dict) -> str:
+        reason = payload.get("reason") or ""
+        opts = payload.get("options_context")
+        prop = payload.get("proposed_next")
+        lines = [
+            "── Needs human decision (main AI escalation) ──",
+            f"reason: {reason}",
+        ]
+        if opts:
+            lines.append(f"options_context: {opts}")
+        if prop:
+            lines.append(f"proposed_next: {prop}")
+        lines.extend(
+            [
+                "",
+                "Reply with exactly one of:",
+                "  continue",
+                "  modify <new instruction>",
+                "  abort",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _handle_human_intervention_reply(self, reply: str) -> str:
+        """Machine-parse user arbitration for human_intervention (no AI)."""
+        from forge.runtime_state import PENDING_KIND_HUMAN_INTERVENTION
+
+        text = (reply or "").strip()
+        lower = text.lower()
+        decision = None
+        note = ""
+
+        if lower == "continue":
+            decision = "continue"
+        elif lower == "abort" or lower.startswith("abort ") or lower.startswith("abort\n"):
+            decision = "abort"
+            note = text[5:].strip() if len(text) > 5 else ""
+        elif lower.startswith("modify"):
+            decision = "modify"
+            # strip leading 'modify' and optional separator
+            rest = text[6:].lstrip(" \t:：-")
+            note = rest.strip()
+            if not note:
+                rs = self.runtime_state
+                payload = (rs.pending.payload if rs.pending else {}) or {}
+                return (
+                    self._format_human_intervention_prompt(payload)
+                    + "\n\n(modify requires a non-empty instruction; try again)"
+                )
+
+        if decision is None:
+            rs = self.runtime_state
+            payload = (rs.pending.payload if rs.pending else {}) or {}
+            return (
+                self._format_human_intervention_prompt(payload)
+                + "\n\n(unrecognized input; reply continue / modify <instruction> / abort)"
+            )
+
+        result = self.resolve_human_intervention(decision=decision, user_note=note or None)
+        if not result.success:
+            return result.display or "resolve failed"
+
+        if decision == "abort":
+            return (
+                (result.display or "")
+                + "\n当前任务已终止（phase=ABORTED）。下一条新任务输入将进入 IDLE。"
+            )
+
+        # continue / modify → new main AI turn (do not resume interrupted tool loop)
+        if decision == "continue":
+            follow = (
+                "（用户裁决：continue）请在原目标上继续；不要恢复被 "
+                "request_human_intervention 中断的旧工具回合，必要时重新规划并 spawn_subagent。"
+            )
+            return self._run_conversation(follow)
+        # modify
+        follow = (
+            "（用户裁决：modify）新指示如下，请按此重新规划并执行，不得把中断前的旧授权当仍有效：\n"
+            + note
+        )
+        return self._run_conversation(follow)
+
+    def _guard_human_intervention_pending(self, tool_name: str):
+        """Gate: human_intervention pending blocks progression tools."""
+        from forge.adapters.base import ToolResult
+        from forge.runtime_state import human_intervention_pending_blocks
+        from forge.tools.schemas import MUTATION_TOOL_NAMES, RECONCILIATION_TOOL_NAMES
+
+        name = (tool_name or "").strip()
+        if name in ("resolve_human_intervention", "todo_list"):
+            return None
+
+        ws = getattr(self, "workspace", None)
+        if ws is None or not getattr(ws, "project_root", None):
+            return None
+        try:
+            blocked, summary = human_intervention_pending_blocks(ws.project_root)
+        except Exception:
+            return None
+        if not blocked:
+            return None
+
+        blocked_names = set(MUTATION_TOOL_NAMES) | set(RECONCILIATION_TOOL_NAMES) | {
+            "forge_sync",
+            "spawn_subagent",
+            "resume_subtask",
+            "todo_write",
+        }
+        if name not in blocked_names:
+            return None
+        return ToolResult.fail(
+            display=(
+                "⛔ human_intervention pending：人类升级尚未裁决，已拒绝任务推进。\n"
+                f"pending: {summary}\n"
+                "请用户直接输入 continue / modify <instruction> / abort。"
+            )
+        )
+
     def _guard_sync_decision_pending(self, tool_name: str):
         """R2 Gate: pending.kind==sync_decision 时拒绝写类工具与 forge_sync。"""
         from forge.adapters.base import ToolResult
@@ -2110,6 +2444,10 @@ class Runtime:
         由工具自己标注 mode=direct_disk）；World object 操作没有磁盘等价物，
         继续 STOP，不得伪装成 direct_disk。
         """
+        # Human intervention pending blocks progression (before sync / external)
+        blocked = self._guard_human_intervention_pending(tool_name)
+        if blocked is not None:
+            return blocked
         # R2: SyncDecision pending 优先于外部变更守卫
         blocked = self._guard_sync_decision_pending(tool_name)
         if blocked is not None:
@@ -2241,13 +2579,43 @@ class Runtime:
 
         工具始终可见。写操作需确认时冻结 PendingAction；用户确认后 Runtime
         执行快照（不重问模型），然后继续普通对话。不存在 Execution 整表放行。
+
+        Human intervention: durable pending is machine-arbitrated at this entry
+        (continue / modify / abort) without main-AI semantic interpretation.
         """
+        from forge.runtime_state import (
+            PHASE_ABORTED,
+            PHASE_IDLE,
+            PENDING_KIND_HUMAN_INTERVENTION,
+        )
+
         self._last_tool_calls = 0
         self._last_assistant_replies = []
         self._last_response_needs_display = False
 
+        # ABORTED → IDLE on new user task input (do not restore old pending/task)
+        rs = getattr(self, "runtime_state", None)
+        store = getattr(self, "_runtime_state_store", None)
+        if rs is not None and rs.phase == PHASE_ABORTED:
+            rs.pending = None
+            rs.active_subtask_id = None
+            rs.phase = PHASE_IDLE
+            rs.refresh_recovery()
+            self.recovery = rs.recovery
+            if store is not None:
+                try:
+                    store.save(rs)
+                except Exception as e:
+                    print(f"[forge] ABORTED→IDLE save failed: {e}", file=sys.stderr)
+
         if self._pending_action is not None:
             result = self._handle_pending_reply(task)
+        elif (
+            rs is not None
+            and rs.pending is not None
+            and rs.pending.kind == PENDING_KIND_HUMAN_INTERVENTION
+        ):
+            result = self._handle_human_intervention_reply(task)
         else:
             result = self._run_conversation(task)
 
@@ -2390,6 +2758,9 @@ class Runtime:
         if self.sync_layer is None:
             return ("execute", None)
 
+        blocked = self._guard_human_intervention_pending("forge_sync")
+        if blocked is not None:
+            return ("result", blocked)
         # R2 Gate: SyncDecision pending blocks forge_sync advancement
         blocked = self._guard_sync_decision_pending("forge_sync")
         if blocked is not None:
@@ -2654,6 +3025,66 @@ class Runtime:
             ))
             if resp.content:
                 assistant_replies.append(resp.content)
+
+            # HUMAN_INTERVENTION turn boundary: if any tool_call requests escalation,
+            # only run that tool, discard the rest of the batch, persist, return.
+            _hi_tc = None
+            for _cand in resp.tool_calls:
+                if getattr(_cand, "name", None) == "request_human_intervention":
+                    _hi_tc = _cand
+                    break
+            if _hi_tc is not None:
+                args = getattr(_hi_tc, "arguments", None) or {}
+                if not isinstance(args, dict):
+                    args = {}
+                self.emit(
+                    Event(
+                        EventType.TOOL_CALL_START,
+                        {"name": _hi_tc.name, "args": args},
+                    )
+                )
+                result = self.request_human_intervention(
+                    reason=str(args.get("reason") or ""),
+                    options_context=args.get("options_context"),
+                    proposed_next=args.get("proposed_next"),
+                )
+                tool_calls_n += 1
+                self._last_tool_display = result.display or ""
+                self._last_tool_name = _hi_tc.name
+                self.emit(
+                    Event(
+                        EventType.TOOL_CALL_END,
+                        {
+                            "name": _hi_tc.name,
+                            "success": bool(result.success),
+                            "display": result.display,
+                        },
+                    )
+                )
+                self._last_response_needs_display = True
+                self.conversation.append(ForgeMessage(role="user", content=task))
+                self.conversation.append(
+                    ForgeMessage(
+                        role="assistant",
+                        content=((resp.content or "") + ("\n" if resp.content else "") + (result.display or "")),
+                    )
+                )
+                _append_conversation_log(
+                    self.workspace.project_root,
+                    "assistant",
+                    result.display or "",
+                )
+                if result.success:
+                    assistant_replies.append(result.display or "")
+                    self._last_tool_calls = tool_calls_n
+                    self._last_assistant_replies = assistant_replies
+                    return result.display or ""
+                # failed open: surface error and end turn (still no other tools)
+                assistant_replies.append(result.display or "")
+                self._last_tool_calls = tool_calls_n
+                self._last_assistant_replies = assistant_replies
+                return result.display or "request_human_intervention failed"
+
             for tc in resp.tool_calls:
                 strategy = _write_strategy(tc.name)
                 if strategy == "FORGE_SYNC":

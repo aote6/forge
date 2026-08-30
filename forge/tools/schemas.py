@@ -674,8 +674,58 @@ CONTROL_PLANE_TOOL_DECLARATIONS = [
             "required": ["subtask_id"],
         },
     },
+    {
+        "name": "request_human_intervention",
+        "description": (
+            "主 AI 主动请求人类对当前任务做决策（durable human_intervention）。"
+            "仅在主 AI 判断无法可靠继续时调用；这是请求用户裁决，不是拒绝执行。"
+            "成功后当前主 AI turn 立即结束；用户须直接输入 continue / modify <指示> / abort。"
+            "不得在有 durable pending、active_subtask 或进程内 PendingAction 时调用。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "需要人类决策的原因（必填）",
+                },
+                "options_context": {
+                    "type": "string",
+                    "description": "可选：当前上下文摘要，帮助用户决策",
+                },
+                "proposed_next": {
+                    "type": "string",
+                    "description": "可选：主 AI 建议的下一步（不自动执行）",
+                },
+            },
+            "required": ["reason"],
+        },
+    },
+    {
+        "name": "resolve_human_intervention",
+        "description": (
+            "完成一次人类升级裁决（仅当 pending.kind=human_intervention）。"
+            "通常由 Runtime 根据用户直接输入机器解析后调用；主 AI 不得用自然语言猜用户意图。"
+            "decision: continue | modify | abort；modify 时 user_note 必须非空。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "decision": {
+                    "type": "string",
+                    "description": "continue | modify | abort",
+                },
+                "user_note": {
+                    "type": "string",
+                    "description": "modify 时必填的新指示；continue/abort 可选",
+                },
+            },
+            "required": ["decision"],
+        },
+    },
     SUBMIT_PLAN_DECLARATION,
 ]
+
 
 CONTROL_PLANE_TOOLS = frozenset(d["name"] for d in CONTROL_PLANE_TOOL_DECLARATIONS)
 
