@@ -31,6 +31,7 @@ from forge.execution_gate import (
     classify_for_confirmation,
     pause_summary,
 )
+from forge.workspace_manifest import build_workspace_manifest
 from forge.tool_call_record import (
     ToolCallRecord,
     current_timestamp,
@@ -136,88 +137,28 @@ def strip_stop_when(content: str) -> str:
 
 
 
-def _layer_b_snapshot(
-    project_root: str | os.PathLike,
-    args: dict,
-    tool_name: str | None = None,
-) -> dict[str, str]:
-    """Minimal deterministic snapshot of paths referenced by a tool call.
+def _layer_b_changed(before: dict, after: dict) -> bool:
+    """True if workspace manifests differ (symmetric path-level)."""
+    from forge.workspace_manifest import manifest_changed_paths
 
-    For VERIFY tools the snapshot also covers authorized side-effect paths,
-    so Layer B can tell authorized cache/persistence writes apart from
-    unauthorized engineering-world changes.
-    """
-    import glob as _glob
-
-    root = Path(project_root)
-    paths: list[str] = []
-    for key in ("path", "file", "target"):
-        v = args.get(key)
-        if isinstance(v, str) and v.strip():
-            paths.append(v.strip())
-    edits = args.get("edits")
-    if isinstance(edits, list):
-        for e in edits:
-            if isinstance(e, dict):
-                p = e.get("path") or e.get("file")
-                if isinstance(p, str) and p.strip():
-                    paths.append(p.strip())
-    # VERIFY side-effect coverage: materialize glob patterns under project_root.
-    if tool_name in VERIFY_TOOL_NAMES:
-        for pattern in VERIFY_SIDE_EFFECT_PATTERNS.get(tool_name, frozenset()):
-            full_pattern = str(root / pattern)
-            for hit in _glob.glob(full_pattern, recursive=True):
-                rel = str(Path(hit).relative_to(root))
-                if rel not in paths:
-                    paths.append(rel)
-    snap: dict[str, str] = {}
-    for p in paths:
-        fp = root / p if not os.path.isabs(p) else Path(p)
-        try:
-            if fp.is_file():
-                st = fp.stat()
-                snap[p] = f"{st.st_mtime_ns}:{st.st_size}"
-            elif fp.exists():
-                snap[p] = "exists"
-            else:
-                snap[p] = "missing"
-        except OSError:
-            snap[p] = "error"
-    return snap
-
-
-def _layer_b_changed(before: dict[str, str], after: dict[str, str]) -> bool:
-    return before != after
+    return bool(manifest_changed_paths(before, after))
 
 
 def _layer_b_unauthorized_diff(
     project_root: str | os.PathLike,
-    before: dict[str, str],
-    after: dict[str, str],
+    before: dict,
+    after: dict,
     authorized_patterns: frozenset[str],
 ) -> list[str]:
-    """Return changed paths that are NOT covered by authorized side-effect patterns."""
-    import fnmatch
+    """Return changed paths not covered by authorized side-effect patterns.
 
-    root = Path(project_root)
-    changed: list[str] = []
-    for p in after:
-        if before.get(p) != after.get(p):
-            if os.path.isabs(p):
-                rel = p
-            else:
-                try:
-                    rel = str(Path(p).relative_to(root))
-                except ValueError:
-                    rel = p
-            allowed = False
-            for pat in authorized_patterns:
-                if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(p, pat):
-                    allowed = True
-                    break
-            if not allowed:
-                changed.append(rel)
-    return changed
+    project_root is accepted for call-site compatibility; matching uses
+    relative posix keys only (workspace_manifest).
+    """
+    from forge.workspace_manifest import unauthorized_changed_paths
+
+    _ = project_root
+    return unauthorized_changed_paths(before, after, authorized_patterns)
 
 
 def filter_schemas_for_subagent(all_schemas: list[dict]) -> list[dict]:
@@ -476,7 +417,7 @@ def run_subagent(
                         emit(Event(EventType.TOOL_CALL_START, {"name": tc.name, "args": args}))
                     except Exception:
                         pass
-                before = _layer_b_snapshot(project_root, args, tool_name=tc.name)
+                before = build_workspace_manifest(project_root)
                 result, tool_call_id = _execute_tool(
                     tools,
                     tc,
@@ -484,7 +425,7 @@ def run_subagent(
                     subtask_id=subtask_id,
                     records_out=records,
                 )
-                after = _layer_b_snapshot(project_root, args, tool_name=tc.name)
+                after = build_workspace_manifest(project_root)
                 if not authorized_write and gate == ALLOW:
                     if tc.name in VERIFY_TOOL_NAMES:
                         # VERIFY: authorized side effects are subtracted from diff.
