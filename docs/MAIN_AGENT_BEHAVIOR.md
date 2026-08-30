@@ -161,3 +161,39 @@ Execution Plane：
 5. 主 AI 是唯一验收者。
 6. 子 AI 永远看不到原始用户消息。
 7. 控制面和执行面不混合。
+
+---
+
+## 9. Human Intervention（任务级人类升级）
+
+主 AI 在控制面可调用 request_human_intervention，将任务级偏好分叉交给用户机器裁决（continue / modify / abort）。
+
+### 9.1 合法触发
+
+仅当同时满足：
+
+1. 本任务已至少一次 spawn_subagent，并对相关 AgentResult 做过 verify_subtask_evidence（或记录 verify 不可用原因）。
+2. 分叉来自已验证事实：
+   - AgentResult.status 为 need_decision；或
+   - status 为 blocked，但 Evidence（tool_call_id）支撑不少于两条可继续路径。
+3. 需要用户偏好/产品取舍，而非缺少探查。
+
+### 9.2 禁止
+
+- 零 spawn、零 Evidence 时编造 A/B 选项。
+- 用升级代替澄清（意图不清时走澄清）。
+- 与写确认（PendingAction）、sync_decision、Durable Pause 混用或互相替代。
+- 将升级解释为 AI 拒绝权。
+- 用自然语言解析用户对升级的裁决（必须由 Runtime 机器解析 continue/modify/abort）。
+
+### 9.3 与验收的关系
+
+升级前应完成对相关 subtask 的机器验收入口调用。
+
+升级后若继续执行：必须重新 spawn_subagent，并用 verify_subtask_evidence 验收；不得恢复被中断的旧 tool-loop 栈帧，不得把未确认路径当仍有效授权。
+
+### 9.4 裁决语义
+
+- continue：在 original_goal 上继续，优先按升级时的 proposed_next 与已有证据锚点重新规划。
+- modify：original_goal + 用户新指示；必须重新构造 AgentTask。
+- abort：任务终止，不再派发。

@@ -181,12 +181,37 @@ stdout 与 stderr 是真实、可独立验证的工具输出。
 
 ## Human Intervention（主 AI → 用户升级）
 
-当你判断当前任务无法可靠继续，且需要用户明确裁决时，调用 request_human_intervention(reason=...)。
+human_intervention 是任务级 durable 升级：在**已有真实执行证据**后，仍无法仅凭证据确定用户偏好时，请求人类裁决。
 
-- 这是请求用户决策，不是拒绝执行、不是逃避任务。
-- 成功后当前回合立即结束；用户将直接输入 continue / modify <新指示> / abort。
-- 不要用自然语言猜测用户对升级请求的裁决。
-- 不得在已有 durable pending、active_subtask 或写确认 PendingAction 时调用。
+### 合法触发窗口（必须同时满足）
+
+1. 本任务已至少一次 spawn_subagent，并已对相关结果调用 verify_subtask_evidence（或明确记录 verify 不可用原因）。
+2. 分叉来自已验证事实，而非对话猜测：
+   - AgentResult.status == need_decision；或
+   - status == blocked，但 Evidence/tool_call_id 仍支撑 ≥2 条可继续的真实路径。
+3. 分叉属于用户偏好/产品取舍（选哪条实现、是否破坏兼容等），不是「还没探查清楚」。
+
+调用：request_human_intervention(reason=..., options_context=..., proposed_next=...)
+
+- reason：为何无法从证据推出偏好（一句话）。
+- options_context：必须锚定 subtask_id 与 evidence tool_call_id；禁止无证据的空泛 A/B。
+- proposed_next：建议的下一步 AgentTask 方向（不自动执行）。
+
+成功后当前回合立即结束；用户直接输入 continue / modify <指示> / abort。不得用自然语言猜测用户裁决。
+
+### 禁止
+
+- 零 spawn、零 Evidence 时编造候选方案并升级。
+- 用户意图不清时用升级代替澄清（应先澄清 goal/done_when/stop_when）。
+- 把写确认、sync_decision、Durable Pause/resume_subtask 改道成 human_intervention。
+- 把升级当拒绝执行或逃避任务。
+- 在已有 durable pending、active_subtask 或写确认 PendingAction 时调用。
+
+### 裁决之后
+
+- continue：在 original_goal 上按 proposed_next/证据重新规划并 spawn，再 verify。
+- modify：original_goal + 用户新指示，旧路径授权作废，必须重新构造 AgentTask。
+- abort：任务终止，不再 spawn。
 
 ## Durable Pause（子任务中断恢复）
 

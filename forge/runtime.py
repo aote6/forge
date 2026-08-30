@@ -2190,6 +2190,17 @@ class Runtime:
         if prop:
             payload["proposed_next"] = prop
 
+        # Phase 2: task/evidence anchors (no API expansion — payload only)
+        original_goal, source_subtask_ids, evidence_digest = (
+            self._human_intervention_task_anchors()
+        )
+        if original_goal:
+            payload["original_goal"] = original_goal
+        if source_subtask_ids:
+            payload["source_subtask_ids"] = list(source_subtask_ids)
+        if evidence_digest:
+            payload["evidence_digest"] = evidence_digest
+
         summary = f"human_intervention: {reason}"
         if len(summary) > 200:
             summary = summary[:197] + "..."
@@ -2348,6 +2359,16 @@ class Runtime:
                 + "\n\n(unrecognized input; reply continue / modify <instruction> / abort)"
             )
 
+        # Snapshot payload before resolve clears pending (Phase 2 anchors).
+        rs_pending = getattr(self, "runtime_state", None)
+        snap = {}
+        if (
+            rs_pending is not None
+            and rs_pending.pending is not None
+            and rs_pending.pending.kind == PENDING_KIND_HUMAN_INTERVENTION
+        ):
+            snap = dict(rs_pending.pending.payload or {})
+
         result = self.resolve_human_intervention(decision=decision, user_note=note or None)
         if not result.success:
             return result.display or "resolve failed"
@@ -2356,21 +2377,184 @@ class Runtime:
             return (
                 (result.display or "")
                 + "\n当前任务已终止（phase=ABORTED）。下一条新任务输入将进入 IDLE。"
+                "\n不要再 spawn_subagent 或继续原任务执行。"
             )
 
-        # continue / modify → new main AI turn (do not resume interrupted tool loop)
+        original_goal = str(snap.get("original_goal") or "").strip()
+        proposed_next = str(snap.get("proposed_next") or "").strip()
+        evidence_digest = str(snap.get("evidence_digest") or "").strip()
+        source_ids = snap.get("source_subtask_ids") or []
+        if not isinstance(source_ids, list):
+            source_ids = []
+        source_ids = [str(x).strip() for x in source_ids if str(x).strip()]
+
+        # Restore WorkingSet.goal to original task anchor (no goal drift).
+        if original_goal:
+            try:
+                root = self.workspace.project_root
+                ws = WorkingSet.from_dict(_load_task_state(root))
+                ws.goal = original_goal[:800]
+                _save_task_state(root, ws)
+                self._working_set = ws
+            except Exception as e:
+                print(f"[forge] restore original_goal failed: {e}", file=sys.stderr)
+
         if decision == "continue":
-            follow = (
-                "（用户裁决：continue）请在原目标上继续；不要恢复被 "
-                "request_human_intervention 中断的旧工具回合，必要时重新规划并 spawn_subagent。"
+            follow = self._build_human_continue_followup(
+                original_goal=original_goal,
+                proposed_next=proposed_next,
+                evidence_digest=evidence_digest,
+                source_subtask_ids=source_ids,
+                options_context=str(snap.get("options_context") or ""),
             )
-            return self._run_conversation(follow)
-        # modify
-        follow = (
-            "（用户裁决：modify）新指示如下，请按此重新规划并执行，不得把中断前的旧授权当仍有效：\n"
-            + note
+            return self._run_conversation(
+                follow, working_set_goal=original_goal or None
+            )
+
+        # modify: replan under original_goal + user_note; do not reuse old path auth
+        follow = self._build_human_modify_followup(
+            original_goal=original_goal,
+            user_note=note,
+            evidence_digest=evidence_digest,
+            source_subtask_ids=source_ids,
         )
-        return self._run_conversation(follow)
+        # Goal stays original; user_note is constraint for replan, not a replacement goal.
+        return self._run_conversation(
+            follow, working_set_goal=original_goal or None
+        )
+
+    def _human_intervention_task_anchors(
+        self,
+    ) -> tuple[str, list[str], str]:
+        """Derive original_goal + source subtask ids + evidence digest for HI payload.
+
+        Sources (best-effort, no second state machine):
+          - WorkingSet.goal / task_state.json
+          - in-memory _subagent_results with status need_decision|blocked
+        """
+        original_goal = ""
+        ws = getattr(self, "_working_set", None)
+        if ws is not None and str(getattr(ws, "goal", "") or "").strip():
+            original_goal = str(ws.goal).strip()[:800]
+        if not original_goal:
+            try:
+                root = getattr(getattr(self, "workspace", None), "project_root", None)
+                if root:
+                    data = _load_task_state(root)
+                    if isinstance(data, dict) and str(data.get("goal") or "").strip():
+                        original_goal = str(data.get("goal")).strip()[:800]
+            except Exception:
+                pass
+
+        source_ids: list[str] = []
+        digest_parts: list[str] = []
+        results = getattr(self, "_subagent_results", None) or {}
+        # Prefer decision-bearing statuses; fall back to any recent results.
+        ranked: list[tuple[str, dict]] = []
+        for sid, ar in results.items():
+            if not isinstance(ar, dict):
+                continue
+            st = str(ar.get("status") or "").strip()
+            ranked.append((str(sid), ar))
+        # need_decision / blocked first
+        def _rank(item: tuple[str, dict]) -> int:
+            st = str(item[1].get("status") or "")
+            if st == "need_decision":
+                return 0
+            if st == "blocked":
+                return 1
+            return 2
+
+        ranked.sort(key=_rank)
+        for sid, ar in ranked[:5]:
+            st = str(ar.get("status") or "")
+            if st in ("need_decision", "blocked"):
+                source_ids.append(sid)
+            # evidence anchors
+            ev_ids: list[str] = []
+            for ev in ar.get("evidence") or []:
+                if isinstance(ev, dict):
+                    tc = str(ev.get("tool_call_id") or "").strip()
+                    if tc:
+                        ev_ids.append(tc)
+            reason = str(ar.get("status_reason") or ar.get("conclusion") or "")[:160]
+            line = f"subtask_id={sid} status={st}"
+            if ev_ids:
+                line += " evidence_tool_call_ids=" + ",".join(ev_ids[:8])
+            if reason:
+                line += f" reason={reason}"
+            digest_parts.append(line)
+
+        # de-dupe ids preserving order
+        seen: set[str] = set()
+        uniq_ids: list[str] = []
+        for s in source_ids:
+            if s not in seen:
+                seen.add(s)
+                uniq_ids.append(s)
+
+        return original_goal, uniq_ids, "\n".join(digest_parts)
+
+    @staticmethod
+    def _build_human_continue_followup(
+        *,
+        original_goal: str,
+        proposed_next: str,
+        evidence_digest: str,
+        source_subtask_ids: list[str],
+        options_context: str,
+    ) -> str:
+        lines = [
+            "（用户裁决：continue）在原任务上继续；不要恢复被 "
+            "request_human_intervention 中断的旧工具回合。",
+            "必须重新规划并在需要时 spawn_subagent；执行后用 verify_subtask_evidence 验收。",
+        ]
+        if original_goal:
+            lines.append(f"original_goal: {original_goal}")
+        if proposed_next:
+            lines.append(
+                f"proposed_next（用户接受主 AI 建议时优先按此路径）: {proposed_next}"
+            )
+        if source_subtask_ids:
+            lines.append(
+                "source_subtask_ids: " + ", ".join(source_subtask_ids)
+            )
+        if evidence_digest:
+            lines.append("verified/observed evidence anchors:")
+            lines.append(evidence_digest)
+        if options_context:
+            lines.append(f"options_context: {options_context}")
+        lines.append(
+            "不得把无 Evidence/tool_call_id 支撑的路径当作已授权执行方向。"
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_human_modify_followup(
+        *,
+        original_goal: str,
+        user_note: str,
+        evidence_digest: str,
+        source_subtask_ids: list[str],
+    ) -> str:
+        lines = [
+            "（用户裁决：modify）按用户新指示重新规划并执行。",
+            "旧路径授权作废；必须重新构造 AgentTask 并 spawn_subagent，"
+            "不得静默沿用中断前未获用户确认的路径结论。",
+            f"user_note: {user_note}",
+        ]
+        if original_goal:
+            lines.append(f"original_goal: {original_goal}")
+        if source_subtask_ids:
+            lines.append(
+                "prior_source_subtask_ids（仅作证据参考，非继续授权）: "
+                + ", ".join(source_subtask_ids)
+            )
+        if evidence_digest:
+            lines.append("prior evidence anchors (reference only):")
+            lines.append(evidence_digest)
+        lines.append("执行后用 verify_subtask_evidence 做机器验收。")
+        return "\n".join(lines)
 
     def _guard_human_intervention_pending(self, tool_name: str):
         """Gate: human_intervention pending blocks progression tools."""
@@ -2906,7 +3090,12 @@ class Runtime:
         )
 
     def _run_conversation(
-        self, task: str, schemas: list | None = None, extra_system: str = "", require_plan: bool = False
+        self,
+        task: str,
+        schemas: list | None = None,
+        extra_system: str = "",
+        require_plan: bool = False,
+        working_set_goal: str | None = None,
     ) -> str:
         """Tool-calling loop；完整工具表默认可见；WRITE_CONFIRM 冻结 PendingAction。"""
         if schemas is None:
@@ -2945,7 +3134,9 @@ class Runtime:
         working_set = WorkingSet.from_dict(
             _load_task_state(self.workspace.project_root)
         )
-        working_set.goal = (task or "").strip()[:800]
+        # Phase 2: human continue/modify may pin goal to original_goal (no drift).
+        _goal_src = (working_set_goal if working_set_goal is not None else task) or ""
+        working_set.goal = str(_goal_src).strip()[:800]
         self._working_set = working_set
         # P2-3: 上一轮有成功 mutation → 下一轮补一次 progress checkpoint
         mutation_pending = False

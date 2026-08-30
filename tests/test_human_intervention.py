@@ -349,3 +349,212 @@ def test_schemas_control_plane_only():
     assert "resolve_human_intervention" in CONTROL_PLANE_TOOLS
     assert "request_human_intervention" not in EXECUTION_PLANE_TOOLS
     assert "resolve_human_intervention" not in EXECUTION_PLANE_TOOLS
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: decision escalation integration
+# ---------------------------------------------------------------------------
+
+
+def test_request_stores_original_goal_and_source_subtasks(tmp_path: Path):
+    rt = _minimal_runtime(tmp_path)
+    # Seed WorkingSet goal via task_state
+    from forge.runtime import WorkingSet, _save_task_state
+
+    ws = WorkingSet(goal="implement feature X with real paths")
+    _save_task_state(str(tmp_path), ws)
+    rt._working_set = ws
+    # Seed subagent results: need_decision with evidence ids
+    rt._subagent_results = {
+        "sub_nd1": {
+            "status": "need_decision",
+            "status_reason": "loop ended without stop_when",
+            "conclusion": "found two entrypoints",
+            "evidence": [
+                {"tool_call_id": "tc_path_a", "source": "search_code", "target": "a"},
+                {"tool_call_id": "tc_path_b", "source": "search_code", "target": "b"},
+            ],
+        }
+    }
+    res = rt.request_human_intervention(
+        reason="prefer path A or B",
+        options_context="subtask_id=sub_nd1 evidence=tc_path_a,tc_path_b",
+        proposed_next="use path A",
+    )
+    assert res.success
+    payload = rt.runtime_state.pending.payload
+    assert payload.get("original_goal") == "implement feature X with real paths"
+    assert "sub_nd1" in (payload.get("source_subtask_ids") or [])
+    digest = payload.get("evidence_digest") or ""
+    assert "tc_path_a" in digest and "tc_path_b" in digest
+    loaded = RuntimeStateStore(tmp_path).load()
+    assert loaded.pending.payload.get("original_goal") == payload["original_goal"]
+
+
+def test_continue_restores_working_set_goal_no_drift(tmp_path: Path):
+    rt = _minimal_runtime(tmp_path)
+    from forge.runtime import WorkingSet, _save_task_state, _load_task_state
+
+    original = "ship dual-path feature without guessing"
+    _save_task_state(str(tmp_path), WorkingSet(goal=original))
+    rt._working_set = WorkingSet(goal=original)
+    rt._subagent_results = {
+        "sub_x": {
+            "status": "need_decision",
+            "status_reason": "need_decision",
+            "evidence": [{"tool_call_id": "tc_1", "source": "read_file", "target": "f"}],
+        }
+    }
+    assert rt.request_human_intervention(
+        reason="choose implementation",
+        proposed_next="path via module A",
+    ).success
+
+    captured = {}
+
+    def _fake_conv(task, schemas=None, extra_system="", require_plan=False, working_set_goal=None):
+        captured["task"] = task
+        captured["working_set_goal"] = working_set_goal
+        # Simulate _run_conversation goal assignment
+        from forge.runtime import WorkingSet, _load_task_state, _save_task_state
+
+        ws = WorkingSet.from_dict(_load_task_state(str(tmp_path)))
+        _goal_src = (working_set_goal if working_set_goal is not None else task) or ""
+        ws.goal = str(_goal_src).strip()[:800]
+        _save_task_state(str(tmp_path), ws)
+        return "continued"
+
+    rt._run_conversation = _fake_conv
+    out = rt._handle_human_intervention_reply("continue")
+    assert out == "continued"
+    assert captured.get("working_set_goal") == original
+    assert original in (captured.get("task") or "")
+    assert "proposed_next" in (captured.get("task") or "")
+    data = _load_task_state(str(tmp_path))
+    assert data is not None
+    assert data.get("goal") == original
+
+
+def test_modify_replans_with_note_keeps_original_goal(tmp_path: Path):
+    rt = _minimal_runtime(tmp_path)
+    from forge.runtime import WorkingSet, _save_task_state, _load_task_state
+
+    original = "original product goal"
+    _save_task_state(str(tmp_path), WorkingSet(goal=original))
+    rt._working_set = WorkingSet(goal=original)
+    rt._subagent_results = {
+        "sub_b": {
+            "status": "blocked",
+            "status_reason": "multiple valid paths",
+            "evidence": [
+                {"tool_call_id": "tc_old", "source": "search_code", "target": "old"},
+            ],
+        }
+    }
+    assert rt.request_human_intervention(reason="path fork").success
+
+    captured = {}
+
+    def _fake_conv(task, schemas=None, extra_system="", require_plan=False, working_set_goal=None):
+        captured["task"] = task
+        captured["working_set_goal"] = working_set_goal
+        return "modified"
+
+    rt._run_conversation = _fake_conv
+    out = rt._handle_human_intervention_reply("modify use only module B API")
+    assert out == "modified"
+    assert captured.get("working_set_goal") == original
+    task = captured.get("task") or ""
+    assert "use only module B API" in task
+    assert "original_goal" in task
+    assert "旧路径授权作废" in task or "作废" in task
+    # goal file restored to original, not the modify note
+    data = _load_task_state(str(tmp_path))
+    assert data.get("goal") == original
+
+
+def test_abort_does_not_run_conversation(tmp_path: Path):
+    rt = _minimal_runtime(tmp_path)
+    from forge.runtime import WorkingSet
+
+    rt._working_set = WorkingSet(goal="g")
+    assert rt.request_human_intervention(reason="stop").success
+    rt._run_conversation = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("must not continue conversation on abort")
+    )
+    out = rt._handle_human_intervention_reply("abort")
+    assert "ABORTED" in out
+    assert rt.runtime_state.phase == PHASE_ABORTED
+    assert rt.runtime_state.pending is None
+
+
+def test_need_decision_evidence_digest_in_payload(tmp_path: Path):
+    rt = _minimal_runtime(tmp_path)
+    from forge.runtime import WorkingSet
+
+    rt._working_set = WorkingSet(goal="g")
+    rt._subagent_results = {
+        "sub_nd": {
+            "status": "need_decision",
+            "status_reason": "loop ended without stop_when met; main agent must decide",
+            "evidence": [
+                {"tool_call_id": "tc_alpha", "source": "read_file", "target": "a.py"},
+                {"tool_call_id": "tc_beta", "source": "read_file", "target": "b.py"},
+            ],
+        }
+    }
+    res = rt.request_human_intervention(reason="need_decision fork")
+    assert res.success
+    dig = rt.runtime_state.pending.payload.get("evidence_digest") or ""
+    assert "need_decision" in dig
+    assert "tc_alpha" in dig and "tc_beta" in dig
+
+
+def test_blocked_multipath_evidence_digest(tmp_path: Path):
+    rt = _minimal_runtime(tmp_path)
+    from forge.runtime import WorkingSet
+
+    rt._working_set = WorkingSet(goal="g")
+    rt._subagent_results = {
+        "sub_blk": {
+            "status": "blocked",
+            "status_reason": "stop_when met but paths remain",
+            "evidence": [
+                {"tool_call_id": "tc_p1", "source": "search_code", "target": "p1"},
+                {"tool_call_id": "tc_p2", "source": "search_code", "target": "p2"},
+            ],
+        }
+    }
+    res = rt.request_human_intervention(reason="blocked multipath")
+    assert res.success
+    dig = rt.runtime_state.pending.payload.get("evidence_digest") or ""
+    assert "blocked" in dig
+    assert "tc_p1" in dig and "tc_p2" in dig
+
+
+def test_zero_evidence_still_allowed_at_runtime_but_anchors_empty(tmp_path: Path):
+    """Runtime does not hard-refuse zero-evidence (prompt-level forbid).
+
+    Anchors must not invent fake subtask ids or tool_call_ids.
+    """
+    rt = _minimal_runtime(tmp_path)
+    from forge.runtime import WorkingSet
+
+    rt._working_set = WorkingSet(goal="only goal")
+    rt._subagent_results = {}
+    res = rt.request_human_intervention(reason="should be discouraged by prompt")
+    assert res.success
+    payload = rt.runtime_state.pending.payload
+    assert payload.get("original_goal") == "only goal"
+    assert not payload.get("source_subtask_ids")
+    assert not (payload.get("evidence_digest") or "").strip()
+
+
+def test_system_prompt_phase2_rules_present():
+    from forge.system_prompt import SYSTEM_INSTRUCTION
+
+    text = SYSTEM_INSTRUCTION
+    assert "合法触发窗口" in text or "至少一次 spawn_subagent" in text
+    assert "need_decision" in text
+    assert "零 spawn" in text or "零 Evidence" in text
+    assert "澄清" in text
