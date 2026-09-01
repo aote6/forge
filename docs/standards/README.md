@@ -212,6 +212,7 @@ If code and a Normative Standard disagree:
 - Selected binding/guidance documents under `docs/` carry a short **Type / Authority / Status / Scope** header for registry clarity; that header **does not** move them into this directory or promote them to Normative Standard.  
 - **No bulk migration** of existing `docs/` files into `standards/` has been performed under this governance step.  
 - Further Normative Standards **MUST** be added only through explicit standardization, not by relocating files alone.
+- Governance Procedure candidate: `docs/governance/NORMATIVE_PROMOTION_POLICY.md` defines the clause-level promotion process for Contract → Normative Standard. It is **not** a Normative Standard and **MUST NOT** be listed in §4.
 
 ---
 
@@ -226,4 +227,5 @@ If code and a Normative Standard disagree:
 | Architecture / Design | Structure and design rationale |
 | Stance / Identity | Product identity and stance |
 | Audit / Historical / Informational | Verification or notes; not automatic law |
+| Governance Procedure | Process rules for promotion/adoption; not a Normative Standard, not listed in §4 |
 | Implementation / Tests | Fact and verification; not sole norm source |
