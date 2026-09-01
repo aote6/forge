@@ -98,6 +98,7 @@ The following remain under `docs/` (or project layout as today). **Paths MUST NO
 | `docs/AGENT_ABI.md` | Main-AI ↔ sub-AI task/result contract: AgentTask, AgentResult, Evidence ↔ ToolCallRecord binding. |
 | `docs/RUNTIME_STATE_CONTRACT.md` | RuntimeState lifecycle, durable pending kinds, recovery derivation, SyncDecision boundary. |
 | `docs/HUMAN_INTERVENTION_CONTRACT.md` | Main AI → user task-level escalation: turn boundary, machine arbitration, original_goal restore. |
+| `docs/WORLD_DISK_SYNC.md` | World ↔ disk synchronization contract and design; synchronization states, decision boundaries, and safety invariants are contractual. |
 
 注册说明：列入本表表示该文档是 Forge 的正式契约入口，不等于自动升级为 Normative Standard。Normative Standard 仅在 §4 单独列出。
 
@@ -112,7 +113,6 @@ The following remain under `docs/` (or project layout as today). **Paths MUST NO
 | Document | Role |
 |----------|------|
 | `docs/architecture.md` | System structure and design overview. |
-| `docs/WORLD_DISK_SYNC.md` | World ↔ disk synchronization design and operational rules. |
 | `docs/PLANNER_DECISION_BOUNDARY.md` | Tool-loop decision boundary: machine supplies tools/facts; model chooses next tool; listed prohibitions. |
 
 ### Stance / Identity

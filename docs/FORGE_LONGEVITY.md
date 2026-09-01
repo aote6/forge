@@ -32,7 +32,7 @@ Linux 会换代，AI 工具更不可能永远不变。
 
 - Agent ABI：主从协议、Evidence 必须绑定 ToolCallRecord
 - RuntimeState Contract：执行生命周期有唯一真相
-- SyncDecision 语义：事实、决定、水位三者分开
+- SyncDecision / synchronization decision semantics：事实、决定、水位必须保持分离，并遵守 WORLD_DISK_SYNC、RUNTIME_STATE_CONTRACT 与 HUMAN_INTERVENTION_CONTRACT 定义的边界
 - 验收链：verify 不读 conclusion，只读 tool_call_id 反查事实
 
 这些是 Forge 当前验证出的长期设计原则。
@@ -125,6 +125,7 @@ Forge 的核心契约以 docs/standards/ 中当前有效的 Normative Standards 
 - docs/AGENT_ABI.md
 - docs/RUNTIME_STATE_CONTRACT.md
 - docs/HUMAN_INTERVENTION_CONTRACT.md
+- docs/WORLD_DISK_SYNC.md
 - docs/world_runtime_interface.md
 
 本集合由 docs/standards/README.md 注册表维护。
