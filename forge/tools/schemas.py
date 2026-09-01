@@ -530,6 +530,15 @@ CONTROL_PLANE_TOOL_DECLARATIONS = [
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "get_runtime_state",
+        "description": (
+            "只读查询当前 RuntimeState 摘要（phase / active_subtask_id / pending / recovery）。"
+            "不修改任何状态；在 SyncDecision 或 human_intervention pending 期间也可调用，"
+            "用于确认为何任务推进被 Gate 拦截。"
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "spawn_subagent",
         "description": (
             "派生子 Agent 执行一个 AgentTask。"

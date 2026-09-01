@@ -197,3 +197,110 @@ def test_to_dict_excludes_world_disk_git_fields():
     st = RuntimeState(phase=PHASE_IDLE)
     keys = set(st.to_dict().keys())
     assert keys == {"phase", "active_subtask_id", "pending"}
+
+
+
+def test_get_runtime_state_registered_on_control_plane():
+    from forge.tools.schemas import CONTROL_PLANE_TOOLS, MUTATION_TOOL_NAMES
+
+    assert "get_runtime_state" in CONTROL_PLANE_TOOLS
+    assert "get_runtime_state" not in MUTATION_TOOL_NAMES
+
+
+def test_get_runtime_state_idle_no_pending(tmp_path: Path):
+    from types import SimpleNamespace
+    from forge.runtime import Runtime
+
+    store = RuntimeStateStore(tmp_path)
+    store.save(RuntimeState(phase=PHASE_IDLE))
+    before = (tmp_path / ".forge" / "runtime_state.json").read_text(encoding="utf-8")
+
+    rt = object.__new__(Runtime)
+    rt.runtime_state = store.load()
+    rt.recovery = rt.runtime_state.recovery
+    rt._runtime_state_store = store
+
+    res = Runtime.get_runtime_state(rt)
+    assert res.success is True
+    assert res.payload["phase"] == PHASE_IDLE
+    assert res.payload["pending"] is None
+    assert res.payload["active_subtask_id"] is None
+    assert res.payload["recovery"]["mode"] == RECOVERY_NONE
+    assert res.payload.get("mutation") is False
+
+    after = (tmp_path / ".forge" / "runtime_state.json").read_text(encoding="utf-8")
+    assert after == before
+
+
+def test_get_runtime_state_sync_decision_pending(tmp_path: Path):
+    from forge.runtime import Runtime
+    from forge.runtime_state import PENDING_KIND_SYNC_DECISION
+
+    st = RuntimeState(
+        phase=PHASE_AWAITING_USER,
+        pending=Pending(
+            kind=PENDING_KIND_SYNC_DECISION,
+            summary="basis=CONFLICT",
+            payload={
+                "basis": "CONFLICT",
+                "decision_id": "sd_test_1",
+                "evidence_digest": "SHOULD_NOT_APPEAR " + ("x" * 500),
+            },
+        ),
+    )
+    store = RuntimeStateStore(tmp_path)
+    store.save(st)
+    before = (tmp_path / ".forge" / "runtime_state.json").read_text(encoding="utf-8")
+
+    rt = object.__new__(Runtime)
+    rt.runtime_state = store.load()
+    rt.recovery = rt.runtime_state.recovery
+    rt._runtime_state_store = store
+
+    res = Runtime.get_runtime_state(rt)
+    assert res.success is True
+    assert res.payload["phase"] == PHASE_AWAITING_USER
+    assert res.payload["pending"]["kind"] == PENDING_KIND_SYNC_DECISION
+    assert "CONFLICT" in (res.payload["pending"]["summary"] or "")
+    assert res.payload["pending"]["payload"].get("basis") == "CONFLICT"
+    assert res.payload["pending"]["payload"].get("decision_id") == "sd_test_1"
+    assert "evidence_digest" not in res.payload["pending"]["payload"]
+    assert res.payload["recovery"]["mode"] == RECOVERY_DECISION_REQUIRED
+
+    after = (tmp_path / ".forge" / "runtime_state.json").read_text(encoding="utf-8")
+    assert after == before
+
+
+def test_get_runtime_state_human_intervention_pending(tmp_path: Path):
+    from forge.runtime import Runtime
+    from forge.runtime_state import PENDING_KIND_HUMAN_INTERVENTION
+
+    st = RuntimeState(
+        phase=PHASE_AWAITING_USER,
+        pending=Pending(
+            kind=PENDING_KIND_HUMAN_INTERVENTION,
+            summary="human_intervention: need choice",
+            payload={
+                "reason": "need choice",
+                "evidence_digest": "long " + ("y" * 300),
+            },
+        ),
+    )
+    store = RuntimeStateStore(tmp_path)
+    store.save(st)
+    before = (tmp_path / ".forge" / "runtime_state.json").read_text(encoding="utf-8")
+
+    rt = object.__new__(Runtime)
+    rt.runtime_state = store.load()
+    rt.recovery = rt.runtime_state.recovery
+    rt._runtime_state_store = store
+
+    res = Runtime.get_runtime_state(rt)
+    assert res.success is True
+    assert res.payload["pending"]["kind"] == PENDING_KIND_HUMAN_INTERVENTION
+    assert res.payload["pending"]["payload"].get("reason") == "need choice"
+    assert "evidence_digest" not in res.payload["pending"]["payload"]
+    assert res.payload["recovery"]["mode"] == RECOVERY_DECISION_REQUIRED
+
+    after = (tmp_path / ".forge" / "runtime_state.json").read_text(encoding="utf-8")
+    assert after == before

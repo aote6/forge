@@ -23,6 +23,7 @@ EXPECTED_TOOL_NAMES = [
     "resolve_path_object",
     "todo_write",
     "todo_list",
+    "get_runtime_state",
     "spawn_subagent",
     "session_changes",
     "verify_tool_call",

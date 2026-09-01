@@ -1908,6 +1908,7 @@ class Runtime:
         tools["abort_subtask"] = abort_subtask
         tools["request_human_intervention"] = request_human_intervention_tool
         tools["resolve_human_intervention"] = resolve_human_intervention_tool
+        tools["get_runtime_state"] = self.get_runtime_state
         self.executor = ToolExecutor(tools)
 
         self.conversation = Conversation()
@@ -2203,6 +2204,55 @@ class Runtime:
         self.recovery = self.runtime_state.recovery
         self._runtime_state_store.save(self.runtime_state)
         return decision
+
+
+    def get_runtime_state(self):
+        """控制面只读：返回 RuntimeState 摘要，不写盘、不改 phase/pending。"""
+        import json
+        from forge.adapters.base import ToolResult as TR
+
+        rs = getattr(self, "runtime_state", None)
+        if rs is None:
+            return TR.fail(display="get_runtime_state: RuntimeState unavailable")
+
+        # Recovery is already derived at load / after phase+pending changes.
+
+        pending_out = None
+        if rs.pending is not None:
+            raw_payload = rs.pending.payload if isinstance(rs.pending.payload, dict) else {}
+            small: dict = {}
+            for key in ("basis", "decision_id", "reason"):
+                if key not in raw_payload:
+                    continue
+                val = raw_payload[key]
+                if val is None:
+                    continue
+                if isinstance(val, (str, int, float, bool)):
+                    small[key] = val if not isinstance(val, str) else val[:200]
+                else:
+                    small[key] = str(val)[:200]
+            pending_out = {
+                "kind": rs.pending.kind,
+                "summary": rs.pending.summary or "",
+                "payload": small,
+            }
+
+        rec = getattr(rs, "recovery", None)
+        recovery_out = {
+            "mode": getattr(rec, "mode", None) or "none",
+            "reason": getattr(rec, "reason", None),
+        }
+        data = {
+            "phase": rs.phase,
+            "active_subtask_id": rs.active_subtask_id,
+            "pending": pending_out,
+            "recovery": recovery_out,
+        }
+        display = json.dumps(data, ensure_ascii=False, indent=2)
+        return TR.ok(
+            display=display,
+            payload={"mutation": False, **data},
+        )
 
     def request_human_intervention(
         self,

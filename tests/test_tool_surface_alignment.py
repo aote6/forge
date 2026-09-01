@@ -96,6 +96,11 @@ def _full_registry(tmp_path: Path) -> tuple[dict, set[str]]:
         return None  # real impl lives in Runtime; signature is the contract
 
     tools["resolve_human_intervention"] = resolve_human_intervention
+
+    def get_runtime_state():
+        return None  # real impl lives in Runtime; signature is the contract
+
+    tools["get_runtime_state"] = get_runtime_state
     return tools
 
 
