@@ -832,11 +832,6 @@ def test_p101_maybe_open_does_not_create_sd_under_hi(tmp_path: Path, monkeypatch
     assert rt.runtime_state.pending.kind == PENDING_KIND_HUMAN_INTERVENTION
     # Must not create a new PENDING decision artifact under HI.
     loaded = SyncDecisionStore(tmp_path).load()
-    assert loaded is None or loaded.status != STATUS_PENDING or (
-        # If a pre-existing file somehow exists, open must not have written a fresh one
-        # for this open call — with empty store, must remain None.
-        loaded is None
-    )
     assert SyncDecisionStore(tmp_path).load() is None
 
 
