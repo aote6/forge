@@ -558,3 +558,78 @@ def test_system_prompt_phase2_rules_present():
     assert "need_decision" in text
     assert "零 spawn" in text or "零 Evidence" in text
     assert "澄清" in text
+
+
+
+def test_hi_pending_blocks_spawn_and_mutation_without_workspace_change(tmp_path: Path):
+    """HI pending closes production spawn/mutation paths without tool execution.
+
+    Production gates live on Runtime (_guard_human_intervention_pending /
+    _guard_external_change), not inside run_subagent. This test exercises those
+    gates and proves tools are never called and workspace is unchanged.
+    """
+    from forge.subtask_checkpoint import SubtaskCheckpointStore
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("ORIGINAL\n", encoding="utf-8")
+    before = victim.read_text(encoding="utf-8")
+
+    rt = _minimal_runtime(tmp_path)
+    res = rt.request_human_intervention(reason="need human before any write")
+    assert res.success is True
+
+    blocked, summary = human_intervention_pending_blocks(tmp_path)
+    assert blocked is True
+    assert summary
+
+    executed: list[str] = []
+
+    def write_file(path: str = "", content: str = "") -> ToolResult:
+        executed.append(path or "write_file")
+        Path(path).write_text(content, encoding="utf-8")
+        return ToolResult.ok(display="written")
+
+    def str_replace(path: str = "", old_string: str = "", new_string: str = "") -> ToolResult:
+        executed.append(path or "str_replace")
+        p = Path(path)
+        p.write_text(p.read_text(encoding="utf-8").replace(old_string, new_string), encoding="utf-8")
+        return ToolResult.ok(display="replaced")
+
+    # Production entry: spawn_subagent is refused before sub-loop starts.
+    g_spawn = rt._guard_human_intervention_pending("spawn_subagent")
+    assert g_spawn is not None
+    assert g_spawn.success is False
+    assert "human_intervention" in (g_spawn.display or "").lower() or "pending" in (
+        g_spawn.display or ""
+    ).lower()
+
+    # Production mutation path: external-change guard runs HI first.
+    g_write = rt._guard_external_change("write_file")
+    assert g_write is not None
+    assert g_write.success is False
+
+    g_replace = rt._guard_external_change("str_replace")
+    assert g_replace is not None
+    assert g_replace.success is False
+
+    g_sync = rt._guard_external_change("forge_sync")
+    assert g_sync is not None
+    assert g_sync.success is False
+
+    # Only call tools if gate failed open (must not happen).
+    if g_write is None:
+        write_file(str(victim), "HACKED\n")
+    if g_replace is None:
+        str_replace(str(victim), "ORIGINAL", "HACKED")
+
+    assert executed == []
+    assert victim.read_text(encoding="utf-8") == before
+
+    # No durable subtask checkpoint should appear from blocked spawn/mutation.
+    cp = SubtaskCheckpointStore(tmp_path).load()
+    assert cp is None
+
+    # Pending remains open after refused attempts.
+    loaded = RuntimeStateStore(tmp_path).load()
+    assert loaded.pending is not None
+    assert loaded.pending.kind == PENDING_KIND_HUMAN_INTERVENTION

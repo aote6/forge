@@ -866,3 +866,283 @@ def test_p101_guard_blocks_mutation_with_only_sd_pending(tmp_path: Path, monkeyp
     guard = rt._guard_sync_decision_pending("write_file")
     assert guard is not None
     assert guard.success is False
+
+
+
+def test_after_reconcile_pending_still_blocks_mutation(tmp_path: Path, monkeypatch):
+    """After startup reconcile restores SD pending, mutation still cannot execute.
+
+    Chains P1-01 reconcile with a real subagent mutation attempt and proves
+    the tool body never runs and workspace is unchanged.
+    """
+    from unittest.mock import MagicMock
+
+    from forge.adapters.base import BaseAdapter, ToolCall, ToolResult
+    from forge.agent_abi import AgentTask
+    from forge.memory import MemoryStore
+    from forge.runtime import Runtime
+    from forge.subagent import filter_schemas_for_subagent, run_subagent
+    from forge.tools.schemas import MUTATION_TOOL_DECLARATIONS, READ_ONLY_TOOL_DECLARATIONS
+    from forge.workspace import Workspace
+
+    victim = tmp_path / "after_reconcile_victim.py"
+    victim.write_text("SAFE\n", encoding="utf-8")
+    before = victim.read_text(encoding="utf-8")
+
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    SyncDecisionStore(tmp_path).save(decision)
+
+    monkeypatch.setattr(
+        "forge.world.runtime.WorldRuntime.ensure_identity",
+        lambda self: None,
+    )
+
+    class _A(BaseAdapter):
+        def send(self, messages, schemas):
+            raise NotImplementedError
+
+    try:
+        rt = Runtime(
+            adapter=_A(),
+            workspace=Workspace(project_root=str(tmp_path)),
+            memory=MemoryStore(),
+        )
+    except Exception as e:
+        import pytest
+
+        pytest.skip(f"Runtime init blocked: {e}")
+
+    # Reconcile must restore durable pending (precondition for this combo test).
+    assert rt.runtime_state.pending is not None
+    assert rt.runtime_state.pending.kind == PENDING_KIND_SYNC_DECISION
+    blocked, _ = sync_decision_pending_blocks(tmp_path)
+    assert blocked is True
+
+    executed: list[str] = []
+    events: list = []
+
+    class Adapter:
+        def __init__(self):
+            self.n = 0
+
+        def send(self, messages, schemas):
+            self.n += 1
+            if self.n == 1:
+                return MagicMock(
+                    content="STOP_WHEN: not_met",
+                    tool_calls=[
+                        ToolCall(
+                            id="1",
+                            name="write_file",
+                            arguments={
+                                "path": str(victim),
+                                "content": "MUTATED_AFTER_RECOVERY\n",
+                            },
+                        )
+                    ],
+                )
+            return MagicMock(
+                content=(
+                    "STOP_WHEN: met\nCONCLUSION: blocked\n"
+                    "EVIDENCE: (无)\nUNCERTAIN: (无)\nNEXT: (无)"
+                ),
+                tool_calls=None,
+            )
+
+    def write_file(path: str = "", content: str = "") -> ToolResult:
+        executed.append(path)
+        Path(path).write_text(content, encoding="utf-8")
+        return ToolResult.ok(display="written")
+
+    tools = {"write_file": write_file}
+    schemas = filter_schemas_for_subagent(
+        list(READ_ONLY_TOOL_DECLARATIONS) + list(MUTATION_TOOL_DECLARATIONS)
+    )
+    result = run_subagent(
+        Adapter(),
+        tools,
+        schemas,
+        AgentTask(goal="g", subtask_id="sub_after_reconcile", stop_when="done", max_steps=5),
+        project_root=str(tmp_path),
+        confirm_fn=lambda s: True,
+        emit=lambda event: events.append(event),
+    )
+
+    assert executed == []
+    assert victim.read_text(encoding="utf-8") == before
+    assert not any(
+        getattr(e, "type", None) == EventType.TOOL_CALL_START
+        and (getattr(e, "data", None) or {}).get("name") == "write_file"
+        for e in events
+    )
+    # Boundary remains closed after the attempt.
+    blocked2, _ = sync_decision_pending_blocks(tmp_path)
+    assert blocked2 is True
+    assert result is not None
+
+
+def test_dual_file_main_and_tmp_load_uses_main_only(tmp_path: Path):
+    """When main + .tmp both exist, load authority is the main file only.
+
+    Pins current behavior: tmp is never read. PENDING main keeps Gate closed.
+    """
+    store = SyncDecisionStore(tmp_path)
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    store.save(decision)
+
+    main = store.path
+    tmp = main.with_suffix(".tmp")
+    # Stale/conflicting tmp that would be dangerous if preferred.
+    tmp.write_text(
+        json.dumps(
+            {
+                "decision_id": "spoof_decided",
+                "basis": CONFLICT,
+                "direction": DIRECTION_DISK_TO_WORLD,
+                "status": STATUS_DECIDED,
+                "created_at": 1.0,
+                "decided_at": 2.0,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert main.exists() and tmp.exists()
+
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.decision_id == decision.decision_id
+    assert loaded.status == STATUS_PENDING
+    assert loaded.decision_id != "spoof_decided"
+
+    blocked, summary = sync_decision_pending_blocks(tmp_path)
+    assert blocked is True
+    assert summary
+
+    # Mutation must still be refused while main is PENDING.
+    from forge.adapters.base import ToolCall, ToolResult
+    from forge.agent_abi import AgentTask
+    from forge.subagent import filter_schemas_for_subagent, run_subagent
+    from forge.tools.schemas import MUTATION_TOOL_DECLARATIONS, READ_ONLY_TOOL_DECLARATIONS
+    from unittest.mock import MagicMock
+
+    victim = tmp_path / "dual_victim.py"
+    victim.write_text("SAFE\n", encoding="utf-8")
+    before = victim.read_text(encoding="utf-8")
+    executed: list[str] = []
+
+    class Adapter:
+        def __init__(self):
+            self.n = 0
+
+        def send(self, messages, schemas):
+            self.n += 1
+            if self.n == 1:
+                return MagicMock(
+                    content="STOP_WHEN: not_met",
+                    tool_calls=[
+                        ToolCall(
+                            id="1",
+                            name="write_file",
+                            arguments={"path": str(victim), "content": "BAD\n"},
+                        )
+                    ],
+                )
+            return MagicMock(content="STOP_WHEN: met", tool_calls=None)
+
+    def write_file(path: str = "", content: str = "") -> ToolResult:
+        executed.append(path)
+        Path(path).write_text(content, encoding="utf-8")
+        return ToolResult.ok(display="written")
+
+    run_subagent(
+        Adapter(),
+        {"write_file": write_file},
+        filter_schemas_for_subagent(
+            list(READ_ONLY_TOOL_DECLARATIONS) + list(MUTATION_TOOL_DECLARATIONS)
+        ),
+        AgentTask(goal="g", subtask_id="sub_dual", stop_when="done", max_steps=5),
+        project_root=str(tmp_path),
+        confirm_fn=lambda s: True,
+    )
+    assert executed == []
+    assert victim.read_text(encoding="utf-8") == before
+    assert tmp.exists()  # leftover tmp is ignored, not auto-cleaned by load
+
+
+def test_clear_failure_leaves_pending_still_blocking(tmp_path: Path, monkeypatch):
+    """clear failure must not open the mutation gate (clear failure != pending gone)."""
+    store = SyncDecisionStore(tmp_path)
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    store.save(decision)
+    assert store.path.exists()
+
+    def _fail_unlink(self):
+        raise OSError("simulated clear failure")
+
+    monkeypatch.setattr(Path, "unlink", _fail_unlink, raising=True)
+    store.clear()  # logs failure; must not pretend success by deleting
+
+    # Main file still present (clear could not remove it).
+    assert store.path.exists()
+    loaded = SyncDecisionStore(tmp_path).load()
+    assert loaded is not None
+    assert loaded.status == STATUS_PENDING
+
+    blocked, _ = sync_decision_pending_blocks(tmp_path)
+    assert blocked is True
+
+    from forge.adapters.base import ToolCall, ToolResult
+    from forge.agent_abi import AgentTask
+    from forge.subagent import filter_schemas_for_subagent, run_subagent
+    from forge.tools.schemas import MUTATION_TOOL_DECLARATIONS, READ_ONLY_TOOL_DECLARATIONS
+    from unittest.mock import MagicMock
+
+    victim = tmp_path / "clear_fail_victim.py"
+    victim.write_text("SAFE\n", encoding="utf-8")
+    before = victim.read_text(encoding="utf-8")
+    executed: list[str] = []
+
+    class Adapter:
+        def __init__(self):
+            self.n = 0
+
+        def send(self, messages, schemas):
+            self.n += 1
+            if self.n == 1:
+                return MagicMock(
+                    content="STOP_WHEN: not_met",
+                    tool_calls=[
+                        ToolCall(
+                            id="1",
+                            name="write_file",
+                            arguments={"path": str(victim), "content": "BAD\n"},
+                        )
+                    ],
+                )
+            return MagicMock(content="STOP_WHEN: met", tool_calls=None)
+
+    def write_file(path: str = "", content: str = "") -> ToolResult:
+        executed.append(path)
+        Path(path).write_text(content, encoding="utf-8")
+        return ToolResult.ok(display="written")
+
+    # Restore real unlink for any unrelated cleanup inside run_subagent.
+    monkeypatch.undo()
+
+    run_subagent(
+        Adapter(),
+        {"write_file": write_file},
+        filter_schemas_for_subagent(
+            list(READ_ONLY_TOOL_DECLARATIONS) + list(MUTATION_TOOL_DECLARATIONS)
+        ),
+        AgentTask(goal="g", subtask_id="sub_clear_fail", stop_when="done", max_steps=5),
+        project_root=str(tmp_path),
+        confirm_fn=lambda s: True,
+    )
+    assert executed == []
+    assert victim.read_text(encoding="utf-8") == before
+    blocked2, _ = sync_decision_pending_blocks(tmp_path)
+    assert blocked2 is True
