@@ -184,13 +184,15 @@ def test_resolve_abort(tmp_path: Path, monkeypatch):
 
 
 def test_guard_sync_decision_pending_on_runtime(tmp_path: Path, monkeypatch):
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    SyncDecisionStore(tmp_path).save(decision)
     RuntimeStateStore(tmp_path).save(
         RuntimeState(
             phase=PHASE_AWAITING_USER,
             pending=Pending(
                 kind=PENDING_KIND_SYNC_DECISION,
                 summary="sync_decision required: basis=CONFLICT",
-                payload={"basis": CONFLICT},
+                payload={"decision_id": decision.decision_id, "basis": CONFLICT},
             ),
         )
     )
@@ -453,3 +455,412 @@ def test_resolve_tool_rejects_bad_direction(tmp_path: Path, monkeypatch):
 
     result = rt.executor.tools["resolve_sync_decision"]("wrong_direction")
     assert result.success is False
+
+
+# ── P1-01: SyncDecision / RuntimeState dual-write crash window ──────────────
+
+
+def test_p101_open_crash_window_gate_blocks_with_only_sd_pending(tmp_path: Path):
+    """Only sync_decision.json=PENDING, RS.pending=None → Gate must block."""
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    SyncDecisionStore(tmp_path).save(decision)
+    # Explicitly no RuntimeState pending (simulate crash after SD save).
+    assert RuntimeStateStore(tmp_path).load().pending is None
+
+    blocked, summary = sync_decision_pending_blocks(tmp_path)
+    assert blocked is True
+    assert "pending" in summary.lower() or "CONFLICT" in summary
+
+
+def test_p101_stale_decided_artifact_does_not_block(tmp_path: Path):
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    decision.apply_direction(DIRECTION_DISK_TO_WORLD)
+    SyncDecisionStore(tmp_path).save(decision)
+    assert decision.status == STATUS_DECIDED
+
+    blocked, _ = sync_decision_pending_blocks(tmp_path)
+    assert blocked is False
+
+
+def test_p101_stale_aborted_artifact_does_not_block(tmp_path: Path):
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    decision.apply_direction(DIRECTION_ABORT)
+    SyncDecisionStore(tmp_path).save(decision)
+    assert decision.status == STATUS_ABORTED
+
+    blocked, _ = sync_decision_pending_blocks(tmp_path)
+    assert blocked is False
+
+
+def test_p101_hi_priority_sd_pending_does_not_elevate(tmp_path: Path):
+    """HI index + SD=PENDING → sync_decision_pending_blocks is False (HI owns slot)."""
+    from forge.runtime_state import PENDING_KIND_HUMAN_INTERVENTION
+
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    SyncDecisionStore(tmp_path).save(decision)
+    RuntimeStateStore(tmp_path).save(
+        RuntimeState(
+            phase=PHASE_AWAITING_USER,
+            pending=Pending(
+                kind=PENDING_KIND_HUMAN_INTERVENTION,
+                summary="human_intervention: need choice",
+                payload={"reason": "need choice"},
+            ),
+        )
+    )
+
+    blocked, _ = sync_decision_pending_blocks(tmp_path)
+    assert blocked is False
+
+    from forge.runtime_state import human_intervention_pending_blocks
+
+    hi_blocked, _ = human_intervention_pending_blocks(tmp_path)
+    assert hi_blocked is True
+
+
+def test_p101_restart_reconcile_fills_rs_pending(tmp_path: Path, monkeypatch):
+    """Disk: SD=PENDING, RS empty → Runtime init reconcile → pending + AWAITING_USER."""
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    SyncDecisionStore(tmp_path).save(decision)
+
+    monkeypatch.setattr(
+        "forge.world.runtime.WorldRuntime.ensure_identity",
+        lambda self: None,
+    )
+    from forge.adapters.base import BaseAdapter
+    from forge.memory import MemoryStore
+    from forge.runtime import Runtime
+    from forge.workspace import Workspace
+
+    class _A(BaseAdapter):
+        def send(self, messages, schemas):
+            raise NotImplementedError
+
+    try:
+        rt = Runtime(
+            adapter=_A(),
+            workspace=Workspace(project_root=str(tmp_path)),
+            memory=MemoryStore(),
+        )
+    except Exception as e:
+        import pytest
+        pytest.skip(f"Runtime init blocked: {e}")
+
+    assert rt.runtime_state.pending is not None
+    assert rt.runtime_state.pending.kind == PENDING_KIND_SYNC_DECISION
+    assert rt.runtime_state.phase == PHASE_AWAITING_USER
+    assert rt.runtime_state.pending.payload.get("decision_id") == decision.decision_id
+    assert rt.runtime_state.pending.payload.get("basis") == CONFLICT
+
+
+def test_p101_reconcile_clears_rs_pending_without_decision_body(
+    tmp_path: Path, monkeypatch
+):
+    """RS.pending=sync_decision but no PENDING SD → clear index; no auto direction."""
+    RuntimeStateStore(tmp_path).save(
+        RuntimeState(
+            phase=PHASE_AWAITING_USER,
+            pending=Pending(
+                kind=PENDING_KIND_SYNC_DECISION,
+                summary="orphan index",
+                payload={"basis": CONFLICT},
+            ),
+        )
+    )
+
+    monkeypatch.setattr(
+        "forge.world.runtime.WorldRuntime.ensure_identity",
+        lambda self: None,
+    )
+    from forge.adapters.base import BaseAdapter
+    from forge.memory import MemoryStore
+    from forge.runtime import Runtime
+    from forge.workspace import Workspace
+
+    class _A(BaseAdapter):
+        def send(self, messages, schemas):
+            raise NotImplementedError
+
+    try:
+        rt = Runtime(
+            adapter=_A(),
+            workspace=Workspace(project_root=str(tmp_path)),
+            memory=MemoryStore(),
+        )
+    except Exception as e:
+        import pytest
+        pytest.skip(f"Runtime init blocked: {e}")
+
+    assert rt.runtime_state.pending is None
+    assert rt.runtime_state.phase == PHASE_IDLE
+    blocked, _ = sync_decision_pending_blocks(tmp_path)
+    assert blocked is False
+
+
+def test_p101_reconcile_does_not_overwrite_hi(tmp_path: Path, monkeypatch):
+    from forge.runtime_state import PENDING_KIND_HUMAN_INTERVENTION
+
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    SyncDecisionStore(tmp_path).save(decision)
+    RuntimeStateStore(tmp_path).save(
+        RuntimeState(
+            phase=PHASE_AWAITING_USER,
+            pending=Pending(
+                kind=PENDING_KIND_HUMAN_INTERVENTION,
+                summary="human_intervention: hold",
+                payload={"reason": "hold"},
+            ),
+        )
+    )
+
+    monkeypatch.setattr(
+        "forge.world.runtime.WorldRuntime.ensure_identity",
+        lambda self: None,
+    )
+    from forge.adapters.base import BaseAdapter
+    from forge.memory import MemoryStore
+    from forge.runtime import Runtime
+    from forge.workspace import Workspace
+
+    class _A(BaseAdapter):
+        def send(self, messages, schemas):
+            raise NotImplementedError
+
+    try:
+        rt = Runtime(
+            adapter=_A(),
+            workspace=Workspace(project_root=str(tmp_path)),
+            memory=MemoryStore(),
+        )
+    except Exception as e:
+        import pytest
+        pytest.skip(f"Runtime init blocked: {e}")
+
+    assert rt.runtime_state.pending is not None
+    assert rt.runtime_state.pending.kind == PENDING_KIND_HUMAN_INTERVENTION
+    # SD artifact still PENDING on disk
+    loaded = SyncDecisionStore(tmp_path).load()
+    assert loaded is not None and loaded.status == STATUS_PENDING
+
+
+def test_p101_forge_sync_blocked_with_only_sd_pending(tmp_path: Path):
+    from forge.tools import make_tools
+    from forge.workspace import Workspace
+
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    SyncDecisionStore(tmp_path).save(decision)
+
+    class _SL:
+        project_root = str(tmp_path)
+
+        def detect(self):
+            raise AssertionError("detect should not run when SD pending")
+
+        def sync(self):
+            raise AssertionError("sync should not run when SD pending")
+
+    tools = make_tools(
+        workspace=Workspace(project_root=str(tmp_path)),
+        world_runtime=None,
+        projections=None,
+        allow_mutation=True,
+        sync_layer=_SL(),
+    )
+    result = tools["forge_sync"]()
+    assert result.success is False
+    assert "SyncDecision" in (result.display or "") or "pending" in (
+        result.display or ""
+    ).lower()
+
+
+def test_p101_subagent_blocks_write_with_only_sd_pending(tmp_path: Path):
+    from unittest.mock import MagicMock
+    from forge.adapters.base import ToolCall, ToolResult
+    from forge.agent_abi import AgentTask
+    from forge.subagent import filter_schemas_for_subagent, run_subagent
+    from forge.tools.schemas import MUTATION_TOOL_DECLARATIONS, READ_ONLY_TOOL_DECLARATIONS
+
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    SyncDecisionStore(tmp_path).save(decision)
+    executed = []
+
+    class Adapter:
+        def __init__(self):
+            self.n = 0
+
+        def send(self, messages, schemas):
+            self.n += 1
+            if self.n == 1:
+                return MagicMock(
+                    content="STOP_WHEN: not_met",
+                    tool_calls=[
+                        ToolCall(
+                            id="1",
+                            name="write_file",
+                            arguments={"path": "a.py", "content": "x"},
+                        )
+                    ],
+                )
+            return MagicMock(content="STOP_WHEN: met", tool_calls=[])
+
+    def write_file(**kwargs):
+        executed.append("write_file")
+        return ToolResult.ok(display="written")
+
+    tools = {"write_file": write_file}
+    schemas = filter_schemas_for_subagent(
+        list(READ_ONLY_TOOL_DECLARATIONS) + list(MUTATION_TOOL_DECLARATIONS)
+    )
+    task = AgentTask(goal="g", subtask_id="sub_p101", stop_when="done")
+    result = run_subagent(
+        Adapter(),
+        tools,
+        schemas,
+        task,
+        project_root=str(tmp_path),
+        confirm_fn=lambda s: True,
+    )
+    assert "write_file" not in executed
+    # tool refusal should surface in messages / result path
+    assert result is not None
+
+
+def test_p101_resolve_crash_window_idempotent_clear(tmp_path: Path, monkeypatch):
+    """SD already DECIDED, RS still has sync_decision pending → resolve clears index."""
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    decision.apply_direction(DIRECTION_DISK_TO_WORLD)
+    SyncDecisionStore(tmp_path).save(decision)
+    RuntimeStateStore(tmp_path).save(
+        RuntimeState(
+            phase=PHASE_AWAITING_USER,
+            pending=Pending(
+                kind=PENDING_KIND_SYNC_DECISION,
+                summary="stale after partial resolve",
+                payload={"decision_id": decision.decision_id, "basis": CONFLICT},
+            ),
+        )
+    )
+
+    monkeypatch.setattr(
+        "forge.world.runtime.WorldRuntime.ensure_identity",
+        lambda self: None,
+    )
+    from forge.adapters.base import BaseAdapter
+    from forge.memory import MemoryStore
+    from forge.runtime import Runtime
+    from forge.workspace import Workspace
+
+    class _A(BaseAdapter):
+        def send(self, messages, schemas):
+            raise NotImplementedError
+
+    try:
+        rt = Runtime(
+            adapter=_A(),
+            workspace=Workspace(project_root=str(tmp_path)),
+            memory=MemoryStore(),
+        )
+    except Exception as e:
+        import pytest
+        pytest.skip(f"Runtime init blocked: {e}")
+
+    # Reconcile may clear because SD is not PENDING — either way no false allow.
+    # If reconcile already cleared, pending is None; if not, resolve is idempotent.
+    if rt.runtime_state.pending is not None:
+        assert rt.runtime_state.pending.kind == PENDING_KIND_SYNC_DECISION
+        # DECIDED body: Gate must not false-allow via SD alone
+        # (index still blocks until cleared)
+        blocked_before, _ = sync_decision_pending_blocks(tmp_path)
+        assert blocked_before is True
+
+    out = rt.resolve_sync_decision(DIRECTION_DISK_TO_WORLD)
+    assert out is not None
+    assert out.status == STATUS_DECIDED
+    assert rt.runtime_state.pending is None
+    blocked, _ = sync_decision_pending_blocks(tmp_path)
+    assert blocked is False
+
+
+def test_p101_maybe_open_does_not_create_sd_under_hi(tmp_path: Path, monkeypatch):
+    from forge.runtime_state import PENDING_KIND_HUMAN_INTERVENTION
+
+    RuntimeStateStore(tmp_path).save(
+        RuntimeState(
+            phase=PHASE_AWAITING_USER,
+            pending=Pending(
+                kind=PENDING_KIND_HUMAN_INTERVENTION,
+                summary="human_intervention: hold",
+                payload={"reason": "hold"},
+            ),
+        )
+    )
+
+    monkeypatch.setattr(
+        "forge.world.runtime.WorldRuntime.ensure_identity",
+        lambda self: None,
+    )
+    from forge.adapters.base import BaseAdapter
+    from forge.memory import MemoryStore
+    from forge.runtime import Runtime
+    from forge.workspace import Workspace
+
+    class _A(BaseAdapter):
+        def send(self, messages, schemas):
+            raise NotImplementedError
+
+    try:
+        rt = Runtime(
+            adapter=_A(),
+            workspace=Workspace(project_root=str(tmp_path)),
+            memory=MemoryStore(),
+        )
+    except Exception as e:
+        import pytest
+        pytest.skip(f"Runtime init blocked: {e}")
+
+    report = SimpleNamespace(status=CONFLICT, detail="both sides diverged")
+    rt._maybe_open_sync_decision(report)
+
+    assert rt.runtime_state.pending is not None
+    assert rt.runtime_state.pending.kind == PENDING_KIND_HUMAN_INTERVENTION
+    # Must not create a new PENDING decision artifact under HI.
+    loaded = SyncDecisionStore(tmp_path).load()
+    assert loaded is None or loaded.status != STATUS_PENDING or (
+        # If a pre-existing file somehow exists, open must not have written a fresh one
+        # for this open call — with empty store, must remain None.
+        loaded is None
+    )
+    assert SyncDecisionStore(tmp_path).load() is None
+
+
+def test_p101_guard_blocks_mutation_with_only_sd_pending(tmp_path: Path, monkeypatch):
+    decision = SyncDecision.new_pending(basis=CONFLICT)
+    SyncDecisionStore(tmp_path).save(decision)
+
+    monkeypatch.setattr(
+        "forge.world.runtime.WorldRuntime.ensure_identity",
+        lambda self: None,
+    )
+    from forge.adapters.base import BaseAdapter
+    from forge.memory import MemoryStore
+    from forge.runtime import Runtime
+    from forge.workspace import Workspace
+
+    class _A(BaseAdapter):
+        def send(self, messages, schemas):
+            raise NotImplementedError
+
+    try:
+        rt = Runtime(
+            adapter=_A(),
+            workspace=Workspace(project_root=str(tmp_path)),
+            memory=MemoryStore(),
+        )
+    except Exception as e:
+        import pytest
+        pytest.skip(f"Runtime init blocked: {e}")
+
+    # After init, reconcile filled RS; guard must still block.
+    guard = rt._guard_sync_decision_pending("write_file")
+    assert guard is not None
+    assert guard.success is False

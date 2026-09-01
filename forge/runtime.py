@@ -1308,6 +1308,8 @@ class Runtime:
             project_root=workspace.project_root
         )
         self.sync_decision = self._sync_decision_store.load()
+        # P1-01: align RuntimeState.pending with SyncDecision before any tools run.
+        self._reconcile_sync_decision_pending()
         path_map = getattr(self.world, "_path_map", None)
         file_projection = FileProjection(
             project_root=workspace.project_root,
@@ -1979,11 +1981,89 @@ class Runtime:
         self._maybe_open_sync_decision(report)
         return report
 
+    def _reconcile_sync_decision_pending(self) -> None:
+        """Startup align RuntimeState.pending with SyncDecisionStore (P1-01).
+
+        Runs after both stores are loaded and before tools are exposed.
+        Does not choose direction and does not run forge_sync.
+        HI pending is never overwritten by a PENDING SyncDecision artifact.
+        """
+        if getattr(self, "_sync_decision_store", None) is None:
+            return
+        if getattr(self, "_runtime_state_store", None) is None:
+            return
+        if getattr(self, "runtime_state", None) is None:
+            return
+
+        from forge.runtime_state import (
+            PHASE_AWAITING_USER,
+            PHASE_IDLE,
+            PENDING_KIND_HUMAN_INTERVENTION,
+            PENDING_KIND_SYNC_DECISION,
+            Pending,
+        )
+        from forge.sync.decision import STATUS_PENDING
+
+        rs = self.runtime_state
+        decision = self._sync_decision_store.load()
+        self.sync_decision = decision
+
+        if decision is not None and decision.status == STATUS_PENDING:
+            if rs.pending is not None and rs.pending.kind == PENDING_KIND_HUMAN_INTERVENTION:
+                # HI owns the slot; leave orphan SD=PENDING for later sync_status.
+                return
+            if rs.pending is None or rs.pending.kind == PENDING_KIND_SYNC_DECISION:
+                summary = f"sync_decision required: basis={decision.basis}"
+                payload = {
+                    "decision_id": decision.decision_id,
+                    "basis": decision.basis,
+                }
+                if rs.pending is not None and isinstance(rs.pending.payload, dict):
+                    # Preserve any extra payload keys; refresh id/basis.
+                    payload = {**dict(rs.pending.payload), **payload}
+                    if rs.pending.summary:
+                        summary = rs.pending.summary
+                rs.phase = PHASE_AWAITING_USER
+                rs.pending = Pending(
+                    kind=PENDING_KIND_SYNC_DECISION,
+                    summary=summary,
+                    payload=payload,
+                )
+                rs.refresh_recovery()
+                self.recovery = rs.recovery
+                try:
+                    self._runtime_state_store.save(rs)
+                except Exception as e:
+                    print(
+                        f"[runtime] reconcile_sync_decision save failed: {e}",
+                        file=sys.stderr,
+                    )
+                return
+
+        # RS claims sync_decision but no PENDING body → clear index only.
+        if rs.pending is not None and rs.pending.kind == PENDING_KIND_SYNC_DECISION:
+            if decision is None or decision.status != STATUS_PENDING:
+                rs.pending = None
+                if rs.phase == PHASE_AWAITING_USER:
+                    rs.phase = PHASE_IDLE
+                rs.refresh_recovery()
+                self.recovery = rs.recovery
+                try:
+                    self._runtime_state_store.save(rs)
+                except Exception as e:
+                    print(
+                        f"[runtime] reconcile clear pending save failed: {e}",
+                        file=sys.stderr,
+                    )
+
     def _maybe_open_sync_decision(self, report) -> None:
         """detect 结果需要策略点时，写入 SyncDecision 与 RuntimeState.pending。
 
         若同 basis 已有 decided/aborted 决议，不重复打开 pending（允许一次 forge_sync 推进）。
         IN_SYNC 时清掉已完成的 decision 文件。
+
+        P1-01: check HI before creating/saving a new PENDING decision so a crash
+        cannot leave SD=PENDING under an active human_intervention.
         """
         if getattr(self, "_sync_decision_store", None) is None:
             return
@@ -1993,6 +2073,7 @@ class Runtime:
             return
         from forge.runtime_state import (
             PHASE_AWAITING_USER,
+            PENDING_KIND_HUMAN_INTERVENTION,
             PENDING_KIND_SYNC_DECISION,
             Pending,
         )
@@ -2029,6 +2110,16 @@ class Runtime:
         if not needs_sync_decision(status):
             return
 
+        # HI first: never create a new PENDING decision artifact under HI.
+        if (
+            self.runtime_state.pending is not None
+            and self.runtime_state.pending.kind == PENDING_KIND_HUMAN_INTERVENTION
+        ):
+            existing = self._sync_decision_store.load()
+            if existing is not None:
+                self.sync_decision = existing
+            return
+
         existing = self._sync_decision_store.load()
         if existing is not None and existing.status == STATUS_PENDING:
             decision = existing
@@ -2044,15 +2135,6 @@ class Runtime:
         else:
             decision = SyncDecision.new_pending(basis=status)
             self._sync_decision_store.save(decision)
-
-        # Mutual exclusion: do not open sync_decision over human_intervention
-        from forge.runtime_state import PENDING_KIND_HUMAN_INTERVENTION as _PHI
-        if (
-            self.runtime_state.pending is not None
-            and self.runtime_state.pending.kind == _PHI
-        ):
-            self.sync_decision = decision
-            return
 
         self.sync_decision = decision
         detail = getattr(report, "detail", "") or ""
@@ -2077,8 +2159,11 @@ class Runtime:
 
         direction: disk_to_world | world_to_disk | abort
         不自动执行 forge_sync；决议后 Gate 放行，由调用方再推进同步。
+
+        Persist order (P1-01): apply_direction → save SD terminal → clear RS.pending.
+        Never clear the index before the decision body reaches a terminal status.
         """
-        from forge.runtime_state import PHASE_IDLE
+        from forge.runtime_state import PHASE_IDLE, PENDING_KIND_SYNC_DECISION
         from forge.sync.decision import (
             STATUS_PENDING,
             SyncDecision,
@@ -2093,8 +2178,11 @@ class Runtime:
 
         decision = self._sync_decision_store.load()
         if decision is None or decision.status != STATUS_PENDING:
-            # 仍清除可能残留的 pending，保持幂等
-            if self.runtime_state.pending is not None:
+            # Idempotent: clear residual sync_decision index only (not HI).
+            if (
+                self.runtime_state.pending is not None
+                and self.runtime_state.pending.kind == PENDING_KIND_SYNC_DECISION
+            ):
                 self.runtime_state.pending = None
                 if self.runtime_state.phase == "AWAITING_USER":
                     self.runtime_state.phase = PHASE_IDLE

@@ -266,15 +266,34 @@ class RuntimeStateStore:
 
 
 def sync_decision_pending_blocks(project_root: str | Path) -> tuple[bool, str]:
-    """Gate helper: True when RuntimeState.pending.kind == sync_decision.
+    """Gate helper: block mutations / forge_sync when a sync decision is pending.
 
-    Used by Runtime tool loop, forge_sync, and subagent before mutations.
-    Does not invent a second state source — reads the same RuntimeStateStore.
+    Primary signal: RuntimeState.pending.kind == sync_decision (unified index).
+    Fail-closed secondary signal: SyncDecisionStore status == PENDING when the
+    index is not human_intervention (HI takes priority and must not be promoted).
+
+    DECIDED / ABORTED decision artifacts do not block.
+    Does not choose direction and does not run forge_sync.
     """
     store = RuntimeStateStore(project_root)
     st = store.load()
     if st.pending is not None and st.pending.kind == PENDING_KIND_SYNC_DECISION:
         summary = st.pending.summary or "sync_decision pending"
+        return True, summary
+
+    # HI owns the durable pending slot — do not elevate orphan SD=PENDING.
+    if st.pending is not None and st.pending.kind == PENDING_KIND_HUMAN_INTERVENTION:
+        return False, ""
+
+    # Crash-window fail-closed: decision body PENDING while index not yet written.
+    try:
+        from forge.sync.decision import STATUS_PENDING, SyncDecisionStore
+
+        decision = SyncDecisionStore(project_root).load()
+    except Exception:
+        return False, ""
+    if decision is not None and decision.status == STATUS_PENDING:
+        summary = f"sync_decision pending (artifact basis={decision.basis})"
         return True, summary
     return False, ""
 
