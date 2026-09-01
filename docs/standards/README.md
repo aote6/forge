@@ -95,6 +95,11 @@ The following remain under `docs/` (or project layout as today). **Paths MUST NO
 | Document | Role |
 |----------|------|
 | `docs/world_runtime_interface.md` | World Runtime Interface (WRI) between Forge and Veritas-facing runtime surfaces. |
+| `docs/AGENT_ABI.md` | Main-AI ↔ sub-AI task/result contract: AgentTask, AgentResult, Evidence ↔ ToolCallRecord binding. |
+| `docs/RUNTIME_STATE_CONTRACT.md` | RuntimeState lifecycle, durable pending kinds, recovery derivation, SyncDecision boundary. |
+| `docs/HUMAN_INTERVENTION_CONTRACT.md` | Main AI → user task-level escalation: turn boundary, machine arbitration, original_goal restore. |
+
+注册说明：列入本表表示该文档是 Forge 的正式契约入口，不等于自动升级为 Normative Standard。Normative Standard 仅在 §4 单独列出。
 
 ### Security / Product Boundary
 
