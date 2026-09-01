@@ -79,12 +79,6 @@
 
 ### 运行时生命周期（R1 后续）
 
-- [ ] 控制面缺少 `get_runtime_state()` 工具。
-  - 现状：RuntimeState 已持久化，但主 AI 无法通过工具查询当前 phase / pending / active_subtask。
-  - 影响：主 AI 状态感知仍靠对话历史和 sync hint，没有机器事实入口。
-  - 建议：新增控制面只读工具 get_runtime_state()，返回 RuntimeState 摘要。
-  - 优先级：P2
-
 - [ ] 控制面缺少 `list_recent_subtasks()` 工具。
   - 现状：_subagent_results 已持久化到 JSONL，但主 AI 无法主动回顾历史任务。
   - 影响：主 AI 无法回答「昨天派过什么任务、结果如何」。
