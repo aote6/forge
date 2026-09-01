@@ -1,63 +1,63 @@
 # Normative Standard Promotion Policy
 
 Type: Governance Procedure
-Status: Candidate — Governance Procedure — Non-normative until adopted
-Authority: Non-normative until formally adopted
-Scope: How a clause that already exists in a Contract / Interface document may be formally elevated to a Normative Standard under docs/standards/.
+Status: Candidate — Governance Procedure — 采纳前非规范性
+Authority: 采纳前非规范性
+Scope: 已存在于 Contract / Interface 文档中的条款，如何正式升格为 docs/standards/ 下的 Normative Standard。
 
-Candidate — Governance Procedure — Non-normative until adopted
+Candidate — Governance Procedure — 采纳前非规范性
 
-This document defines promotion procedure. It does not itself promote any Core Contract clause.
+本文档定义升格程序，本身不升格任何 Core Contract 条款。
 
-Until formally adopted through the governance entry points already defined in docs/standards/README.md, this document MUST NOT be treated as binding, and it MUST NOT be treated as a Normative Standard.
+在通过 docs/standards/README.md 已定义的治理入口正式采纳之前，本文档严禁被视为有约束力，严禁被视为 Normative Standard。
 
-This procedure MUST NOT grant itself Normative status. Formal adoption, if any, MUST follow docs/standards/README.md (including explicit designation and registry rules). This procedure MUST NOT introduce documentation authority tiers that README does not already recognize.
+本程序严禁赋予自己 Normative 地位。正式采纳（如发生）必须遵循 docs/standards/README.md（包括显式指定和注册表规则）。本程序严禁引入 README 未承认的文档权威层级。
 
-Where an adopted form of this procedure and README conflict, README hierarchy and §4 registry win until both are revised together under README change rules.
+若本程序的已采纳形式与 README 冲突，以 README 层级和 §4 注册表为准，直到两者按 README 变更规则一并修订。
 
-Normative language in this procedure (applies only after formal adoption of the procedure itself):
+本程序中的规范语言（仅在本程序自身被正式采纳后适用）：
 
-- MUST / MUST NOT — required for a valid promotion
-- SHOULD / SHOULD NOT — strong default
-- MAY — optional
+- 必须 / 严禁 — 有效升格所必需
+- 应 / 不应 — 强默认
+- 可 — 可选
 
-## 0. Purpose and non-goals
+## 0. 目的与非目标
 
-### 0.1 Purpose
+### 0.1 目的
 
-Answer:
+回答：
 
-> When a clause already lives in a Contract / Interface document, under what conditions and through what process may it become a Normative Standard?
+> 当一条款已存在于 Contract / Interface 文档中，在什么条件下、通过什么流程，它才能成为 Normative Standard？
 
-### 0.2 Non-goals
+### 0.2 非目标
 
-This procedure MUST NOT be read as:
+本程序严禁被解读为：
 
-- automatic promotion of any text that contains MUST / 必须
-- bulk relocation of entire Contract files into docs/standards/
-- a substitute for implementation work or test work
-- a longevity essay (see docs/FORGE_LONGEVITY.md)
-- authority to change product behavior without standard revision after promotion
-- a resolution of undecided priority between Normative Standards and Constitution documents
+- 任何含 MUST / 必须 的文本自动升格
+- 将整个 Contract 文件批量搬进 docs/standards/
+- 实现工作或测试工作的替代品
+- 长寿随笔（见 docs/FORGE_LONGEVITY.md）
+- 升格后不经标准修订就改变产品行为的授权
+- 对 Normative Standards 与 Constitution 文档之间未裁定优先级的裁决
 
-### 0.3 Clause-level principle
+### 0.3 条款级原则
 
-Promotion MUST operate on stable semantic clauses (or coherent clause packages within the bounds of §7), not on whole documents by default.
+升格必须作用于稳定的语义条款（或 §7 范围内的连贯条款包），默认不作用于整份文档。
 
-A Contract document MAY remain the home of mixed content: some clauses Normative (by reference), others still Contract-only.
+Contract 文档可以继续容纳混合内容：部分条款 Normative（经引用），其余仍为 Contract-only。
 
-## 1. Definitions
+## 1. 定义
 
-| Term | Meaning |
-|------|---------|
-| Clause | A discrete behavioral or semantic requirement that can be stated without implementation identifiers. |
-| Clause package | A set of clauses that express one invariant and its necessary closed loop (see §7). |
-| Source Contract | A document registered under Contract / Interface in docs/standards/README.md §5 (or equivalent registry). |
-| Normative Standard | A document that meets README §2 and is listed in README §4. |
-| Promotion record | Durable audit + decision artifact for one promotion action (see §5). |
-| Implementation form | Language, type names, field names, paths, schemas, CLI strings, module layout—anything replaceable under refactor. |
+| 术语 | 含义 |
+|------|------|
+| 条款 | 一条离散的行为或语义要求，可以在不引用实现标识符的情况下陈述。 |
+| 条款包 | 表达一个不变量及其必要闭环的一组条款（见 §7）。 |
+| 源 Contract | 在 docs/standards/README.md §5（或等价注册表）中登记为 Contract / Interface 的文档。 |
+| Normative Standard | 满足 README §2 且列入 README §4 的文档。 |
+| 升格记录 | 一次升格动作的持久审计与决策产物（见 §5）。 |
+| 实现形式 | 语言、类型名、字段名、路径、schema、CLI 字符串、模块布局——任何重构时可替换的东西。 |
 
-Current Core Contract Set (inputs only; not promoted by this procedure):
+当前 Core Contract Set（仅作输入；不被本程序升格）：
 
 - docs/AGENT_ABI.md
 - docs/RUNTIME_STATE_CONTRACT.md
@@ -65,182 +65,257 @@ Current Core Contract Set (inputs only; not promoted by this procedure):
 - docs/WORLD_DISK_SYNC.md
 - docs/world_runtime_interface.md
 
-## 2. Promotion gates
+## 2. 升格门槛
 
-A clause MAY be proposed for promotion only if all of the following gates pass.
+一条款只有在以下所有门槛通过后，才可被提议升格。
 
-### Gate A — Behavioral semantics (not implementation form)
+### 门槛 A — 行为语义（非实现形式）
 
-The clause MUST constrain observable system behavior, a stable protocol, or a long-lived semantic invariant.
+条款必须约束可观察的系统行为、稳定协议或长期语义不变量。
 
-It MUST NOT primarily specify:
+严禁主要规定：
 
-- Python / Rust class or function names
-- JSON field names or file paths
-- particular CLI copy or tool identifiers
-- current Runtime module structure
-- temporary product scope unless restated as a durable invariant
+- Python / Rust 类名或函数名
+- JSON 字段名或文件路径
+- 特定 CLI 文案或工具标识符
+- 当前 Runtime 模块结构
+- 临时产品范围，除非重述为持久不变量
 
-Cross-structure check (required):
+跨结构检查（必需）：
 
-Ask: If the implementation language, Runtime, state machine, module layout, or internal data model is replaced, does this clause still express the same external obligation?
+问：如果实现语言、Runtime、状态机、模块布局或内部数据模型被替换，该条款是否仍表达同一外部义务？
 
-If yes, the clause may still be semantic. If no, the clause depends on current structure and is implementation form or design choice. It MUST NOT be promoted.
+- 是 → 条款可能仍是语义性的（继续其他门槛）。
+- 否 → 条款依赖当前结构，是实现形式或设计选择，严禁升格。
 
-### Gate B — Explicit normative force
+### 门槛 B — 显式规范力
 
-The promoted text MUST be expressible with clear MUST / MUST NOT (or 必须 / 严禁) such that a competent implementer can tell conformity from violation without guessing intent.
+升格文本必须能用清晰的 必须 / 严禁（或 MUST / MUST NOT）表达，使合格实现者能无需猜测意图即判断符合与违反。
 
-Descriptive architecture MUST NOT pass this gate unless rewritten as behavioral constraints.
+描述性架构（如「系统有 X/Y/Z 层」）严禁通过此门槛，除非重写为行为约束。
 
-### Gate C — Verifiability
+### 门槛 C — 可验证性
 
-There MUST exist a practical way to detect violation via at least one of: automated tests, state inspection, durable logs / ToolCallRecord / receipts, or other machine-checkable artifacts.
+必须存在至少一种实际检测违反的方式：
 
-Model-only judgment MUST NOT be promoted as if it were machine-enforced truth.
+- 自动化测试
+- 状态检查
+- 持久日志 / ToolCallRecord / receipts
+- 其他机器可检查产物
 
-For clauses that also pass Gate E, Gate C is not satisfied by a future test plan alone.
+仅模型判断（如「目标质量」）严禁被当作机器强制真相来升格。
 
-### Gate D — Cross-implementation stability
+对同时通过门槛 E 的条款，门槛 C 不因「未来测试计划」而满足。见 §3。
 
-The clause MUST remain meaningful if Forge is rewritten in another language, Runtime is replaced, models change, or modules are refactored.
+### 门槛 D — 跨实现稳定
 
-If the clause dies when identifiers rename, it is implementation form (Gate A fail).
+条款必须在 Forge 用另一语言重写、Runtime 被替换、模型变更或模块重构后仍有意义。
 
-### Gate E — Non-breakable core (operationalized)
+若条款在标识符改名后失效，即为实现形式（门槛 A 不通过）。
 
-Violation MUST threaten a core invariant of Forge correctness, safety boundary, recovery, user authority, or world/evidence semantics.
+### 门槛 E — 不可破坏核心（可操作化）
 
-Passing Gate E requires an explicit failure-mode statement: the proposal MUST state concrete, observable, verifiable failure modes that occur if the clause is violated. Abstract labels alone are not sufficient.
+违反必须威胁 Forge 正确性、安全边界、恢复、用户权威或世界/证据语义中的核心不变量。
 
-Negative examples (MUST NOT pass Gate E by themselves): UX consistency only, code cleanliness, convenience of the current architecture, historical importance.
+通过门槛 E 需要显式失败模式陈述：提案必须写明条款被违反时发生的具体、可观察、可验证的失败模式。仅抽象标签不足。
 
-### Gate F — Explicit designation
+单独不足：
 
-Even if A–E pass, a clause is not Normative until:
+- 「影响正确性」
+- 「影响安全」
+- 「影响用户权威」
+- 「影响世界语义」
 
-1. a Normative Standard document (or section) states it; and
-2. that document is listed in docs/standards/README.md §4; and
-3. the promotion record is filed.
+充分风格（所需陈述类型示例，非升格清单）：
 
-Presence of MUST in a Contract MUST NOT be treated as Gate F satisfaction.
+- CONFLICT 未解决且同步未成功时，checkpoint / watermark 推进
+- 无真实 ToolCallRecord 的 Evidence 被接受为完成证明
+- 用户对持久 pending 决策的裁决未解决时，mutation 成功
+- 恢复错误地恢复旧 pending 或继续已显式放弃的任务
 
-## 3. Test coverage rules
+否定例（仅凭自身严禁通过门槛 E）：
 
-For each clause (or package under §7), the promotion record MUST report coverage: Covered / Partial / Missing.
+- 仅 UX 一致性
+- 代码整洁或模块整洁
+- 当前架构便利性
+- 文档的历史重要性或影响力
+- 主/子 Agent 协作便利，而无上述具体失败模式
 
-For any clause that claims Gate E:
+「重要」严禁被视为等价于门槛 E。
 
-- There MUST be at least one negative test showing that a conforming implementation fails (or rejects) when the clause is violated.
-- The test MUST target semantic violation, not merely presence/absence of current field names or function names.
-- Tests planned later MUST NOT be accepted as a basis to complete promotion of a Gate E clause.
-- Partial or Missing MUST NOT complete promotion for Gate E clauses.
+### 门槛 F — 显式指定
 
-MUST NOT promote a clause and simultaneously weaken tests so that non-conformant behavior passes.
+即使 A–E 通过，条款在以下条件满足前仍不是 Normative：
 
-## 4. What must not be locked by promotion
+1. 一份 Normative Standard 文档（或章节）陈述它；且
+2. 该文档列入 docs/standards/README.md §4；且
+3. 升格记录已存档（见 §5）。
 
-Promotion MUST NOT freeze the following as Normative: language/type names, serialization field names, schemas, CLI/UX copy, tool surface names, runtime topology, storage layout, model providers.
+重要：Contract 中出现 MUST 严禁被视为门槛 F 满足。
 
-These MAY remain in Contracts as informative binding for the current implementation. Normative text SHOULD state the semantic invariant in implementation-neutral language.
+## 3. 测试覆盖规则
 
-## 5. Roles
+对每一条款（或 §7 下的包），升格记录必须报告覆盖：
 
-Forge may be single-maintainer. Process still MUST produce durable records.
+| 结论 | 含义 |
+|------|------|
+| Covered | 语义义务被违反时，现有测试失败 |
+| Partial | 部分方面覆盖；列出缺口 |
+| Missing | 无语义否定覆盖 |
 
-| Role | Responsibility |
-|------|----------------|
-| Proposer | Files a promotion proposal. |
-| Auditor | Performs clause-level gate review and test-coverage review; may be same person as Proposer if dual-role is disclosed. |
-| Approver | Maintainer authority that adopts the change into README §4 and the Normative document. |
-| Implementer | Owns code/tests alignment when required. |
+对声称门槛 E 的任何条款：
 
-Self-approval is allowed but MUST be explicit in the promotion record.
+- 必须至少有一个否定测试，证明符合实现在该条款被违反时失败（或拒绝）。
+- 测试必须针对语义违反，而非仅存在/不存在当前字段名、函数名或模块结构。
+- 「以后补测试」严禁被接受为完成门槛 E 条款升格的依据。
+- Partial 或 Missing 严禁完成门槛 E 条款的升格。
 
-## 6. Implementation conformity (no deferred promotion)
+严禁升格条款同时削弱测试，使不符合行为「通过」。
 
-If a candidate clause is known not to hold in production implementation, promotion MUST NOT be completed.
+## 4. 升格严禁锁死的东西
 
-The project MUST either fix the implementation so behavior conforms, or narrow/revise the candidate clause so that implementation conforms to that wording.
+升格严禁将以下内容冻结为 Normative，即使它们出现在源 Contract 中：
 
-There is no deferred-conformity, transitional-normative, or register-now-fix-code-later path for completing Normative promotion.
+| 类别 | 示例（非穷尽） |
+|------|---------------|
+| 语言 / 类型 | Python 类名、dataclass、枚举成员拼写 |
+| 序列化 | JSON 字段名、.forge/*.json 路径 |
+| Schemas | 特定约束 JSON Schema 形状 |
+| CLI / UX 文案 | 精确提示字符串、选项标签拼写 |
+| 工具面 | 当前工具名 |
+| Runtime 拓扑 | 模块文件、类边界、单进程假设 |
+| 存储布局 | 同步元数据物理存放位置 |
+| 模型提供方 | 特定 LLM 厂商或 API |
 
-## 7. Clause package boundaries
+这些可以作为当前实现的信息性约束保留在 Contract 中。Normative 文本应用实现中立语言陈述语义不变量，并可注明当前名称仅作示例。
 
-Default: one package = one invariant that can be violated, judged, and tested independently.
+## 5. 角色
 
-A package MAY include multiple sentences only when they form the necessary closed loop of the same invariant.
+Forge 可能是单维护者。流程仍必须产生持久记录。
 
-MUST NOT bind unrelated invariants in one package.
+| 角色 | 职责 |
+|------|------|
+| Proposer | 提交升格提案。 |
+| Auditor | 执行条款级门槛审查和测试覆盖审查；若与 Proposer 同一人，须在记录中披露双重角色。 |
+| Approver | 维护者权威，将变更采纳进 README §4 和 Normative 文档。在多党治理存在前，Approver 即仓库维护者。 |
+| Implementer | 在 §6 要求时负责代码/测试对齐。 |
 
-## 8. Promotion process
+允许自我批准，但必须在升格记录中显式写明（日期、身份、双重角色披露）。
 
-Promotion MUST follow these steps in order. Skipping steps MUST invalidate the promotion.
+## 6. 实现符合性（无延期升格）
 
-### Step 1 — Propose
+若候选条款已知在生产实现中不成立，升格严禁完成。
 
-Proposer creates a promotion proposal containing source path, clause locator, implementation-neutral wording, gate justifications, Gate E failure modes, non-goals, package boundary justification, and draft placement.
+项目必须：
 
-### Step 2 — Clause-level audit
+1. 修复实现使行为符合；或
+2. 收窄/修订候选条款，使真实所需义务与即将登记的内容一致，且实现符合该措辞。
 
-Auditor MUST re-check gates A–E against the proposed wording, reject whole-document promotion unless every retained clause independently passes, enforce package bounds, and flag conflicts without silently picking a winner.
+没有 deferred-conformity、transitional-normative 或「先登记后修代码」的路径可完成 Normative 升格。
 
-### Step 3 — Test coverage review
+已知不符合会阻断门槛 F 完成（登记），无论 A–E 纸面是否通过。
 
-Auditor MUST apply §3. Gate E clauses without semantic negative tests MUST fail.
+若有意的产品变更与旧 Contract 文本分歧，严禁升格旧文本。先修订 Contract，再考虑修订后义务的升格。
 
-### Step 4 — Implementation conformity check
+## 7. 条款包边界
 
-Conforms → proceed. Non-conforms → MUST NOT complete promotion. Intentional divergence from old text → revise Contract first.
+默认：一个包 = 一个可以独立违反、独立判断、独立测试的不变量。
 
-### Step 5 — Approve
+一个包只有在多个句子构成同一不变量的必要闭环时，才可包含多个句子。
 
-Approver MUST verify gates passed, tests satisfied, conformity satisfied, no unresolved conflicts, wording implementation-neutral.
+允许的包形状示例（说明性，非升格）：
 
-### Step 6 — Author the Normative artifact
+- Evidence 必须绑定真实 tool_call_id / ToolCallRecord；且
+- 无可追溯 Evidence 时，status 严禁为 done。
 
-MUST add or update a document under docs/standards/ with Status: Normative, defined scope, promoted clauses only, MUST/MUST NOT language. MUST NOT claim priority over other Standards or Constitution documents in its own body. MUST NOT copy entire Source Contract bodies.
+严禁将无关不变量绑在一个包里，例如：
 
-### Step 7 — Register in docs/standards/README.md
+- Evidence 验收链 + 同步 CONFLICT 停止/水位安全 + 人机权威 / turn boundary
 
-MUST add to §4 Current Standards with role description. MUST NOT remove Source Contract from §5 unless separate deprecation decision. Directory membership without §4 listing MUST NOT count as promotion.
+作为一个升格包。
 
-### Step 8 — Source Contract annotation
+跨不变量工作必须分开提案，各自有自己的门槛、测试和记录。
 
-SHOULD annotate Source Contract to state which clauses are now Normative and where. MUST NOT silently delete Contract text.
+## 8. 升格流程
 
-## 9. Authority after promotion
+升格必须按以下步骤顺序执行。跳过步骤必须使升格无效。
 
-Normative Standard (§4) constrains behavior within its stated scope. Constitution constrains subsystem invariants. Contract / Interface may mix promoted references and non-promoted rules. Longevity / Stance is inheritance narrative, not a Normative source. Architecture / Design must not override Normative without revision. Implementation is current fact. Tests verify; must not sole-specify when a Standard exists.
+### Step 1 — 提案
 
-If a Normative Standard and a Constitution document have an unresolved semantic conflict, this procedure MUST NOT decide priority. The conflict MUST enter governance resolution. Implementers MUST NOT privately choose one side.
+Proposer 创建升格提案，包含源路径、条款定位、实现中立措辞、门槛论证、门槛 E 失败模式、非目标、包边界论证和草拟位置。
 
-Two §4 standards in conflict: MUST resolve by revision or explicit hierarchy note. MUST NOT pick ad hoc. MUST NOT resolve by a later Standard's self-declared priority.
+### Step 2 — 条款级审计
 
-If code and a Normative Standard disagree: fix code or formally revise the standard. Current code is the authority MUST NOT erase a published standard.
+Auditor 必须对照提案措辞重新检查门槛 A–E，拒绝整文档升格（除非每条保留条款独立通过），执行包边界，并在不静默选择胜者的情况下标记冲突。
 
-Longevity MUST NOT be used as sole evidence for Gate E or Gate F, and MUST NOT impose new executable obligations.
+### Step 3 — 测试覆盖审查
 
-## 10. Amendment, breaking change, and withdrawal
+Auditor 必须应用 §3。没有语义否定测试的门槛 E 条款必须失败。
 
-Editorial change: clarifications that do not change conformity verdict MAY land without code changes.
+### Step 4 — 实现符合性检查
 
-Semantic change MUST: update the §4 text in the same change set as code, update/add tests, record breaking change, obtain approval, and re-check Gates A–E against the new wording.
+符合 → 继续。不符合 → 严禁完成升格。与旧文本有意分歧 → 先修订 Contract。
 
-Withdrawal MUST: remove or mark obsolete the clause, update README §4 description, state whether Source Contract still holds a weaker rule, provide migration notes.
+### Step 5 — 批准
 
-## 11. Prohibited promotion patterns
+Approver 必须验证：门槛通过、包边界受尊重、测试满足、符合性满足、无未解决冲突、措辞实现中立。
 
-MUST NOT: promote solely because Contract uses MUST; move a file into docs/standards/ without §4 listing and gates; promote entire Core Contracts in one step; lock implementation form; use audits or Longevity as silent Normative sources; resolve conflicts by convenience; let tests redefine a standard; complete promotion while production behavior is known not to conform; package unrelated invariants; let a Standard claim superiority; treat this Candidate as binding before adoption.
+### Step 6 — 撰写 Normative 产物
 
-## 12. Minimal promotion record template
+必须在 docs/standards/ 下新增或更新文档，状态为 Normative，定义范围，只含已升格条款（加最小上下文），使用 必须/严禁 语言。严禁在自己正文中声称高于其他 Standard 或 Constitution 文档。严禁复制整个源 Contract 正文。
 
-Title, Date, Proposer, Auditor, Approver, Dual-role disclosure, Source Contract, Clause locators, Proposed normative wording, Package boundary, Gate A–E results, Failure modes, Rejected over-broad wording, Explicitly not promoted, Conflicts, Test coverage, Negative semantic test paths, Implementation conformity, Normative target path, README §4 entry, Source Contract annotation plan, Breaking change.
+### Step 7 — 登记到 docs/standards/README.md
 
-## 13. Adoption of this procedure
+必须加入 §4 Current Standards，附一行角色描述。严禁从 §5 移除源 Contract，除非单独弃用决定。目录成员资格若无 §4 列表，严禁算作升格。
 
-This document is a Candidate. Before formal adoption, it is non-normative and non-binding.
+### Step 8 — 源 Contract 标注
 
-Adopting this procedure MUST NOT promote any Core Contract clause.
+应标注源 Contract，说明哪些条款现已 Normative 及位置。严禁静默删除仍指导实现的 Contract 文本。
 
-Adopting this procedure MUST NOT by itself create a new Normative Standard unless README explicitly lists it under §4.
+## 9. 升格后的权威
+
+Normative Standard（§4）在其声明范围内约束行为。Constitution 约束子系统不变量。Contract / Interface 可混合升格引用和非升格规则。Longevity / Stance 是继承叙事，不是 Normative 来源。Architecture / Design 未经修订严禁覆盖 Normative。Implementation 是当前事实。Tests 验证；存在 Standard 时严禁单独定义规范。
+
+若 Normative Standard 与 Constitution 文档存在未解决语义冲突，本程序严禁决定优先级。冲突必须进入治理决议。实现者严禁私下选择一侧。
+
+两个 §4 标准冲突：必须通过修订或显式层级说明解决。严禁临时选择。严禁靠后一个 Standard 正文自封优先级解决。
+
+若代码与 Normative Standard 不一致：修代码或正式修订标准。「当前代码是权威」严禁抹除已发布标准。
+
+Longevity 严禁用作门槛 E 或门槛 F 的唯一证据，严禁施加新的可执行义务。
+
+## 10. 修订、破坏性变更和撤回
+
+编辑性变更：不改变符合性判定的澄清可以不随代码变更落地。
+
+语义变更必须：与代码同一变更集更新 §4 文本；更新/新增测试；记录破坏性变更；获得批准；对新措辞重新检查门槛 A–E。
+
+撤回必须：在 §4 文档中移除或标记废弃该条款；更新 README §4 描述；说明源 Contract 是否仍保留较弱的 Contract 级规则；提供迁移说明。
+
+## 11. 禁止的升格模式
+
+严禁：
+
+1. 仅因 Contract 用了 MUST 就升格
+2. 无 §4 列表和门槛就把文件移进 docs/standards/
+3. 一步升格整个 Core Contracts 而不做条款审计
+4. 锁死实现形式（§4）
+5. 把审计或 Longevity 散文当静默 Normative 来源
+6. 靠「实现方便的」解决文档冲突
+7. 让测试在不修订标准的情况下重新定义已发布标准
+8. 在生产行为已知不符合时完成升格（§6）
+9. 把无关不变量打包（§7）
+10. 让 Standard 正文声称高于其他 Standard 或 Constitution
+11. 在正式采纳前把本 Candidate 当有约束力
+
+## 12. 最小升格记录模板
+
+Title、Date、Proposer、Auditor、Approver、双重角色披露、源 Contract、条款定位、拟升格措辞、包边界、门槛 A–E 结果、失败模式、被拒绝的过宽措辞、明确不升格、冲突、测试覆盖、否定测试路径、实现符合性、Normative 目标路径、README §4 条目、源 Contract 标注计划、破坏性变更。
+
+## 13. 本程序的采纳
+
+本文档是 Candidate。正式采纳前，它是非规范性、非约束性的。
+
+采纳本程序严禁升格任何 Core Contract 条款。
+
+采纳本程序严禁仅凭自身创建新的 Normative Standard，除非 README 显式将其列入 §4。
