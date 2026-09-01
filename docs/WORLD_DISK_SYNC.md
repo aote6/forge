@@ -101,6 +101,10 @@ World 与 Disk/Git 已经处于同一已知状态。无需同步。
 
 ## 4. 分叉必须 STOP，不得伪造同步成功
 
+> 升格说明：本节中「CONFLICT 下不得自动推进同步进度标记」的语义，
+> 已升格为 Normative Standard：docs/standards/sync_safety.md。
+> 其余文本仍为 Contract / Design 层级。
+
 任何发现 World 与 Disk/Git 已经发生未解决分叉的流程：
 
 **MUST STOP**

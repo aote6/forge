@@ -73,6 +73,7 @@ Only the following documents are **current Normative Standards** under this dire
 |----------|------|
 | [`terminal_presentation.md`](./terminal_presentation.md) | Terminal Presentation Layer: lifecycle, summary, heartbeat, pager, assistant streaming presentation, chrome vs body, extension and test expectations. |
 | [`terminal_color_semantics.md`](./terminal_color_semantics.md) | Terminal color as semantic state/attention: palette, mappings, `paint`/RESET, leakage, emoji policy, plain-text dual channel. |
+| [`sync_safety.md`](./sync_safety.md) | World↔workspace synchronization safety: CONFLICT must not auto-advance synchronization progress marker. |
 
 Together they govern the **Forge Terminal Presentation System** (presentation behavior and visual semantics). Their normative text **MUST NOT** be weakened by informal docs or drive-by code changes.
 
