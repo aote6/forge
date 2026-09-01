@@ -1717,3 +1717,46 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - 模拟升格对象：WORLD_DISK_SYNC 的「CONFLICT 下不得自动推进 synchronization progress marker」，结论 Simulation PASS — Promotion Eligible, Not Promoted。
 - 政策定位为 Governance Procedure，非 Normative Standard，不进 §4。
 
+
+## P1-01 修复 + R2 组合测试 + glob_files + get_runtime_state（2026-09-01）
+
+### P1-01：SyncDecision crash-window Gate 失明修复
+
+- 问题：_maybe_open_sync_decision 先写 SyncDecision PENDING，再写 RuntimeState.pending。两步之间崩溃会导致 Gate 只认 RuntimeState.pending，短暂失明。
+- 修复：
+  - sync_decision_pending_blocks 增加 fail-closed 次信号：SD.status == PENDING 且 RS.pending 非 human_intervention 时仍 block。
+  - 启动时 _reconcile_sync_decision_pending 对齐 RuntimeState.pending。
+  - _maybe_open_sync_decision 先检查 HI，HI 存在时不创建新 PENDING decision。
+  - resolve 保持先终态后清索引，避免反向 false allow。
+- 测试：新增 crash-window / reconcile / stale artifact / clear failure / HI priority 等用例。
+- 全量：715 passed
+
+### R2 组合安全边界测试
+
+- 新增 4 个组合测试：
+  - HI pending × spawn/mutation 生产路径拦截；工具未调用；workspace 不变。
+  - reconcile 后 sync_decision pending × mutation 仍关闭。
+  - 主文件 + .tmp 双文件存在时 load 只认主文件。
+  - clear 失败残留主文件时 pending 仍 blocked。
+- 全量：719 passed
+
+### glob_files 显式 .forge 可见
+
+- 问题：显式查 .forge/... 仍被硬编码排除，工具输出与磁盘事实不一致。
+- 修复：默认继续隐藏 .forge；pattern 显式以 .forge 或 .forge/ 开头时可见。
+- 测试：新增宽 pattern 隐藏 + 显式可见用例。
+- 全量：721 passed
+
+### get_runtime_state 控制面只读工具
+
+- 新增控制面只读工具 get_runtime_state。
+- 返回 phase / active_subtask_id / pending 摘要 / recovery。
+- pending 期间可调用；不写盘；不绕过 Gate。
+- 工具内直接读已派生 recovery，不再重复 refresh_recovery 并吞异常。
+- 全量：725 passed
+
+### 文档治理
+
+- TODO 删除已完成项：R2 组合测试、glob_files、get_runtime_state。
+- TODO 新增「架构审计遗留」分组。
+- 新增 Core Contract Normative Audit 记录。
