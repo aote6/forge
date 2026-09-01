@@ -1684,3 +1684,36 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
   - confirmed_write / recovery 行为不变。
 - 测试：新增 tests/test_layer_b_workspace_manifest.py，含 run_command 改文件被 Layer B 捕获的集成测试。全量 703 passed。
 
+## 文档治理：长期演进体系建立（2026-09-01）
+
+### Forge Longevity Guide
+
+- 新增 docs/FORGE_LONGEVITY.md：定义 Forge 的长期演进方向，区分「会过时的实现形式」和「不会过时的契约语义」。
+- 四层连续性：契约 / 世界 / 证据 / 用户权威。
+- 继承判定规则：未来声称 Forge successor 的系统，必须满足 5 条连续性要求 + 2 条声明要求。
+- 核心原则：升格的是语义，不是实现形式。壳可以换，契约必须留。
+
+### Core Contract Set 注册
+
+- docs/standards/README.md 的 Contract / Interface 表格补全核心契约注册：
+  - docs/AGENT_ABI.md
+  - docs/RUNTIME_STATE_CONTRACT.md
+  - docs/HUMAN_INTERVENTION_CONTRACT.md
+  - docs/WORLD_DISK_SYNC.md
+  - docs/world_runtime_interface.md
+- 明确注册 ≠ 自动升格 Normative Standard。
+
+### Core Contract Normative Audit
+
+- 新增 docs/audits/CORE_CONTRACT_NORMATIVE_AUDIT.md：条款级审查五份核心契约，区分「具备 Normative 性质的语义」和「仍属实现形式的细节」。
+- 结论：AGENT_ABI 的 Evidence/tool_call_id 绑定、WORLD_DISK_SYNC 的 CONFLICT MUST STOP、HUMAN_INTERVENTION 的用户权威、RUNTIME_STATE 的事实/决定/水位分离，具备升格资格；WRI 整份暂不升格。
+
+### Normative Promotion Policy 建立
+
+- 经 v1 → v2 → v2.1 三轮修订和两次模拟升格（Dry Run），最终落盘 docs/governance/NORMATIVE_PROMOTION_POLICY.md。
+- 定义升格门槛 Gate A–F：行为语义、规范力、可验证、跨实现稳定、不可破坏核心、显式登记。
+- 禁止 deferred conformity：代码不符合不得升格。
+- Clause Package 只允许同一不变量闭环，禁止跨不变量打包。
+- 模拟升格对象：WORLD_DISK_SYNC 的「CONFLICT 下不得自动推进 synchronization progress marker」，结论 Simulation PASS — Promotion Eligible, Not Promoted。
+- 政策定位为 Governance Procedure，非 Normative Standard，不进 §4。
+
