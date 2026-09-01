@@ -255,12 +255,24 @@ def make_search_tools(workspace) -> dict:
             return ToolResult.fail(display=f"inspect_last_intent 失败: {e}")
 
     def glob_files(pattern: str, max_results: int = 200) -> ToolResult:
-        """按 glob 模式列出文件（相对项目根）。"""
+        """按 glob 模式列出文件（相对项目根）。
+
+        默认跳过 .forge（及 .git/venv 等噪声目录）。若 pattern 显式以
+        .forge 或 .forge/ 开头，则允许列出 .forge 下的匹配文件。
+        """
         try:
             root = Path(workspace.project_root).resolve()
             pat = pattern or "**/*"
             if pat.startswith("/"):
                 return ToolResult.fail(display="glob_files: 请使用相对项目根的 pattern")
+            # Explicit .forge targeting: allow .forge path segments; else keep hidden.
+            pat_norm = pat.replace("\\", "/").strip()
+            while pat_norm.startswith("./"):
+                pat_norm = pat_norm[2:]
+            explicit_forge = pat_norm == ".forge" or pat_norm.startswith(".forge/")
+            exclude_parts = {".git", "__pycache__", ".venv", "venv", "node_modules"}
+            if not explicit_forge:
+                exclude_parts = exclude_parts | {".forge"}
             matches = []
             for m in sorted(root.glob(pat)):
                 if not m.is_file():
@@ -269,10 +281,7 @@ def make_search_tools(workspace) -> dict:
                     rel = str(m.relative_to(root)).replace("\\", "/")
                 except ValueError:
                     continue
-                if any(
-                    part in {".git", "__pycache__", ".venv", "venv", "node_modules", ".forge"}
-                    for part in Path(rel).parts
-                ):
+                if any(part in exclude_parts for part in Path(rel).parts):
                     continue
                 matches.append(rel)
                 if len(matches) >= max(1, int(max_results)):

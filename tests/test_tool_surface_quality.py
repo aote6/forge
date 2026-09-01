@@ -72,3 +72,56 @@ def test_implementations_still_register_legacy_helpers(tmp_path: Path):
     tools = make_tools(workspace=ws, allow_mutation=False)
     assert "summarize_file" in tools  # still callable if needed
     assert "find_symbol_definition" in tools
+
+
+
+def test_glob_files_hides_forge_by_default(tmp_path: Path):
+    """Wide patterns must not surface .forge runtime artifacts."""
+    (tmp_path / "src.py").write_text("x=1\n", encoding="utf-8")
+    forge_dir = tmp_path / ".forge"
+    forge_dir.mkdir()
+    (forge_dir / "last_test_result.json").write_text('{"ok": true}\n', encoding="utf-8")
+    (forge_dir / "runtime_state.json").write_text("{}\n", encoding="utf-8")
+    ws = Workspace(project_root=str(tmp_path))
+    tools = make_tools(workspace=ws, allow_mutation=False)
+    for pat in ("**/*", "**/*.json", "**/.forge/**"):
+        r = tools["glob_files"](pat)
+        assert r.success, pat
+        files = r.payload["files"]
+        assert not any(f.replace("\\", "/").startswith(".forge/") for f in files), (
+            pat,
+            files,
+        )
+    r_py = tools["glob_files"]("**/*.py")
+    assert r_py.success
+    assert any(f.endswith("src.py") for f in r_py.payload["files"])
+
+
+def test_glob_files_explicit_forge_pattern_visible(tmp_path: Path):
+    """Explicit .forge/... patterns must see files that exist on disk."""
+    forge_dir = tmp_path / ".forge"
+    forge_dir.mkdir()
+    target = forge_dir / "last_test_result.json"
+    target.write_text('{"passed": 1}\n', encoding="utf-8")
+    (tmp_path / "app.py").write_text("y=2\n", encoding="utf-8")
+    ws = Workspace(project_root=str(tmp_path))
+    tools = make_tools(workspace=ws, allow_mutation=False)
+
+    r = tools["glob_files"](".forge/last_test_result.json")
+    assert r.success
+    assert r.payload["count"] >= 1
+    assert any(
+        f.replace("\\", "/").endswith("last_test_result.json") for f in r.payload["files"]
+    )
+
+    r2 = tools["glob_files"](".forge/*")
+    assert r2.success
+    assert r2.payload["count"] >= 1
+    assert any(".forge/" in f.replace("\\", "/") for f in r2.payload["files"])
+
+    # Non-explicit wide glob still hides the same file.
+    r3 = tools["glob_files"]("**/*.json")
+    assert r3.success
+    assert not any(
+        "last_test_result.json" in f.replace("\\", "/") for f in r3.payload["files"]
+    )

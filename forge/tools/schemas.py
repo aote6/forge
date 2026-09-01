@@ -42,7 +42,7 @@ READ_ONLY_TOOL_DECLARATIONS = [
     },
     {
         "name": "glob_files",
-        "description": "按 glob 模式列文件，如 **/*.py、forge/tools/*.py。比 list_files 更精确。",
+        "description": "按 glob 模式列文件，如 **/*.py、forge/tools/*.py。默认跳过 .forge；pattern 以 .forge/ 开头时可列出其中文件。",
         "parameters": {
             "type": "object",
             "properties": {
