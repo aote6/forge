@@ -28,12 +28,6 @@
   - 建议：对照现行 Normative 条款确认两者关系，不在结论确定前修改实现。
   - 优先级：P2
 
-- [ ] R2 组合路径 / crash-recovery / Layer B 全覆盖测试不足。
-  - 发现场景：单项路径已有测试，但多条件组合、崩溃窗口恢复及 Layer B 交叉路径仍缺少系统性覆盖。
-  - 影响：单项测试全绿不能证明组合状态下的不变量仍成立。
-  - 建议：建立组合矩阵，优先覆盖 mutation × pending、crash × recovery、Layer B × tool category 等关键交叉路径。
-  - 优先级：P2
-
 ### 观察层 / 工具语义
 
 - [ ] `glob_files` 不搜索隐藏目录（`.forge`），导致 Agent 误判 `.forge/last_test_result.json` 不存在（实际已生成）。
