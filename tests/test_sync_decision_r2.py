@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from forge.adapters.base import ToolResult
+from forge.events import EventType
 from forge.runtime_state import (
     PHASE_AWAITING_USER,
     PHASE_IDLE,
@@ -683,6 +684,7 @@ def test_p101_subagent_blocks_write_with_only_sd_pending(tmp_path: Path):
     decision = SyncDecision.new_pending(basis=CONFLICT)
     SyncDecisionStore(tmp_path).save(decision)
     executed = []
+    events = []
 
     class Adapter:
         def __init__(self):
@@ -719,8 +721,13 @@ def test_p101_subagent_blocks_write_with_only_sd_pending(tmp_path: Path):
         task,
         project_root=str(tmp_path),
         confirm_fn=lambda s: True,
+        emit=lambda event: events.append(event),
     )
     assert "write_file" not in executed
+    assert not any(
+        e.type == EventType.TOOL_CALL_START and e.data.get("name") == "write_file"
+        for e in events
+    )
     # tool refusal should surface in messages / result path
     assert result is not None
 
