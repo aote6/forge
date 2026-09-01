@@ -61,9 +61,9 @@
 ### 子 AI prompt 审查
 
 - [ ] 子 AI system_prompt 审查：主 AI prompt 已改为控制层身份，但子 AI 的 SUBAGENT_SYSTEM 是否清晰表达「连续执行层」身份未审。
-  - 发现场景：Phase 3 后主 AI 行为契约落地，子 AI prompt 未同步审查。
-  - 影响：子 AI 可能保留旧工具指令或身份模糊。
-  - 建议：审查 forge/subagent.py 里的 SUBAGENT_SYSTEM，确认其符合 Agent ABI v1.3 和 Execution Plane 定位。
+  - 发现场景：Phase 3 后主 AI 行为契约落地，子 AI prompt 未同步审查。2026-09-01 代码确认：SUBAGENT_SYSTEM 无「先计划再执行」约束，只有「不要无限搜索」软提示。
+  - 影响：子 AI 可能保留旧工具指令或身份模糊；简单任务也可能合法走出 20+ 次只读侦查。
+  - 建议：审查 forge/subagent.py 里的 SUBAGENT_SYSTEM，确认其符合 Agent ABI v1.3 和 Execution Plane 定位；增加显式的计划约束或只读步数上限。
   - 优先级：P2
 
 ### 系统集成能力
@@ -124,7 +124,8 @@
 
 - [ ] Forge 没有「代价预算」，主 AI 派发前不算成本。
   - 发现场景：简单任务被过度执行，子 AI 无限侦查。2026-09-01 发一条嘟文的任务中，子 AI 执行 20+ 次只读侦查才进入 post_toot。
-  - 建议方向：AgentTask 估算成本；子循环加预算上限，超了返回 need_decision。
+  - 代码事实：max_steps 默认 15 且上限 15，计的是 LLM 回合数，不是工具调用总次数；同一回合可以执行多个工具调用，所以 max_steps 限制不住工具总数；主 AI 无法预判步数，只能手动填或默认 15。
+  - 建议方向：AgentTask 估算成本；子循环加预算上限（工具调用总数或 token 预算），超了返回 need_decision。
   - 优先级：P2
 
 - [ ] 主 AI 判断本身没有被验证，它是最高裁判但没有更高一层查它。
