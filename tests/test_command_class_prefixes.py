@@ -30,3 +30,51 @@ def test_destructive_prefixes():
 def test_prefixes_table_nonempty():
     assert "pytest" in COMMAND_CLASS_PREFIXES
     assert "python -m pytest" in COMMAND_CLASS_PREFIXES
+
+
+def test_common_readonly_shell_prefixes():
+    readonly = [
+        "ls",
+        "ls -la",
+        "cat forge/runtime.py",
+        "head -n 20 a.py",
+        "tail -n 5 a.py",
+        "wc -l a.py",
+        "grep -n foo a.py",
+        "rg pattern forge/",
+        "file a.py",
+        "stat a.py",
+        "du -sh .",
+        "df -h",
+        "pwd",
+        "which python3",
+        "whereis ls",
+        "uname -a",
+        "whoami",
+        "id",
+    ]
+    for cmd in readonly:
+        assert resolve_command_class(cmd) == "read_only", cmd
+
+
+def test_readonly_prefixes_in_table():
+    for name in (
+        "ls",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "grep",
+        "rg",
+        "file",
+        "stat",
+        "du",
+        "df",
+        "pwd",
+        "which",
+        "whereis",
+        "uname",
+        "whoami",
+        "id",
+    ):
+        assert COMMAND_CLASS_PREFIXES.get(name) == "read_only", name

@@ -86,3 +86,92 @@ def test_execution_gate_has_no_local_compound_regex():
     text = p.read_text(encoding="utf-8")
     assert "_COMPOUND_RE" not in text
     assert "import re" not in text
+
+
+# --- P1: common read-only shell investigation (prefix allow) ---
+
+SHELL_READONLY = [
+    "ls -la",
+    "cat README.md",
+    "head -n 10 forge/runtime.py",
+    "tail forge/runtime.py",
+    "wc -l forge/runtime.py",
+    "grep -n def forge/runtime.py",
+    "rg classify_for_confirmation forge/",
+    "file forge/runtime.py",
+    "stat forge/runtime.py",
+    "du -sh forge",
+    "df -h",
+    "pwd",
+    "which pytest",
+    "whereis git",
+    "uname -a",
+    "whoami",
+    "id",
+]
+
+SHELL_READONLY_COMPOUND = [
+    "ls && rm -rf /tmp/x",
+    "cat README.md > /tmp/out",
+    "grep foo file | something",
+    "ls; rm x",
+    "cat `echo hi`",
+]
+
+# Must stay unknown/PAUSE under pure prefix model (or rg --pre guard).
+SHELL_STILL_UNKNOWN = [
+    "find . -name '*.py'",
+    "find . -delete",
+    "find . -exec rm {} ;",
+    "find . -exec rm {} +",
+    "env rm -rf /tmp/x",
+    "env FOO=1 rm x",
+    "xargs rm",
+    "sort -o out.txt in.txt",
+    "sed -i 's/a/b/' file.py",
+    "awk '{print}' file.py",
+    "python -c 'print(1)'",
+    "bash -c 'ls'",
+    "sh -c 'ls'",
+    "node -e '1'",
+    "less README.md",
+    "date",
+    "rg --pre ./preprocessor pattern",
+    "rg --pre=./preprocessor pattern",
+    "rg --pre-glob '*.txt' --pre ./pp pattern",
+]
+
+
+def test_shell_readonly_class_and_gate_allow():
+    for cmd in SHELL_READONLY:
+        assert is_compound_shell_command(cmd) is False, cmd
+        assert resolve_command_class(cmd) == "read_only", cmd
+        assert resolve_run_command_gate(cmd) == ALLOW, cmd
+
+
+def test_shell_readonly_compound_still_unknown_pause():
+    for cmd in SHELL_READONLY_COMPOUND:
+        assert resolve_command_class(cmd) == COMMAND_CLASS_UNKNOWN, cmd
+        assert resolve_run_command_gate(cmd) == PAUSE, cmd
+
+
+def test_dangerous_or_exec_shell_still_not_allow():
+    for cmd in SHELL_STILL_UNKNOWN:
+        assert resolve_run_command_gate(cmd) == PAUSE, cmd
+        # Not classified as a confirmation-layer read_only allow path
+        assert resolve_command_class(cmd) != "read_only", cmd
+
+
+def test_rg_without_pre_still_read_only():
+    assert resolve_command_class("rg foo") == "read_only"
+    assert resolve_run_command_gate("rg foo bar") == ALLOW
+
+
+def test_find_exec_delete_not_read_only():
+    for cmd in (
+        "find . -delete",
+        "find . -exec rm {} ;",
+        "find /tmp -execdir rm {} +",
+    ):
+        assert resolve_command_class(cmd) == COMMAND_CLASS_UNKNOWN, cmd
+        assert resolve_run_command_gate(cmd) == PAUSE, cmd
