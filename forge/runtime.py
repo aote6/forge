@@ -3509,6 +3509,21 @@ class Runtime:
                         tool_call_id=getattr(tc, "id", None),
                         name=tc.name,
                     ))
+                    self.conversation.append(
+                        ForgeMessage(
+                            role="assistant",
+                            content=resp.content or "",
+                            tool_calls=[tc],
+                        )
+                    )
+                    self.conversation.append(
+                        ForgeMessage(
+                            role="tool",
+                            content=llm_tool_content,
+                            tool_call_id=getattr(tc, "id", None),
+                            name=tc.name,
+                        )
+                    )
                     _append_conversation_log(
                         self.workspace.project_root,
                         "tool",

@@ -5,14 +5,15 @@ from forge.adapters.base import Message
 from forge.conversation import Conversation
 from forge.events import EventType
 from forge.runtime import Runtime, ToolExecutor, _default_tool_schemas
-from forge.tools.schemas import CONTROL_PLANE_TOOLS, EXECUTION_PLANE_TOOLS
+from forge.tools.schemas import CONTROL_PLANE_TOOLS, EXECUTION_PLANE_TOOLS, MAIN_READ_ONLY_TOOL_NAMES
 from forge.workspace import Workspace
 
 
 def test_forge_sync_on_execution_plane_not_control_default():
     default_names = {s["name"] for s in _default_tool_schemas()}
     assert "forge_sync" not in default_names
-    assert default_names == CONTROL_PLANE_TOOLS
+    assert default_names == CONTROL_PLANE_TOOLS | MAIN_READ_ONLY_TOOL_NAMES
+    assert "read_file" in default_names
     assert "forge_sync" in EXECUTION_PLANE_TOOLS
 
 
@@ -37,6 +38,6 @@ def test_conversation_loop_uses_control_plane_schemas(tmp_path):
     rt._last_assistant_replies = []
     rt._run_conversation("status")
     names = {s["name"] for s in adapter.calls[0]}
-    assert names == CONTROL_PLANE_TOOLS
+    assert names == CONTROL_PLANE_TOOLS | MAIN_READ_ONLY_TOOL_NAMES
     assert "forge_sync" not in names
-    assert "read_file" not in names
+    assert "read_file" in names

@@ -33,9 +33,9 @@ class _FakeAdapter:
         return self._responses.pop(0) if self._responses else Message(role="assistant", content="")
 
 
-def test_full_schemas_include_mutations_and_sync(tmp_path):
-    """Phase 1: 主循环默认只暴露控制面；执行面工具不在默认 schema。"""
-    from forge.tools.schemas import CONTROL_PLANE_TOOLS
+def test_full_schemas_include_control_and_main_read_only(tmp_path):
+    """P1: 主循环暴露控制面 + MAIN_READ_ONLY；无 mutation / forge_sync / run_command。"""
+    from forge.tools.schemas import CONTROL_PLANE_TOOLS, MAIN_READ_ONLY_TOOL_NAMES
 
     adapter = _FakeAdapter([
         Message(role="assistant", content="只读回答即可。", tool_calls=None),
@@ -53,15 +53,18 @@ def test_full_schemas_include_mutations_and_sync(tmp_path):
     rt._run_conversation("看看这个函数")
 
     names = {s["name"] for s in adapter.calls[0]}
-    assert names == CONTROL_PLANE_TOOLS
-    assert "str_replace" not in names
-    assert "forge_sync" not in names
-    assert "read_file" not in names
+    assert names == CONTROL_PLANE_TOOLS | MAIN_READ_ONLY_TOOL_NAMES
+    assert "read_file" in names
+    assert "search_code" in names
     assert "spawn_subagent" in names
+    assert "str_replace" not in names
+    assert "write_file" not in names
+    assert "forge_sync" not in names
+    assert "run_command" not in names
 
 
-def test_write_confirm_freezes_pending_action(tmp_path):
-    """str_replace 进入 PendingAction，不调用 executor。"""
+def test_main_mutation_refused_by_policy_not_pending(tmp_path):
+    """P1: 主 AI 调用 str_replace 由 main tool policy 拒绝，不进 PendingAction，不调 executor。"""
     adapter = _FakeAdapter([
         Message(
             role="assistant",
@@ -74,6 +77,7 @@ def test_write_confirm_freezes_pending_action(tmp_path):
                 )
             ],
         ),
+        Message(role="assistant", content="已拒绝写操作。", tool_calls=None),
     ])
     executed = []
 
@@ -96,11 +100,15 @@ def test_write_confirm_freezes_pending_action(tmp_path):
     out = rt._run_conversation("改 a.py")
 
     assert executed == []
-    assert rt._pending_action is not None
-    assert rt._pending_action.tool == "str_replace"
-    assert rt._pending_action.args["path"] == "a.py"
-    assert rt._pending_action.tool_call_id == "tc1"
-    assert "确认" in out
+    assert rt._pending_action is None
+    tool_texts = [
+        getattr(m, "content", "") or ""
+        for m in rt.conversation.get_messages()
+        if getattr(m, "role", None) == "tool"
+    ]
+    # P1: refusal must be observable, not just "no executor / no pending".
+    joined = "\n".join(tool_texts) + "\n" + (out or "")
+    assert "main tool policy refused" in joined
 
 
 def test_confirm_executes_frozen_snapshot(tmp_path):
@@ -181,9 +189,8 @@ def test_confirm_does_not_grant_blanket_mutation(tmp_path):
     rt._last_assistant_replies = []
 
     out = rt._run_conversation("再写 b.py")
-    assert rt._pending_action is not None
-    assert rt._pending_action.tool == "write_file"
-    assert "确认" in out
+    # P1: main cannot open WRITE_CONFIRM for write_file; policy refuses.
+    assert rt._pending_action is None
 
 
 def test_cancel_clears_pending():
@@ -197,13 +204,19 @@ def test_cancel_clears_pending():
 
 
 def test_default_schemas_helper():
-    from forge.tools.schemas import CONTROL_PLANE_TOOLS, EXECUTION_PLANE_TOOLS
+    from forge.tools.schemas import (
+        CONTROL_PLANE_TOOLS,
+        EXECUTION_PLANE_TOOLS,
+        MAIN_READ_ONLY_TOOL_NAMES,
+    )
 
     names = {s["name"] for s in _default_tool_schemas()}
-    assert names == CONTROL_PLANE_TOOLS
+    assert names == CONTROL_PLANE_TOOLS | MAIN_READ_ONLY_TOOL_NAMES
     for n in ("spawn_subagent", "verify_tool_call", "todo_write", "todo_list", "submit_plan"):
         assert n in names
-    for n in ("str_replace", "post_toot", "forge_sync", "read_file"):
+    for n in ("read_file", "search_code"):
+        assert n in names
+    for n in ("str_replace", "post_toot", "forge_sync", "write_file", "run_command"):
         assert n not in names
     # mutations live on execution plane
     assert {d["name"] for d in MUTATION_TOOL_DECLARATIONS} <= EXECUTION_PLANE_TOOLS

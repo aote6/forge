@@ -4,25 +4,28 @@ from __future__ import annotations
 from forge.system_prompt import SYSTEM_INSTRUCTION
 
 
-def test_prompt_has_no_execution_tool_instructions():
-    # These tools must not appear as tools the main AI can call directly.
+def test_prompt_declares_main_read_only_not_mutation():
+    """P1: main may use restricted read tools; mutation must not be claimed as capability."""
+    assert "read_file" in SYSTEM_INSTRUCTION
+    assert "ToolCallRecord（actor=main）" in SYSTEM_INSTRUCTION or (
+        "ToolCallRecord" in SYSTEM_INSTRUCTION and "actor=main" in SYSTEM_INSTRUCTION
+    )
+    # Restricted read capability is explicit.
+    assert "只读" in SYSTEM_INSTRUCTION or "read_file" in SYSTEM_INSTRUCTION
+    # Mutation / execution tools must not be listed as main-callable capabilities.
     for tool in (
-        "read_file",
         "write_file",
         "str_replace",
         "run_command",
-        "glob_files",
-        "search_code",
         "post_toot",
-        "project_review",
-        "session_changes",
-        "project_memory",
         "undo_last_tx",
         "apply_patch",
     ):
         assert tool not in SYSTEM_INSTRUCTION, tool
-    # forge_sync appears only inside AgentTask instructions, never as a
-    # direct main-AI tool.
+    # Stronger: these must not appear as tools main can call (names absent is safest).
+    for tool in ("write_file", "str_replace", "run_command", "post_toot"):
+        assert tool not in SYSTEM_INSTRUCTION, tool
+    # forge_sync appears only inside AgentTask / sync instructions.
     assert "forge_sync 返回 IN_SYNC" in SYSTEM_INSTRUCTION
 
 

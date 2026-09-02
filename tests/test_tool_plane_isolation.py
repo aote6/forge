@@ -11,6 +11,7 @@ from forge.tools.schemas import (
     CONTROL_PLANE_TOOLS,
     EXECUTION_PLANE_TOOL_DECLARATIONS,
     EXECUTION_PLANE_TOOLS,
+    MAIN_READ_ONLY_TOOL_NAMES,
     MUTATION_TOOL_DECLARATIONS,
     READ_ONLY_TOOL_DECLARATIONS,
     RECONCILIATION_TOOL_DECLARATIONS,
@@ -34,10 +35,15 @@ def test_planes_disjoint():
     assert CONTROL_PLANE_TOOLS.isdisjoint(EXECUTION_PLANE_TOOLS)
 
 
-def test_main_schemas_are_control_only():
+def test_main_schemas_are_control_plus_main_read_only():
+    """P1: main sees control plane + MAIN_READ_ONLY; no mutation/execution writes."""
     names = {s["name"] for s in _default_tool_schemas()}
-    assert names == CONTROL_PLANE_TOOLS
-    for banned in ("read_file", "write_file", "run_command", "str_replace", "forge_sync"):
+    assert CONTROL_PLANE_TOOLS <= names
+    assert MAIN_READ_ONLY_TOOL_NAMES <= names
+    assert names == CONTROL_PLANE_TOOLS | MAIN_READ_ONLY_TOOL_NAMES
+    for required in ("read_file", "search_code", "spawn_subagent"):
+        assert required in names
+    for banned in ("write_file", "str_replace", "run_command", "forge_sync"):
         assert banned not in names
 
 

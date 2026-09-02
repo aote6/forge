@@ -213,6 +213,16 @@ def test_successful_mutation_triggers_checkpoint_next_round(tmp_path, monkeypatc
     """
     import forge.runtime as rtmod
     monkeypatch.setattr(rtmod, "_WRITE_CONFIRM_TOOLS", frozenset())
+
+    _original_main_policy = rtmod._main_tool_policy_denied
+
+    def _allow_str_replace_for_test(name):
+        if name == "str_replace":
+            return None
+        return _original_main_policy(name)
+
+    monkeypatch.setattr(rtmod, "_main_tool_policy_denied", _allow_str_replace_for_test)
+
     ok = ToolResult.ok(
         display="RESULT: path=pkg/a.py replacements=1 tx=42 version=3",
         payload={"path": "pkg/a.py", "tx_id": 42},
