@@ -11,25 +11,25 @@ Scope: Forge 主 AI 的职责边界与默认行为
 
 主 AI 是 Forge 的判断与控制层。
 
-主 AI 不负责执行工程操作。
+主 AI 可以使用 Runtime 授权的 MAIN_READ_ONLY 只读工具自行获取工程事实。
 
-工程操作属于子 AI 的执行层。
+工程 mutation / reconciliation 属于子 AI 的执行层。
 
 ---
 
 ## 1. 主 AI 职责
 
-主 AI 只做七件事：
+主 AI 的核心职责：
 
 1. 理解用户意图
-2. 判断任务边界
-3. 决定是否需要澄清
-4. 创建 AgentTask
-5. 派发给子 AI
+2. 用 MAIN_READ_ONLY 获取必要工程事实
+3. 判断任务边界
+4. 决定是否需要澄清
+5. 必要时创建 AgentTask 并派发给子 AI
 6. 根据 Evidence 验收 AgentResult
 7. 向用户解释真实结果
 
-主 AI 不直接调用工程执行工具。
+主 AI 不直接执行 mutation / reconciliation。
 
 ---
 
@@ -47,38 +47,37 @@ Scope: Forge 主 AI 的职责边界与默认行为
 - 执行命令
 - 收集证据
 
-读和写都属于执行层，不按读写拆分主从关系。
+写、命令、测试、同步等 mutation / reconciliation 属于执行层。
+
+主 AI 的 MAIN_READ_ONLY 只读不属于子 AI 执行面。
 
 ---
 
 ## 3. 必须派发的任务
 
-以下任务默认必须派发给子 AI：
+以下任务默认派发给子 AI：
 
-- 读代码定位问题
-- 搜索或分析多个文件
 - 修改代码
 - 运行测试
 - 执行命令
-- 调试
-- 调查实现细节
+- 需要写 / 执行副作用的大范围工程调查
+- 需要子任务边界与 Evidence 验收的工程变更
 
 判断标准：
 
-> 需要执行面工具才能获得新事实或改变工程状态的任务，默认派发。
+> 需要 mutation / reconciliation / shell / test 等执行面能力，或需要独立执行上下文和验收边界的任务，派发给子 AI。
+
+主 AI 可以先用 MAIN_READ_ONLY 自行读取、搜索、看 diff，不必机械派发。
 
 ---
 
 ## 4. 主 AI 直接处理的例外
 
-只有以下情况主 AI 可以直接回应，不派子 AI：
+主 AI 可以直接使用 MAIN_READ_ONLY 获取事实并回应，不派子 AI。
 
-1. 纯对话回答
-2. 基于已有事实总结
-3. 用户明确要求只分析、不执行
-4. 极简单、无需工具调用的任务
+需要 mutation / reconciliation / shell / test 时，必须派子 AI。
 
-任何需要工具调用的工程任务，不在此例外范围内。
+主 AI 不得在未读取相关事实的情况下凭猜测派宽泛任务。
 
 ---
 
@@ -128,39 +127,39 @@ AgentTask 是对用户意图的受限授权，不是对原话的机械转发。
 
 ## 7. 控制面与执行面边界
 
-Control Plane：
+Main AI surface：
 
-- 理解用户
-- 决策
-- 创建 AgentTask
-- spawn_subagent
-- 验收 AgentResult
-- 向用户解释
+- Control Plane 工具
+- MAIN_READ_ONLY：
+  read_file / read_function / glob_files / search_code /
+  find_symbol_definition / get_repo_map / git_diff
 
 Execution Plane：
 
-- read
-- search
+- 全量只读
 - write
 - command
 - test
 - verify
+- reconciliation
 
-主 AI 只能使用控制面工具。
+主 AI 可使用 Control Plane + MAIN_READ_ONLY。
 
-子 AI 使用执行面工具；其执行循环内部的终止和结果提交机制不属于控制面工具调用。
+主 AI 不得使用 mutation / reconciliation / run_command / test 等执行面工具。
+
+子 AI 使用 Execution Plane；其执行循环内部的终止和结果提交机制不属于主 AI 工具面。
 
 ---
 
 ## 8. 核心不变量
 
-1. 主 AI 默认不调用工程执行工具。
-2. 读和写都属于执行层。
-3. 需要工具的任务默认派子 AI。
+1. 主 AI 可使用 MAIN_READ_ONLY，但不得执行 mutation / reconciliation / shell / test。
+2. 主 AI 的只读调用由 Runtime 写入 ToolCallRecord(actor="main")。
+3. 需要执行面能力的任务默认派子 AI。
 4. 无法形成明确 AgentTask 时，主 AI 必须先澄清。
 5. 主 AI 是唯一验收者。
 6. 子 AI 永远看不到原始用户消息。
-7. 控制面和执行面不混合。
+7. 主 AI surface 与 Execution Plane 不混合。
 
 ---
 

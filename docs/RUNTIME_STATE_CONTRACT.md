@@ -241,7 +241,7 @@ SyncDecision
 3. SyncDecision 与 Mutation Confirmation 永不混同。
 4. 崩溃恢复不创建第二套状态机，启动时只推导 RuntimeState.recovery。
 5. 子循环栈内状态，包括 Execution Pause，不承诺可恢复。
-6. 主 AI 永不直接调用执行工具；执行面只经 spawn_subagent 进入。
+6. 主 AI 不直接执行 mutation；可使用 Runtime 授权的 MAIN_READ_ONLY 工具自行获取工程事实；mutation / reconciliation 仍只经 spawn_subagent 进入。
 7. done_when 的 v1 代理不得冒充目标完成语义。
 
 

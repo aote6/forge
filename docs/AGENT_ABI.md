@@ -185,9 +185,17 @@ detail        string   否    仅用于展示，不作为真实性依据
 - 主 AI 判断完成时只能依赖 source、target、tool_call_id。
 - 子 AI 自己的推理只能进 summary 或 uncertain，不能进 Evidence。
 
-tool_call_id 必须对应执行器保存的不可变 ToolCallRecord。
+tool_call_id 必须对应 Runtime 保存的不可变 ToolCallRecord。
 
-主 AI 可通过该 ID 获取真实工具输入、输出及执行状态。
+ToolCallRecord 是 Runtime 工具事实记录，包含 actor：
+- actor="subagent"：子 AI 执行面调用
+- actor="main"：主 AI MAIN_READ_ONLY 只读调用
+
+子任务 Evidence 只能引用 actor="subagent" 且 subtask_id 匹配当前 subtask 的记录。
+
+actor="main" 的记录是主 AI 真实读取事实的持久证据，但不得作为子任务 Evidence。
+
+主 AI 可通过 tool_call_id 获取真实工具输入、输出及执行状态。
 
 ---
 
@@ -301,3 +309,6 @@ command_class 只能通过可执行文件名或子命令前缀的静态白名单
 主 AI 验收时必须通过 tool_call_id 独立反查 ToolCallRecord。
 
 不得读取子 AI 生成的 summary / detail 作为真实性依据。
+
+验收时只接受 actor="subagent" 且 subtask_id 匹配当前 subtask 的记录。
+actor="main" 的记录不得作为子任务 Evidence。

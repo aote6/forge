@@ -41,14 +41,19 @@ Scope: 主 AI 从执行者到派发者的实现设计
 
 静态分离，无运行时提升通道。
 
-主 AI 永远不获得执行工具。
+主 AI 不获得 mutation / reconciliation / shell / test 执行工具。
 
-不存在“确有必要时临时开放”的机制。
+主 AI 可使用 Runtime 授权的 MAIN_READ_ONLY 只读工具自行获取工程事实：
+read_file / read_function / glob_files / search_code /
+find_symbol_definition / get_repo_map / git_diff
 
-主 AI 若需要工程事实，只有两条路：
+不存在“确有必要时临时提升主 AI mutation 权限”的机制。
 
-1. 验收需求 → 用控制面工具反查 ToolCallRecord
-2. 工程操作 → 创建 AgentTask 派子 AI
+主 AI 若需要执行面工程事实或工程变更：
+
+1. 工程变更 → 创建 AgentTask 派子 AI
+2. 验收需求 → 用控制面工具反查 ToolCallRecord
+3. 主 AI 自己的只读事实 → Runtime 写入 ToolCallRecord(actor="main")
 
 ---
 
@@ -342,6 +347,7 @@ Forge Runtime / Execution Gate
 
 按三个问题审核通过：
 
-1. 主 AI 没有重新获得执行工具
-2. 子 AI 没有被拆回读写两个模块
-3. Agent ABI 没有被实现细节污染
+1. 主 AI 没有获得 mutation / reconciliation / shell / test 执行工具
+2. 主 AI 获得了受 Runtime 授权的 MAIN_READ_ONLY，且读取事实以 ToolCallRecord(actor="main") 证明
+3. 子 AI 没有被拆回读写两个模块
+4. Agent ABI 没有被实现细节污染
