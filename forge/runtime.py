@@ -110,6 +110,13 @@ _WRITE_RECOVERY_TOOLS = frozenset({"undo_last_tx"})
 _WRITE_CONFIRM_TOOLS = frozenset(
     (MUTATION_TOOL_NAMES | RECONCILIATION_TOOL_NAMES) - _WRITE_RECOVERY_TOOLS - {"forge_sync"}
 )
+# NOTE(2026-09-02): Phase 1 隔离后，_main_tool_policy_denied 会在此策略判定之前
+# 拦截所有 MUTATION_TOOL_NAMES | RECONCILIATION_TOOL_NAMES 工具并 continue（见主循环
+# for tc in resp.tool_calls 里 denied is not None 分支）。因此下面 WRITE_CONFIRM 分支
+# （strategy == "WRITE_CONFIRM" 那段）在当前工具面下不可达，仅当未来把某个
+# mutation/reconciliation 工具重新加入 CONTROL_PLANE_TOOL_DECLARATIONS 时才会复活。
+# 保留该分支作为该场景下的安全网，不要删除；不变量由
+# tests/test_tool_plane_isolation.py::test_write_confirm_tools_unreachable_from_main_loop 锁定。
 
 
 @dataclass

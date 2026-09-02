@@ -125,3 +125,22 @@ def test_spawn_closure_filters_tools_to_execution(tmp_path: Path):
     assert "spawn_subagent" not in sub_tools
     assert "spawn_subagent" not in schema_names
     assert "read_file" in sub_tools or "read_file" in schema_names
+
+
+def test_write_confirm_tools_unreachable_from_main_loop():
+    """记录当前架构不变量：WRITE_CONFIRM 工具集与主 AI 可见工具集不相交。
+
+    _main_tool_policy_denied 在主循环工具分派时，先于 _write_strategy 判定拦截
+    所有 mutation/reconciliation 工具并 continue（见 forge/runtime.py 主循环）。
+    因此 _WRITE_CONFIRM_TOOLS（= MUTATION_TOOL_NAMES | RECONCILIATION_TOOL_NAMES，
+    减去 recovery 与 forge_sync）里的工具永远不会走到 strategy == "WRITE_CONFIRM"
+    那段代码。
+
+    若此测试失败，说明 CONTROL_PLANE_TOOL_DECLARATIONS 或 MAIN_READ_ONLY 混入了
+    mutation/reconciliation 工具——WRITE_CONFIRM 分支将被重新激活，需要人工审查
+    该分支的行为是否仍然正确（它已经很久没有被真实路径覆盖过）。
+    """
+    from forge.runtime import _WRITE_CONFIRM_TOOLS, _default_tool_schemas
+
+    main_visible = {s["name"] for s in _default_tool_schemas()}
+    assert main_visible.isdisjoint(_WRITE_CONFIRM_TOOLS)

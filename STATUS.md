@@ -1795,3 +1795,27 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 
 ### 验证
 - 全量：731 passed
+
+## WRITE_CONFIRM 不可达路径标注 + 不变量测试（2026-09-02）
+
+### 问题
+架构审计发现 `PendingAction` 机制存在两条分支：forge_sync 专用（活跃）与通用
+WRITE_CONFIRM（strategy == "WRITE_CONFIRM"，主循环 3604 行起）。P1 main read-only
+落地后，`_main_tool_policy_denied` 在 strategy 判定之前已拦截所有
+MUTATION_TOOL_NAMES | RECONCILIATION_TOOL_NAMES 工具并 continue，导致
+WRITE_CONFIRM 分支在当前工具面下结构性不可达——不是死代码（无死引用），而是被
+自身策略拒绝逻辑架空的休眠代码，属于「两套机制共存但只有一套真正工作」的认知负债。
+
+### 处理
+未删除代码（保留作为未来配置回退时的安全网），改为：
+- `_WRITE_CONFIRM_TOOLS` 定义处加注释说明不可达原因与触发条件
+- 新增 `test_write_confirm_tools_unreachable_from_main_loop`（tests/test_tool_plane_isolation.py），
+  锁定「主 AI 可见工具集 与 _WRITE_CONFIRM_TOOLS 不相交」为显式契约；若未来误将
+  mutation/reconciliation 工具加入 CONTROL_PLANE_TOOL_DECLARATIONS，该测试会立即报红。
+
+### 结论
+把隐含的、需要逐层读代码才能验证的架构事实，转成机器可验证的不变量测试，
+而非缩减代码量。
+
+### 测试
+全量：732 passed（基线 731 + 新增 1，无回归）。
