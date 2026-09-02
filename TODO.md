@@ -25,7 +25,7 @@
 - [ ] 主 AI 被 mutation policy 拒绝后，可能不会优雅转去 spawn_subagent。
   - 发现场景：主 AI 想 write_file / str_replace，被 _main_tool_policy_denied 拒绝后，可能反复尝试或直接对用户说“不能做”。
   - 影响：用户任务中断，主 AI 没有完成“拒绝 → 委托”的闭环。
-  - 建议：实际测试拒绝后行为；必要时在 system_prompt 增加“被拒 mutation 后应改派子 AI”的明确指引。
+  - 建议：P1 落地后优先实际验证；必要时在 system_prompt 增加“被拒 mutation 后应改派子 AI”的明确指引。
   - 优先级：P1
 
 ### 架构审计遗留
@@ -52,10 +52,10 @@
 
 ### 测试技术债
 
-- [ ] 旧测试门禁未迁移：`test_p2_3_progress_skeleton.py` 用 `monkeypatch.setattr(rtmod, "_WRITE_CONFIRM_TOOLS", frozenset())` 清空确认桶绕过 PendingAction 门禁。
-  - 发现场景：Pending Action Gate 上线后，旧测试仍按「mutation 直接执行」假设编写，靠 monkeypatch 关闭门禁才通过。
-  - 影响：这些测试没有验证真正的 PendingAction 契约，可能掩盖门禁回归。
-  - 建议：逐步迁移为真实 PendingAction 流程（冻结 → 确认 → 执行），不再 monkeypatch 清空 `_WRITE_CONFIRM_TOOLS`。
+- [ ] 旧测试门禁绕过点已迁移，但测试债未消失：`test_p2_3_progress_skeleton.py` 从清空 `_WRITE_CONFIRM_TOOLS` 改为 monkeypatch `_main_tool_policy_denied` 放行 `str_replace`。
+  - 发现场景：P1 主 AI mutation policy 上线后，该测试为了让 mutation 成功路径可执行，又增加了一层 policy 绕过。
+  - 影响：测试仍没有验证真实 PendingAction / 子任务 mutation 契约，只是绕过了新加的主 AI policy。
+  - 建议：逐步迁移为真实 mutation 执行路径（子任务或内部合法执行入口），不再通过多层 monkeypatch 模拟 mutation 成功。
   - 优先级：P2
 
 ### 主循环死代码清理
@@ -120,9 +120,9 @@
 
 - [ ] 子循环只读工具反复弹确认，用户对大量只读操作也要逐条确认。
   - 发现场景：2026-09-01 发嘟文任务中，子 AI 执行 20+ 次只读侦查，每次 run_command / read_file 都弹确认，真正需要确认的只有最后 post_toot。
-  - 影响：确认疲劳，用户无法区分关键写操作和普通只读侦查。
+  - 影响：确认疲劳，用户无法区分关键写操作和普通只读侦查。主 AI 只读已放行，子循环若仍逐条确认，体验割裂更明显。
   - 建议：子循环只读工具默认放行，仅 mutation / 外部副作用弹确认。
-  - 优先级：P2
+  - 优先级：P1
 
 - [ ] FAST_FORWARD 方向唯一时，同步流程过度仪式化。
   - 发现场景：2026-09-01 forge_sync 实际运行中，系统已知方向唯一，仍走 resolve_sync_decision → spawn_subagent → 确认 → forge_sync → verify 全套流程。
@@ -130,11 +130,11 @@
   - 建议：方向唯一时允许主 AI 直接说明并请求确认，用户确认后走最短路径执行，不强制经过完整 decision + subagent 仪式。
   - 优先级：P2
 
-- [ ] Forge 没有「代价预算」，主 AI 派发前不算成本。
+- [ ] Forge 没有「代价预算」，主 AI 派发前不算成本，双循环都无真实工具调用预算。
   - 发现场景：简单任务被过度执行，子 AI 无限侦查。2026-09-01 发一条嘟文的任务中，子 AI 执行 20+ 次只读侦查才进入 post_toot。
-  - 代码事实：max_steps 默认 15 且上限 15，计的是 LLM 回合数，不是工具调用总次数；同一回合可以执行多个工具调用，所以 max_steps 限制不住工具总数；主 AI 无法预判步数，只能手动填或默认 15。
-  - 建议方向：AgentTask 估算成本；子循环加预算上限（工具调用总数或 token 预算），超了返回 need_decision。
-  - 优先级：P2
+  - 代码事实：max_steps 默认 15 且上限 15，计的是 LLM 回合数，不是工具调用总次数；同一回合可以执行多个工具调用，所以 max_steps 限制不住工具总数；主 AI 新增 MAIN_READ_ONLY 后，成本问题已从子循环扩展为主/子双循环。
+  - 建议方向：AgentTask 估算成本；主/子循环都加工具调用总数或 token 预算，超了返回 need_decision 或暂停。
+  - 优先级：P1
 
 - [ ] 主 AI 判断本身没有被验证，它是最高裁判但没有更高一层查它。
   - 影响：主 AI 判断错误时没有任何机制阻止。
