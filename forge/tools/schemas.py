@@ -738,6 +738,25 @@ CONTROL_PLANE_TOOL_DECLARATIONS = [
 
 CONTROL_PLANE_TOOLS = frozenset(d["name"] for d in CONTROL_PLANE_TOOL_DECLARATIONS)
 
+# ---------------------------------------------------------------------------
+# Main AI READ_ONLY subset (P1: fact acquisition without mutation)
+# Runtime must ALSO hard-reject mutation for main (schema is layer 1 only).
+# ---------------------------------------------------------------------------
+MAIN_READ_ONLY_TOOL_NAMES = frozenset({
+    "read_file",
+    "read_function",
+    "glob_files",
+    "search_code",
+    "find_symbol_definition",
+    "get_repo_map",
+    "git_diff",
+})
+
+MAIN_READ_ONLY_TOOL_DECLARATIONS = [
+    d for d in READ_ONLY_TOOL_DECLARATIONS if d["name"] in MAIN_READ_ONLY_TOOL_NAMES
+]
+
+
 # Execution plane — subagent only
 EXECUTION_PLANE_TOOL_DECLARATIONS = (
     list(READ_ONLY_TOOL_DECLARATIONS)

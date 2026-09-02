@@ -1,13 +1,20 @@
-"""ToolCallRecord — append-only immutable log of subagent tool calls.
+"""ToolCallRecord — append-only immutable log of Runtime tool calls.
 
-Each real tool invocation made by a subagent gets a tool_call_id allocated
+Each real tool invocation (main AI or subagent) gets a tool_call_id allocated
 before execution, and a record written after execution completes. Records
 are never modified or deleted once written; only appended.
 
+Fields include actor ("main" | "subagent") so the same log covers both
+control-plane reads and execution-plane tools. subtask_id is required for
+subagent calls and empty string for main-agent calls.
+
 Storage: <project_root>/.forge/tool_call_records.jsonl (JSON Lines, one
 record per line). This is a separate stream from session_changes.jsonl —
-it exists purely to make Evidence.tool_call_id independently verifiable
-by the main agent, and must not be conflated with world-state change logs.
+it exists to make tool facts independently verifiable (Evidence for
+subtasks; durable proof of main reads), and must not be conflated with
+world-state change logs.
+
+Legacy lines without "actor" are treated as actor="subagent" on read.
 """
 from __future__ import annotations
 
@@ -43,13 +50,14 @@ class ToolCallRecord:
     """
 
     tool_call_id: str
-    subtask_id: str
+    subtask_id: str  # subagent: real id; main: ""
     tool_name: str
     input: dict[str, Any]
     output: Any
     status: str  # "success" | "error"
     error: str | None
     timestamp: float  # unix epoch seconds, UTC
+    actor: str = "subagent"  # "main" | "subagent"; new writers pass explicitly
 
     def to_json_line(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, default=str)
@@ -112,6 +120,8 @@ def get_record(project_root: str | os.PathLike, tool_call_id: str) -> dict[str, 
                     # records; skip and keep scanning.
                     continue
                 if obj.get("tool_call_id") == tool_call_id:
+                    if not obj.get("actor"):
+                        obj["actor"] = "subagent"
                     found = obj
         return found
     except Exception:
@@ -147,6 +157,8 @@ def list_records_for_subtask(
                 if not isinstance(obj, dict):
                     continue
                 if str(obj.get("subtask_id") or "") == sid:
+                    if not obj.get("actor"):
+                        obj["actor"] = "subagent"
                     out.append(obj)
     except Exception:
         return out

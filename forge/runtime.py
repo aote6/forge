@@ -40,6 +40,8 @@ from forge.tools.schemas import (
     CONTROL_PLANE_TOOLS,
     EXECUTION_PLANE_TOOL_DECLARATIONS,
     EXECUTION_PLANE_TOOLS,
+    MAIN_READ_ONLY_TOOL_NAMES,
+    MAIN_READ_ONLY_TOOL_DECLARATIONS,
 )
 from forge.workspace import Workspace
 from forge.world import WorldRuntime
@@ -123,8 +125,65 @@ class PendingAction:
 
 
 def _default_tool_schemas() -> list:
-    """主 AI 可见的控制面工具表（Phase 1：不含执行面工具）。"""
-    return list(CONTROL_PLANE_TOOL_DECLARATIONS)
+    """主 AI 可见：控制面 + 最小 READ_ONLY 子集（无 mutation）。"""
+    return list(CONTROL_PLANE_TOOL_DECLARATIONS) + list(MAIN_READ_ONLY_TOOL_DECLARATIONS)
+
+
+def _main_tool_policy_denied(tool_name: str) -> str | None:
+    """Layer-2 hard policy for main AI (beyond schema isolation).
+
+    Main may only run control-plane tools and MAIN_READ_ONLY.
+    """
+    name = (tool_name or "").strip()
+    if not name:
+        return "empty tool name"
+    if name in CONTROL_PLANE_TOOLS:
+        return None
+    if name in MAIN_READ_ONLY_TOOL_NAMES:
+        return None
+    if name in MUTATION_TOOL_NAMES or name in RECONCILIATION_TOOL_NAMES:
+        return (
+            f"main AI cannot execute mutation/reconciliation tool {name!r}; "
+            "delegate via spawn_subagent"
+        )
+    return (
+        f"main AI cannot execute tool {name!r}; "
+        "only control-plane and MAIN_READ_ONLY tools are allowed"
+    )
+
+
+def _record_main_tool_call(
+    project_root: str,
+    *,
+    tool_name: str,
+    arguments: dict,
+    result,
+) -> tuple[str | None, bool]:
+    """Write ToolCallRecord(actor=main). Returns (tool_call_id, record_written)."""
+    from forge.tool_call_record import (
+        ToolCallRecord,
+        current_timestamp,
+        new_tool_call_id,
+        write_record,
+    )
+
+    tool_call_id = new_tool_call_id()
+    status = "success" if getattr(result, "success", False) else "error"
+    error = None if status == "success" else (getattr(result, "display", None) or "error")
+    output = getattr(result, "payload", None)
+    rec = ToolCallRecord(
+        tool_call_id=tool_call_id,
+        subtask_id="",
+        tool_name=tool_name,
+        input=dict(arguments or {}),
+        output=output,
+        status=status,
+        error=error,
+        timestamp=current_timestamp(),
+        actor="main",
+    )
+    ok = bool(write_record(project_root, rec))
+    return tool_call_id, ok
 
 
 def _write_strategy(tool_name: str) -> str:
@@ -1536,8 +1595,13 @@ class Runtime:
                     continue
                 rec = get_record(workspace.project_root, tc_id)
                 ok = rec is not None
-                if ok and rec.get("subtask_id") and str(rec.get("subtask_id")) != sid:
-                    ok = False
+                if ok:
+                    if str(rec.get("actor") or "") == "main":
+                        ok = False
+                    else:
+                        rec_sid = str(rec.get("subtask_id") or "").strip()
+                        if not rec_sid or rec_sid != sid:
+                            ok = False
                 if not ok:
                     all_ok = False
                 evidence_results.append(
@@ -3415,6 +3479,44 @@ class Runtime:
                 return result.display or "request_human_intervention failed"
 
             for tc in resp.tool_calls:
+                denied = _main_tool_policy_denied(tc.name)
+                if denied is not None:
+                    from forge.adapters.base import ToolResult as _TR
+                    result = _TR.fail(
+                        display=(
+                            f"⛔ main tool policy refused: {denied}\n"
+                            "主 AI 仅可使用控制面工具与 MAIN_READ_ONLY；"
+                            "工程变更请 spawn_subagent。"
+                        )
+                    )
+                    tool_calls_n += 1
+                    self._last_tool_display = result.display or ""
+                    self._last_tool_name = tc.name
+                    self.emit(
+                        Event(
+                            EventType.TOOL_CALL_END,
+                            {
+                                "name": tc.name,
+                                "success": False,
+                                "display": result.display,
+                            },
+                        )
+                    )
+                    llm_tool_content = sanitize_and_redact(result.display or "")
+                    messages.append(ForgeMessage(
+                        role="tool",
+                        content=llm_tool_content,
+                        tool_call_id=getattr(tc, "id", None),
+                        name=tc.name,
+                    ))
+                    _append_conversation_log(
+                        self.workspace.project_root,
+                        "tool",
+                        result.display or "",
+                        name=tc.name,
+                        success=False,
+                    )
+                    continue
                 strategy = _write_strategy(tc.name)
                 if strategy == "FORGE_SYNC":
                     kind, payload = self._forge_sync_observe_or_pending(
@@ -3520,6 +3622,29 @@ class Runtime:
                 tool_calls_n += 1
                 self._last_tool_display = result.display or ""
                 self._last_tool_name = tc.name
+                # Main READ_ONLY: durable ToolCallRecord (actor=main), same ToolResult
+                record_id = None
+                record_ok = False
+                if tc.name in MAIN_READ_ONLY_TOOL_NAMES and guard is None:
+                    try:
+                        record_id, record_ok = _record_main_tool_call(
+                            self.workspace.project_root,
+                            tool_name=tc.name,
+                            arguments=getattr(tc, "arguments", None) or {},
+                            result=result,
+                        )
+                    except Exception as e:
+                        print(
+                            f"[forge] main ToolCallRecord write failed: {e}",
+                            file=sys.stderr,
+                        )
+                        record_id, record_ok = None, False
+                    if not record_ok:
+                        note = (
+                            "\n[durable evidence unavailable: "
+                            "ToolCallRecord write failed for this read]"
+                        )
+                        result.display = (result.display or "") + note
                 # P1-1: update Working Set from real tool outcome
                 try:
                     working_set.update_from_tool(
@@ -3547,7 +3672,15 @@ class Runtime:
 
                 # Untrusted tool text → LLM context: redact secrets + mark
                 # injection-like phrasing. Soft mitigation only; not a hard boundary.
-                llm_tool_content = sanitize_and_redact(result.display or "")
+                display_for_llm = result.display or ""
+                if record_id and record_ok:
+                    display_for_llm = f"tool_call_id={record_id}\n{display_for_llm}"
+                elif record_id and not record_ok:
+                    display_for_llm = (
+                        f"tool_call_id={record_id} (record_write_failed)\n"
+                        + display_for_llm
+                    )
+                llm_tool_content = sanitize_and_redact(display_for_llm)
                 messages.append(ForgeMessage(
                     role="tool",
                     content=llm_tool_content,

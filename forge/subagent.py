@@ -212,6 +212,7 @@ def _execute_tool(
         status=status,
         error=error,
         timestamp=current_timestamp(),
+        actor="subagent",
     )
     write_record(project_root, record)
     records_out.append(record)

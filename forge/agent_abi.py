@@ -288,7 +288,16 @@ def verify_evidence(
         rec = by_id.get(tc_id)
         if rec is None:
             continue
-        if _record_subtask_id(rec) and _record_subtask_id(rec) != subtask_id:
+        # Main-agent records never count as subtask Evidence.
+        actor = ""
+        if hasattr(rec, "actor"):
+            actor = str(getattr(rec, "actor") or "")
+        elif isinstance(rec, dict):
+            actor = str(rec.get("actor") or "")
+        if actor == "main":
+            continue
+        rec_sid = _record_subtask_id(rec)
+        if not rec_sid or rec_sid != subtask_id:
             continue
         seen.add(tc_id)
         verified.append(
@@ -495,11 +504,14 @@ def lookup_evidence_records(
     for ev in result.evidence:
         tc_id = (ev.tool_call_id or "").strip()
         rec = get_record(project_root, tc_id) if tc_id else None
-        # Optional subtask consistency: if record has subtask_id and result has one, match.
         ok = rec is not None
-        if ok and result.subtask_id and rec.get("subtask_id"):
-            if str(rec.get("subtask_id")) != str(result.subtask_id):
+        if ok:
+            if str(rec.get("actor") or "") == "main":
                 ok = False
+            elif result.subtask_id:
+                rec_sid = str(rec.get("subtask_id") or "").strip()
+                if not rec_sid or rec_sid != str(result.subtask_id):
+                    ok = False
         out.append(
             {
                 "tool_call_id": tc_id,
