@@ -1819,3 +1819,45 @@ WRITE_CONFIRM 分支在当前工具面下结构性不可达——不是死代码
 
 ### 测试
 全量：732 passed（基线 731 + 新增 1，无回归）。
+
+
+## P1：只读误确认 + 确认框语义 + Ctrl+C 软停止（2026-09-02）
+
+### 问题
+1. 子 AI 使用 ls/cat/head/grep 等只读 shell 命令侦查时，被 command_class 判为 unknown，进入确认流程，造成 confirmation fatigue。
+2. 确认框只接受“确认/confirm/yes/y/ok”，其余输入（包括“停止”“last”）都视为拒绝写入，用户控制输入被错误归类为 user_denied_write。
+3. 用户在运行中输入“停止”无效，Ctrl+C 会直接退出整个 Forge，缺少软停止路径。
+
+### 处理
+- forge/command_class_prefixes.py：
+  增加安全只读命令前缀 ls/cat/head/tail/wc/grep/rg/file/stat/du/df/
+  pwd/which/whereis/uname/whoami/id → read_only。
+- rg --pre / --pre-glob 强制 unknown，防止外部 preprocessor 任意执行。
+- find/env/xargs/sed/awk/python/bash/sh/node/less/date 不加入，保持 PAUSE。
+- compound shell 仍然 unknown → PAUSE。
+- forge/runtime.py：
+  增加 stop_requested；run() 捕获 KeyboardInterrupt 后软停并返回 forge>；
+  主循环 step/tool 边界检查 stop_requested；确认框 Ctrl+C 置位并上抛。
+- forge/subagent.py：
+  每个 step 前、每个 tool 前后检查 should_stop；
+  Ctrl+C / stop 时返回 exit_kind="user_stop"。
+- forge/agent_abi.py：
+  增加 user_stop exit_kind → STATUS_BLOCKED + reason，与 user_denied_write 区分。
+
+### 改动
+- forge/command_class_prefixes.py
+- forge/runtime.py
+- forge/subagent.py
+- forge/agent_abi.py
+- tests/test_command_class_prefixes.py
+- tests/test_command_classification_unified.py
+- tests/test_user_stop.py
+
+### 验证
+- 新增相关测试 27 passed
+- 全量：746 passed
+
+### 已知限制
+- 不支持运行中中文“停止”急停。
+- 不强制中断正在执行的 shell / LLM 请求。
+- STOP 后子 AI 已产生 evidence/上下文丢失，已记录为下一条 P1。
