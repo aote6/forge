@@ -270,6 +270,7 @@ def run_subagent(
     project_root: str | os.PathLike = ".",
     confirm_fn=None,
     emit=None,
+    should_stop=None,
 ) -> AgentResult:
     """Run an isolated tool loop; return machine-assembled AgentResult."""
     if not isinstance(task, AgentTask):
@@ -294,9 +295,38 @@ def run_subagent(
     last_text = ""
     records: list[ToolCallRecord] = []
 
+    def _stop() -> bool:
+        if should_stop is None:
+            return False
+        try:
+            return bool(should_stop())
+        except Exception:
+            return False
+
     try:
         for _ in range(max_steps):
-            resp = adapter.send(messages, schemas)
+            if _stop():
+                return _finalize(
+                    task,
+                    subtask_id=subtask_id,
+                    last_text=last_text,
+                    stop_when_met=False,
+                    exit_kind="user_stop",
+                    records=records,
+                    error_message="user_stop",
+                )
+            try:
+                resp = adapter.send(messages, schemas)
+            except KeyboardInterrupt:
+                return _finalize(
+                    task,
+                    subtask_id=subtask_id,
+                    last_text=last_text,
+                    stop_when_met=False,
+                    exit_kind="user_stop",
+                    records=records,
+                    error_message="user_stop",
+                )
             content = resp.content or ""
             signal = parse_stop_when(content)
 
@@ -331,6 +361,16 @@ def run_subagent(
                 )
             )
             for tc in resp.tool_calls:
+                if _stop():
+                    return _finalize(
+                        task,
+                        subtask_id=subtask_id,
+                        last_text=last_text or (content or "").strip(),
+                        stop_when_met=False,
+                        exit_kind="user_stop",
+                        records=records,
+                        error_message="user_stop",
+                    )
                 args = tc.arguments if isinstance(tc.arguments, dict) else {}
                 decision = enforce(tc.name, args, constraints)
                 if not decision.allowed:
@@ -386,6 +426,17 @@ def run_subagent(
                     summary = pause_summary(tc.name, args)
                     try:
                         approved = bool(confirm_fn(summary))
+                    except KeyboardInterrupt:
+                        last_text = content.strip()
+                        return _finalize(
+                            task,
+                            subtask_id=subtask_id,
+                            last_text=last_text,
+                            stop_when_met=False,
+                            exit_kind="user_stop",
+                            records=records,
+                            error_message="user_stop",
+                        )
                     except Exception as e:
                         last_text = content.strip()
                         return _finalize(
@@ -419,14 +470,37 @@ def run_subagent(
                     except Exception:
                         pass
                 before = build_workspace_manifest(project_root)
-                result, tool_call_id = _execute_tool(
-                    tools,
-                    tc,
-                    project_root=project_root,
-                    subtask_id=subtask_id,
-                    records_out=records,
-                )
+                try:
+                    result, tool_call_id = _execute_tool(
+                        tools,
+                        tc,
+                        project_root=project_root,
+                        subtask_id=subtask_id,
+                        records_out=records,
+                    )
+                except KeyboardInterrupt:
+                    last_text = content.strip()
+                    return _finalize(
+                        task,
+                        subtask_id=subtask_id,
+                        last_text=last_text,
+                        stop_when_met=False,
+                        exit_kind="user_stop",
+                        records=records,
+                        error_message="user_stop",
+                    )
                 after = build_workspace_manifest(project_root)
+                if _stop():
+                    last_text = content.strip()
+                    return _finalize(
+                        task,
+                        subtask_id=subtask_id,
+                        last_text=last_text,
+                        stop_when_met=False,
+                        exit_kind="user_stop",
+                        records=records,
+                        error_message="user_stop",
+                    )
                 if not authorized_write and gate == ALLOW:
                     if tc.name in VERIFY_TOOL_NAMES:
                         # VERIFY: authorized side effects are subtracted from diff.
@@ -511,6 +585,16 @@ def run_subagent(
             stop_when_met=False,
             exit_kind="max_steps",
             records=records,
+        )
+    except KeyboardInterrupt:
+        return _finalize(
+            task,
+            subtask_id=subtask_id,
+            last_text=last_text,
+            stop_when_met=False,
+            exit_kind="user_stop",
+            records=records,
+            error_message="user_stop",
         )
     except Exception as e:
         return _finalize(

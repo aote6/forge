@@ -157,7 +157,7 @@ class CandidateResult:
     uncertain: str = ""
     next: str = ""
     stop_when_met: bool = False
-    # Exit kind for assembler: "stop_when" | "no_tools" | "max_steps" | "error"
+    # Exit kind for assembler: "stop_when" | "no_tools" | "max_steps" | "error" | "user_stop" | ...
     exit_kind: str = "no_tools"
     error_message: str = ""
 
@@ -339,6 +339,9 @@ def assemble_agent_result(
     if exit_kind == "confirmation_unavailable":
         status = STATUS_BLOCKED
         reason = candidate.error_message or "confirmation_unavailable"
+    elif exit_kind == "user_stop":
+        status = STATUS_BLOCKED
+        reason = candidate.error_message or "user_stop"
     elif exit_kind == "user_denied_write":
         status = STATUS_BLOCKED
         reason = candidate.error_message or "user_denied_write"

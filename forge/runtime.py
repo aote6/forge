@@ -1300,6 +1300,8 @@ class Runtime:
         self.adapter = adapter
         self.workspace = workspace
         self._confirm_provider = confirm_provider
+        # Cooperative soft-stop (Ctrl+C during run). Not a state-machine phase.
+        self._stop_requested = False
         # Optional CLI presentation hooks (TerminalPresenter); not part of agent semantics.
         self._on_assistant_delta = None
         self._on_assistant_done = None
@@ -1480,6 +1482,9 @@ class Runtime:
                         return False
                     try:
                         return bool(self._confirm_provider(summary))
+                    except KeyboardInterrupt:
+                        self._stop_requested = True
+                        raise
                     except Exception:
                         return False
 
@@ -1491,10 +1496,13 @@ class Runtime:
                     project_root=workspace.project_root,
                     confirm_fn=_subagent_confirm,
                     emit=self.emit,
+                    should_stop=self.stop_requested,
                 )
                 # Machine precheck: re-verify evidence against on-disk ToolCallRecord
                 # before the main agent sees the result.
                 result = precheck_agent_result(workspace.project_root, result)
+                if "user_stop" in str(getattr(result, "status_reason", "") or ""):
+                    self._stop_requested = True
                 # Persist structured AgentResult by subtask_id (memory + JSONL)
                 # so main agent can call verify_subtask_evidence(subtask_id)
                 # without re-emitting machine identity through LLM text.
@@ -1822,6 +1830,9 @@ class Runtime:
                     return False
                 try:
                     return bool(self._confirm_provider(summary))
+                except KeyboardInterrupt:
+                    self._stop_requested = True
+                    raise
                 except Exception:
                     return False
 
@@ -1834,8 +1845,11 @@ class Runtime:
                     project_root=workspace.project_root,
                     confirm_fn=_subagent_confirm,
                     emit=self.emit,
+                    should_stop=self.stop_requested,
                 )
                 result = precheck_agent_result(workspace.project_root, result)
+                if "user_stop" in str(getattr(result, "status_reason", "") or ""):
+                    self._stop_requested = True
                 if result.subtask_id:
                     ar_dict = result.to_dict()
                     self._subagent_results[str(result.subtask_id)] = ar_dict
@@ -2967,6 +2981,14 @@ class Runtime:
                 break
         return event
 
+
+    def request_stop(self) -> None:
+        """Request cooperative soft-stop of the current turn (Ctrl+C during run)."""
+        self._stop_requested = True
+
+    def stop_requested(self) -> bool:
+        return bool(getattr(self, "_stop_requested", False))
+
     def run(self, task: str, task_id: str | None = None) -> str:
         """Continuous Conversation + Pending Action Gate.
 
@@ -3001,16 +3023,35 @@ class Runtime:
                 except Exception as e:
                     print(f"[forge] ABORTED→IDLE save failed: {e}", file=sys.stderr)
 
-        if self._pending_action is not None:
-            result = self._handle_pending_reply(task)
-        elif (
-            rs is not None
-            and rs.pending is not None
-            and rs.pending.kind == PENDING_KIND_HUMAN_INTERVENTION
+        self._stop_requested = False
+        try:
+            if self._pending_action is not None:
+                result = self._handle_pending_reply(task)
+            elif (
+                rs is not None
+                and rs.pending is not None
+                and rs.pending.kind == PENDING_KIND_HUMAN_INTERVENTION
+            ):
+                result = self._handle_human_intervention_reply(task)
+            else:
+                result = self._run_conversation(task)
+        except KeyboardInterrupt:
+            # Soft-stop path: never exit the REPL from inside run().
+            self._stop_requested = True
+            result = (
+                "已停止当前任务（Ctrl+C）。"
+                "可继续输入新任务；在 forge> 空闲时再按 Ctrl+C 退出。"
+            )
+
+        if self._stop_requested and not (
+            isinstance(result, str)
+            and result.startswith("已停止当前任务")
         ):
-            result = self._handle_human_intervention_reply(task)
-        else:
-            result = self._run_conversation(task)
+            # Subagent or loop set the flag without bubbling KI
+            result = (
+                "已停止当前任务（Ctrl+C）。"
+                "可继续输入新任务；在 forge> 空闲时再按 Ctrl+C 退出。"
+            )
 
         n = getattr(self, "_last_tool_calls", 0)
         print(f"[stats] tools={n}", file=sys.stderr)
@@ -3350,6 +3391,13 @@ class Runtime:
         # P2-3: 上一轮有成功 mutation → 下一轮补一次 progress checkpoint
         mutation_pending = False
         for step_i in range(MAX_AGENT_STEPS):
+            if self.stop_requested():
+                self._last_tool_calls = tool_calls_n
+                self._last_assistant_replies = assistant_replies
+                return (
+                    "已停止当前任务（Ctrl+C）。"
+                    "可继续输入新任务；在 forge> 空闲时再按 Ctrl+C 退出。"
+                )
             messages = _compress_messages(messages, working_set=working_set)
             # P2-3: checkpoint 是瞬时注入，每轮先丢弃上一轮那条再重建
             messages = [m for m in messages if not _is_checkpoint_message(m)]
@@ -3391,16 +3439,27 @@ class Runtime:
                     except Exception:
                         pass
 
-            send_stream = getattr(self.adapter, "send_stream", None)
-            if callable(send_stream):
-                try:
-                    resp = send_stream(messages, schemas, on_text_delta=_delta)
-                except Exception:
+            try:
+                send_stream = getattr(self.adapter, "send_stream", None)
+                if callable(send_stream):
+                    try:
+                        resp = send_stream(messages, schemas, on_text_delta=_delta)
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception:
+                        resp = self.adapter.send(messages, schemas)
+                        if resp.content and not getattr(self, "_assistant_streamed", False):
+                            _delta(resp.content)
+                else:
                     resp = self.adapter.send(messages, schemas)
-                    if resp.content and not getattr(self, "_assistant_streamed", False):
-                        _delta(resp.content)
-            else:
-                resp = self.adapter.send(messages, schemas)
+            except KeyboardInterrupt:
+                self._stop_requested = True
+                self._last_tool_calls = tool_calls_n
+                self._last_assistant_replies = assistant_replies
+                return (
+                    "已停止当前任务（Ctrl+C）。"
+                    "可继续输入新任务；在 forge> 空闲时再按 Ctrl+C 退出。"
+                )
             done_cb = getattr(self, "_on_assistant_done", None)
             if done_cb is not None:
                 try:
@@ -3486,6 +3545,13 @@ class Runtime:
                 return result.display or "request_human_intervention failed"
 
             for tc in resp.tool_calls:
+                if self.stop_requested():
+                    self._last_tool_calls = tool_calls_n
+                    self._last_assistant_replies = assistant_replies
+                    return (
+                        "已停止当前任务（Ctrl+C）。"
+                        "可继续输入新任务；在 forge> 空闲时再按 Ctrl+C 退出。"
+                    )
                 denied = _main_tool_policy_denied(tc.name)
                 if denied is not None:
                     from forge.adapters.base import ToolResult as _TR
