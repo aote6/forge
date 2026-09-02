@@ -8,18 +8,6 @@
 
 ## 待解决
 
-### 主 AI 决策权边界
-
-- [ ] 明确 Main AI / Subagent / Gate / User 的决策边界。
-  - 主 AI 默认负责理解任务、判断下一步和选择是否委托。
-  - 简单读取、已有工具可直接完成的观察任务，不应无条件 spawn 子 AI。
-  - 只有需要独立执行、并行探索、较大范围分析或其他明确理由时才委托子 AI。
-  - 外部副作用、不可逆操作或需要用户裁决的事项，必须进入 Gate / Pending Action。
-  - 已有充分证据时，主 AI 不应为了形式上的“再验证”机械增加子任务。
-  - READ / WRITE 应依据实际行为判断，而不是仅依据工具名称。
-  - 目标是从固定工作流恢复为由 Main AI 驱动的连续判断。
-  - 优先级：P1
-
 ### 架构审计遗留
 
 - [ ] Checkpoint clear 失败可能留下双文件。
@@ -60,8 +48,8 @@
 
 ### 子 AI prompt 审查
 
-- [ ] 子 AI system_prompt 审查：主 AI prompt 已改为控制层身份，但子 AI 的 SUBAGENT_SYSTEM 是否清晰表达「连续执行层」身份未审。
-  - 发现场景：Phase 3 后主 AI 行为契约落地，子 AI prompt 未同步审查。2026-09-01 代码确认：SUBAGENT_SYSTEM 无「先计划再执行」约束，只有「不要无限搜索」软提示。
+- [ ] 子 AI system_prompt 审查：主 AI prompt 已改为控制 + MAIN_READ_ONLY，但子 AI 的 SUBAGENT_SYSTEM 是否清晰表达「连续执行层」身份未审。
+  - 发现场景：P1 主 AI 控制 + MAIN_READ_ONLY 契约落地后，子 AI prompt 未同步审查。2026-09-01 代码确认：SUBAGENT_SYSTEM 无「先计划再执行」约束，只有「不要无限搜索」软提示。
   - 影响：子 AI 可能保留旧工具指令或身份模糊；简单任务也可能合法走出 20+ 次只读侦查。
   - 建议：审查 forge/subagent.py 里的 SUBAGENT_SYSTEM，确认其符合 Agent ABI v1.3 和 Execution Plane 定位；增加显式的计划约束或只读步数上限。
   - 优先级：P2

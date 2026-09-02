@@ -1760,3 +1760,38 @@ P1-5 / P1-6 之后 `verify_map` 已成为行为状态（精确清账 + pending_v
 - TODO 删除已完成项：R2 组合测试、glob_files、get_runtime_state。
 - TODO 新增「架构审计遗留」分组。
 - 新增 Core Contract Normative Audit 记录。
+
+## P1：主 AI MAIN_READ_ONLY + ToolCallRecord actor（2026-09-02）
+
+### 问题
+主 AI 被完全剥夺读权，导致派任务前盲猜、子 AI 被迫过度侦查、主 AI 无法形成准确判断。
+
+### 方案
+- 主 AI 恢复最小只读：
+  read_file / read_function / glob_files / search_code /
+  find_symbol_definition / get_repo_map / git_diff
+- 主 AI 仍禁止 mutation / reconciliation / shell / test。
+- 每次主 AI 真实只读调用产生 ToolCallRecord(actor="main")。
+- 子 AI 写入 actor="subagent"，旧 JSONL 默认 subagent。
+- main record 不得作为子任务 Evidence。
+- 主循环增加 _main_tool_policy_denied 第二层硬拒绝。
+- policy refusal 持久化到 self.conversation。
+
+### 改动
+- forge/tool_call_record.py：actor 字段 + 旧数据兼容
+- forge/tools/schemas.py：MAIN_READ_ONLY_*
+- forge/runtime.py：主循环 policy 拒绝 + main record + conversation 持久化
+- forge/subagent.py：显式 actor="subagent"
+- forge/agent_abi.py：Evidence 拒绝 actor=main
+- forge/system_prompt.py：主 AI 可只读、不可 mutation
+- tests：新增 test_main_read_tool_records.py；迁移旧契约测试
+
+### 文档同步
+- docs/MAIN_AGENT_BEHAVIOR.md
+- docs/MAIN_SUBAGENT_IMPLEMENTATION_DESIGN.md
+- docs/RUNTIME_STATE_CONTRACT.md
+- docs/AGENT_ABI.md
+- TODO.md 删除主 AI 决策权边界 P1
+
+### 验证
+- 全量：731 passed
