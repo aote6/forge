@@ -89,11 +89,17 @@
 
 ### 子 AI prompt 审查
 
-- [ ] 子 AI system_prompt 审查：主 AI prompt 已改为控制 + MAIN_READ_ONLY，但子 AI 的 SUBAGENT_SYSTEM 是否清晰表达「连续执行层」身份未审。
-  - 发现场景：P1 主 AI 控制 + MAIN_READ_ONLY 契约落地后，子 AI prompt 未同步审查。2026-09-01 代码确认：SUBAGENT_SYSTEM 无「先计划再执行」约束，只有「不要无限搜索」软提示。
-  - 影响：子 AI 可能保留旧工具指令或身份模糊；简单任务也可能合法走出 20+ 次只读侦查。
-  - 建议：审查 forge/subagent.py 里的 SUBAGENT_SYSTEM，确认其符合 Agent ABI v1.3 和 Execution Plane 定位；增加显式的计划约束或只读步数上限。
-  - 优先级：P2
+- [ ] 子 AI 执行层工具偏好不清晰：SUBAGENT_SYSTEM 未明确约束“只读优先专用工具、避免组合 shell”。
+  - 发现场景：
+    1. 2026-09-01 代码确认：SUBAGENT_SYSTEM 无「先计划再执行」约束，只有「不要无限搜索」软提示。
+    2. 2026-09-02 实测：子 AI 连续使用 `pwd && ls -la`、`git ... && ls | head` 等组合命令做只读侦查，触发本可避免的确认。
+  - 影响：专用只读工具被绕过；组合命令触发确认疲劳；审计和证据质量下降。
+  - 建议：在 SUBAGENT_SYSTEM 中明确：
+    - 只读侦查默认使用 read_file / glob_files / search_code / git_diff 等专用工具。
+    - run_command 仅在专用工具无法覆盖时使用。
+    - 禁止用 &&、|、; 等组合 shell 做日常侦查。
+  - 优先级：P1
+
 
 ### 系统集成能力
 
