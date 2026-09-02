@@ -10,6 +10,18 @@
 
 ### 主 AI 只读后行为风险
 
+- [ ] 用户喊“停止”后，主 AI / 子 AI 仍继续调用工具，无法可靠中断。
+  - 发现场景：2026-09-02 让主 AI 查两个文件是否为 Veritas object，主 AI 连续读文件、派子 AI、子 AI 又跑 run_command / glob / search，用户多次输入“停止”，工具循环仍继续。
+  - 影响：手机 terminal 场景下，用户唯一软中断手段失效，只能 Ctrl+C 杀进程。
+  - 建议：先只记录，不立即修。需要先确认工具循环中“用户中断”应该发生在哪个边界，以及正在执行的工具是否可安全中断。
+  - 优先级：P1
+
+- [ ] 子 AI 执行只读任务时被误拦为 user_denied_write。
+  - 发现场景：2026-09-02 子任务目标是查文件 object_id，但 read_file / run_command 只读命令多次被拦，最终 AgentResult blocked，evidence_count=0。
+  - 影响：只读侦查无法完成，主 AI 只能反复重派，进一步加剧过度侦查。
+  - 建议：先定位是 scope 解析、constraint_enforcer 还是 confirm_fn 导致只读被误判为写；先复现再修。
+  - 优先级：P1
+
 - [ ] 主 AI 可能把过度侦查从子 AI 转移到自己。
   - 发现场景：P1 给主 AI 开放 MAIN_READ_ONLY 后，主 AI 可能连续读取大量文件仍不形成判断，最后仍派宽泛任务。
   - 影响：token 浪费并未消失，只是从子循环转移到主循环。
