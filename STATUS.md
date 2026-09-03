@@ -1907,3 +1907,18 @@ WRITE_CONFIRM 分支在当前工具面下结构性不可达——不是死代码
 - 关联发现：
   - 控制面工具（resolve_sync_decision / spawn_subagent / get_runtime_state）不在 tool_call_records 记录范围。MAIN_READ_ONLY_TOOL_NAMES 双重用途（schema 暴露 + 审计记录条件），需解耦后单独处理（P1 TODO）。
   - conversation_log.jsonl 只存叙述文本，不存工具调用原始参数。审计追溯依赖 tool_call_records，但控制面工具全部缺失。
+
+### 2026-09-03 控制面工具审计集合落地（2bc9b29 + 3c7fe06）
+
+- 问题：控制面工具（resolve_sync_decision / spawn_subagent / get_runtime_state）不在 tool_call_records 记录范围。主 AI 控制面操作无审计痕迹，abort 被吞成 world_to_disk 的事故无法从日志坐实真实参数。
+- 根因：runtime.py:3730 用 MAIN_READ_ONLY_TOOL_NAMES 判断是否记录，该集合双重用途（schema 暴露 + 审计记录条件），控制面工具不在其中。
+- 修复：
+  - 新开 MAIN_AUDITED_TOOL_NAMES = MAIN_READ_ONLY_TOOL_NAMES | {resolve_sync_decision, spawn_subagent}，与 schema 暴露解耦
+  - 主循环条件改用 MAIN_AUDITED_TOOL_NAMES
+  - get_runtime_state 第一版不纳入（高频只读、低审计价值）
+  - ToolCallRecord.subtask_id 保持 ""（不扩 schema）
+- 测试：
+  - 单元：集合成员 + 控制面工具未泄漏进 READ_ONLY 暴露
+  - 集成：真实 Runtime 构造（Runtime(adapter, ws, MemoryStore())）走 _run_conversation → MAIN_AUDITED → _record_main_tool_call → tool_call_records.jsonl，覆盖 resolve_sync_decision 和 spawn_subagent
+- 验证：751 tests passed
+- 后续：get_runtime_state 是否纳入审计、ToolCallRecord schema 是否需要演进，留待需要时再决定
