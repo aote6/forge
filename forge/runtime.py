@@ -42,6 +42,7 @@ from forge.tools.schemas import (
     EXECUTION_PLANE_TOOLS,
     MAIN_READ_ONLY_TOOL_NAMES,
     MAIN_READ_ONLY_TOOL_DECLARATIONS,
+    MAIN_AUDITED_TOOL_NAMES,
 )
 from forge.workspace import Workspace
 from forge.world import WorldRuntime
@@ -3740,7 +3741,7 @@ class Runtime:
                 # Main READ_ONLY: durable ToolCallRecord (actor=main), same ToolResult
                 record_id = None
                 record_ok = False
-                if tc.name in MAIN_READ_ONLY_TOOL_NAMES and guard is None:
+                if tc.name in MAIN_AUDITED_TOOL_NAMES and guard is None:
                     try:
                         record_id, record_ok = _record_main_tool_call(
                             self.workspace.project_root,

@@ -756,6 +756,11 @@ MAIN_READ_ONLY_TOOL_DECLARATIONS = [
     d for d in READ_ONLY_TOOL_DECLARATIONS if d["name"] in MAIN_READ_ONLY_TOOL_NAMES
 ]
 
+MAIN_AUDITED_TOOL_NAMES = MAIN_READ_ONLY_TOOL_NAMES | frozenset({
+    "resolve_sync_decision",
+    "spawn_subagent",
+})
+
 
 # Execution plane — subagent only
 EXECUTION_PLANE_TOOL_DECLARATIONS = (

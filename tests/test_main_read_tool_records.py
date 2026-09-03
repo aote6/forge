@@ -133,3 +133,202 @@ def test_main_read_only_names_are_subset_of_read_only():
     read_names = {d["name"] for d in READ_ONLY_TOOL_DECLARATIONS}
     assert MAIN_READ_ONLY_TOOL_NAMES <= read_names
     assert MAIN_READ_ONLY_TOOL_NAMES.isdisjoint(MUTATION_TOOL_NAMES)
+
+
+def test_main_audited_tool_names_membership():
+    from forge.tools.schemas import (
+        MAIN_AUDITED_TOOL_NAMES,
+        MAIN_READ_ONLY_TOOL_NAMES,
+        MAIN_READ_ONLY_TOOL_DECLARATIONS,
+    )
+
+    # Original MAIN_READ_ONLY members must remain audited
+    for name in (
+        "read_file",
+        "read_function",
+        "glob_files",
+        "search_code",
+        "find_symbol_definition",
+        "get_repo_map",
+        "git_diff",
+    ):
+        assert name in MAIN_READ_ONLY_TOOL_NAMES
+        assert name in MAIN_AUDITED_TOOL_NAMES
+
+    assert "resolve_sync_decision" in MAIN_AUDITED_TOOL_NAMES
+    assert "spawn_subagent" in MAIN_AUDITED_TOOL_NAMES
+    assert "get_runtime_state" not in MAIN_AUDITED_TOOL_NAMES
+
+    # Control-plane tools must not leak into READ_ONLY exposure
+    assert "resolve_sync_decision" not in MAIN_READ_ONLY_TOOL_NAMES
+    assert "spawn_subagent" not in MAIN_READ_ONLY_TOOL_NAMES
+    decl_names = {d["name"] for d in MAIN_READ_ONLY_TOOL_DECLARATIONS}
+    assert "resolve_sync_decision" not in decl_names
+    assert "spawn_subagent" not in decl_names
+
+
+def test_main_loop_audits_resolve_sync_decision(tmp_path):
+    """Integration: resolve_sync_decision passes main-loop MAIN_AUDITED path."""
+    from forge.adapters.base import Message, ToolCall, ToolResult
+    from forge.conversation import Conversation
+    from forge.events import EventType
+    from forge.runtime import Runtime, ToolExecutor
+    from forge.workspace import Workspace
+
+    class _FakeAdapter:
+        def __init__(self, responses):
+            self._responses = list(responses)
+
+        def send(self, messages, schemas):
+            return self._responses.pop(0) if self._responses else Message(
+                role="assistant", content=""
+            )
+
+    class _Ex:
+        def execute(self, tc):
+            return ToolResult.ok(
+                display="resolve_sync_decision: abort",
+                payload={"direction": tc.arguments.get("direction")},
+            )
+
+    adapter = _FakeAdapter(
+        [
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="tc_rsd_1",
+                        name="resolve_sync_decision",
+                        arguments={"direction": "abort"},
+                    )
+                ],
+            ),
+            Message(role="assistant", content="done", tool_calls=None),
+        ]
+    )
+    rt = object.__new__(Runtime)
+    rt.adapter = adapter
+    rt.workspace = Workspace(project_root=str(tmp_path))
+    rt.conversation = Conversation()
+    rt.executor = _Ex()
+    rt._handlers = {t: [] for t in EventType}
+    rt._pending_action = None
+    rt._last_tool_calls = 0
+    rt._last_assistant_replies = []
+    rt.sync_layer = None
+    rt.world = None
+    rt._working_set = None
+    rt._stop_requested = False
+    rt._on_assistant_delta = None
+    rt._on_assistant_done = None
+    rt._assistant_streamed = False
+    rt._last_response_needs_display = False
+    rt._last_tool_display = ""
+    rt._last_tool_name = ""
+
+    rt._run_conversation("resolve abort")
+
+    records_path = tmp_path / ".forge" / "tool_call_records.jsonl"
+    assert records_path.is_file(), "expected tool_call_records.jsonl from main audit path"
+    lines = [
+        ln for ln in records_path.read_text(encoding="utf-8").splitlines() if ln.strip()
+    ]
+    assert lines, "expected at least one ToolCallRecord"
+    import json
+
+    found = None
+    for ln in lines:
+        rec = json.loads(ln)
+        if rec.get("tool_name") == "resolve_sync_decision":
+            found = rec
+            break
+    assert found is not None
+    assert found["actor"] == "main"
+    assert found["tool_name"] == "resolve_sync_decision"
+    assert found["input"]["direction"] == "abort"
+
+
+def test_main_loop_audits_spawn_subagent(tmp_path):
+    """Integration: spawn_subagent goes through same main-loop audit path."""
+    from forge.adapters.base import Message, ToolCall, ToolResult
+    from forge.conversation import Conversation
+    from forge.events import EventType
+    from forge.runtime import Runtime
+    from forge.workspace import Workspace
+
+    class _FakeAdapter:
+        def __init__(self, responses):
+            self._responses = list(responses)
+
+        def send(self, messages, schemas):
+            return self._responses.pop(0) if self._responses else Message(
+                role="assistant", content=""
+            )
+
+    class _Ex:
+        def execute(self, tc):
+            # Do not spawn a real sub-Runtime; only exercise audit path.
+            return ToolResult.ok(
+                display="spawn_subagent mocked",
+                payload={"goal": (tc.arguments or {}).get("goal")},
+            )
+
+    adapter = _FakeAdapter(
+        [
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="tc_spawn_1",
+                        name="spawn_subagent",
+                        arguments={
+                            "goal": "noop",
+                            "done_when": "done",
+                            "stop_when": "stop",
+                        },
+                    )
+                ],
+            ),
+            Message(role="assistant", content="done", tool_calls=None),
+        ]
+    )
+    rt = object.__new__(Runtime)
+    rt.adapter = adapter
+    rt.workspace = Workspace(project_root=str(tmp_path))
+    rt.conversation = Conversation()
+    rt.executor = _Ex()
+    rt._handlers = {t: [] for t in EventType}
+    rt._pending_action = None
+    rt._last_tool_calls = 0
+    rt._last_assistant_replies = []
+    rt.sync_layer = None
+    rt.world = None
+    rt._working_set = None
+    rt._stop_requested = False
+    rt._on_assistant_delta = None
+    rt._on_assistant_done = None
+    rt._assistant_streamed = False
+    rt._last_response_needs_display = False
+    rt._last_tool_display = ""
+    rt._last_tool_name = ""
+
+    rt._run_conversation("spawn")
+
+    records_path = tmp_path / ".forge" / "tool_call_records.jsonl"
+    assert records_path.is_file()
+    import json
+
+    lines = [
+        ln for ln in records_path.read_text(encoding="utf-8").splitlines() if ln.strip()
+    ]
+    found = None
+    for ln in lines:
+        rec = json.loads(ln)
+        if rec.get("tool_name") == "spawn_subagent":
+            found = rec
+            break
+    assert found is not None
+    assert found["actor"] == "main"
+    assert found["tool_name"] == "spawn_subagent"
