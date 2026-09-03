@@ -2217,10 +2217,14 @@ class Runtime:
             # keep RuntimeState.pending aligned
         elif (
             existing is not None
-            and existing.status in (STATUS_DECIDED, STATUS_ABORTED)
+            and existing.status == STATUS_DECIDED
             and existing.basis == status
         ):
-            # Already resolved for this basis — do not re-open Gate.
+            # Already decided for this basis — do not re-open Gate.
+            # ABORTED is intentionally NOT included here: abort is a terminal
+            # state for that specific decision, not a permanent veto for the
+            # same basis. A later detect with the same basis must open a new
+            # PENDING decision so the user can choose a fresh direction.
             self.sync_decision = existing
             return
         else:
