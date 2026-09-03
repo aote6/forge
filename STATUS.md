@@ -1887,3 +1887,13 @@ WRITE_CONFIRM 分支在当前工具面下结构性不可达——不是死代码
 - 改一行注释消耗 32 个工具，多次额外确认。
 - 子 AI 仍偏好组合 shell 做只读侦查。
 - sync_decision 处理路径过重，payload.basis 与 summary 不一致增加侦查成本。
+
+### 2026-09-03 sync_decision stale PENDING 跨 basis 复用修复（a0c55da）
+
+- 问题：`_maybe_open_sync_decision` 复用旧 PENDING 时只检查 `status == PENDING`，未检查 `basis == status`。导致 summary 用当前 detect status，payload.basis 用旧 decision.basis，三处数据不一致。实机中主 AI 看到 summary=FAST_FORWARD vs payload.basis=CONFLICT，被迫读源码核实，消耗大量工具调用。
+- 根因：两个写入点用了不同来源变量。`summary = f"...basis={status}"` vs `payload["basis"] = decision.basis`。
+- 修复：第一个 if 加 `existing.basis == status`；summary 改用 `decision.basis`；stale PENDING 被覆盖前打印 stderr supersession 日志（不新增持久化状态）。
+- 验证：
+  - 746 tests passed
+  - 实机：旧 CONFLICT PENDING + 新 detect FAST_FORWARD → supersession 日志正确，get_runtime_state 三处一致，主 AI 从 32 tools 降到 12 tools
+- 新发现：主 AI 在用户选 abort 时实际传了 world_to_disk（参数惯性），工具回显方向与口头声明不符。与 scope 双编码同类，归入"主 AI → tool ABI 参数构造可靠性"问题。待后续统一处理。

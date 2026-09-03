@@ -141,10 +141,10 @@
 - [ ] FAST_FORWARD 方向唯一时，同步流程过度仪式化。
   - 发现场景：
     1. 2026-09-01 forge_sync 实际运行中，系统已知方向唯一，仍走 resolve_sync_decision → spawn_subagent → 确认 → forge_sync → verify 全套流程。
-    2. 2026-09-03 主 AI 为处理一个方向唯一的 sync_decision，连续读多个同步状态/决策/代码文件，消耗大量只读工具后才 resolve；payload.basis 与 summary 不一致进一步加重侦查成本。
   - 影响：简单同步也变成多步状态机，用户和主 AI 都被流程拖着走。
   - 建议：方向唯一时允许主 AI 直接说明并请求确认，用户确认后走最短路径执行，不强制经过完整 decision + subagent 仪式。
   - 优先级：P2
+  - 注：2026-09-03 已修复 payload.basis 与 summary 不一致 bug（stale PENDING 跨 basis 复用），主 AI 被迫侦查部分已消除。
 
 - [ ] Forge 没有「代价预算」，主 AI 派发前不算成本，双循环都无真实工具调用预算。
   - 发现场景：简单任务被过度执行，子 AI 无限侦查。2026-09-01 发一条嘟文的任务中，子 AI 执行 20+ 次只读侦查才进入 post_toot。
