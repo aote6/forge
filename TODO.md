@@ -154,7 +154,8 @@
 
 - [ ] 主 AI 判断本身没有被验证，它是最高裁判但没有更高一层查它。
   - 影响：主 AI 判断错误时没有任何机制阻止。
-  - 建议方向：用户可用的 verify 或主 AI 判断审计日志。
+  - 进度：2026-09-03 已落地 MAIN_AUDITED_TOOL_NAMES，resolve_sync_decision / spawn_subagent 的控制面调用开始有审计记录。剩余缺口：其他判断（读什么、派什么任务）仍无验证通道。
+  - 建议方向：用户可用的 verify 或主 AI 判断审计日志（已部分落地）。
   - 优先级：P2（架构哲学）
 
 - [ ] 用户是最终裁决者，但用户没有独立验证工具。
@@ -218,12 +219,3 @@
   - 优先级：P2
 
 
-- [ ] 控制面工具调用无审计：resolve_sync_decision / spawn_subagent / get_runtime_state 等不在 tool_call_records 记录范围内。
-  - 发现场景：2026-09-03 实机中主 AI 用户选 abort 但实际存了 world_to_disk，事后无法从日志坐实真实传入参数。conversation_log.jsonl 只存叙述文本；tool_call_records.jsonl 只记录 MAIN_READ_ONLY_TOOL_NAMES 里 7 个只读工具。
-  - 根因：runtime.py:3730 用 MAIN_READ_ONLY_TOOL_NAMES 判断是否记录，该集合同时驱动 schema 暴露范围（双重用途）。
-  - 影响：主 AI 控制面操作（决议方向、派子任务、读状态）全部无审计痕迹，用户意图被篡改时无法追溯。
-  - 建议：
-    1. 新开独立集合 MAIN_AUDITED_TOOL_NAMES（与 MAIN_READ_ONLY_TOOL_NAMES 解耦），不破坏 mutation policy schema 层防线。
-    2. 决定 get_runtime_state 这种高频只读查询是否记录，还是只记状态变更类。
-    3. 评估 ToolCallRecord.subtask_id 对控制面调用永远为空是否够用。
-  - 优先级：P1
