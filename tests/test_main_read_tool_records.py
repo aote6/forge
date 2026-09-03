@@ -168,14 +168,23 @@ def test_main_audited_tool_names_membership():
 
 
 def test_main_loop_audits_resolve_sync_decision(tmp_path):
-    """Integration: resolve_sync_decision passes main-loop MAIN_AUDITED path."""
+    """Integration: resolve_sync_decision passes main-loop MAIN_AUDITED path.
+
+    Runtime is constructed via the real constructor (same pattern as
+    tests/test_user_stop.py). Adapter/executor are mocked; the test still
+    drives _run_conversation → per-tool-call loop → MAIN_AUDITED_TOOL_NAMES
+    → _record_main_tool_call → .forge/tool_call_records.jsonl.
+    """
+    import json
+
     from forge.adapters.base import Message, ToolCall, ToolResult
-    from forge.conversation import Conversation
-    from forge.events import EventType
-    from forge.runtime import Runtime, ToolExecutor
+    from forge.memory import MemoryStore
+    from forge.runtime import Runtime
     from forge.workspace import Workspace
 
     class _FakeAdapter:
+        model_name = "t"
+
         def __init__(self, responses):
             self._responses = list(responses)
 
@@ -185,10 +194,14 @@ def test_main_loop_audits_resolve_sync_decision(tmp_path):
             )
 
     class _Ex:
+        """Stub executor: avoid real sync/subagent side effects."""
+
+        tools: dict = {}
+
         def execute(self, tc):
             return ToolResult.ok(
                 display="resolve_sync_decision: abort",
-                payload={"direction": tc.arguments.get("direction")},
+                payload={"direction": (tc.arguments or {}).get("direction")},
             )
 
     adapter = _FakeAdapter(
@@ -207,25 +220,10 @@ def test_main_loop_audits_resolve_sync_decision(tmp_path):
             Message(role="assistant", content="done", tool_calls=None),
         ]
     )
-    rt = object.__new__(Runtime)
-    rt.adapter = adapter
-    rt.workspace = Workspace(project_root=str(tmp_path))
-    rt.conversation = Conversation()
+    ws = Workspace(project_root=str(tmp_path))
+    rt = Runtime(adapter, ws, MemoryStore())
+    # Replace only the executor after real construction (expensive tools mocked).
     rt.executor = _Ex()
-    rt._handlers = {t: [] for t in EventType}
-    rt._pending_action = None
-    rt._last_tool_calls = 0
-    rt._last_assistant_replies = []
-    rt.sync_layer = None
-    rt.world = None
-    rt._working_set = None
-    rt._stop_requested = False
-    rt._on_assistant_delta = None
-    rt._on_assistant_done = None
-    rt._assistant_streamed = False
-    rt._last_response_needs_display = False
-    rt._last_tool_display = ""
-    rt._last_tool_name = ""
 
     rt._run_conversation("resolve abort")
 
@@ -235,7 +233,6 @@ def test_main_loop_audits_resolve_sync_decision(tmp_path):
         ln for ln in records_path.read_text(encoding="utf-8").splitlines() if ln.strip()
     ]
     assert lines, "expected at least one ToolCallRecord"
-    import json
 
     found = None
     for ln in lines:
@@ -250,14 +247,20 @@ def test_main_loop_audits_resolve_sync_decision(tmp_path):
 
 
 def test_main_loop_audits_spawn_subagent(tmp_path):
-    """Integration: spawn_subagent goes through same main-loop audit path."""
+    """Integration: spawn_subagent goes through same main-loop audit path.
+
+    Real Runtime(...) construction; executor stubbed so no real sub-Runtime runs.
+    """
+    import json
+
     from forge.adapters.base import Message, ToolCall, ToolResult
-    from forge.conversation import Conversation
-    from forge.events import EventType
+    from forge.memory import MemoryStore
     from forge.runtime import Runtime
     from forge.workspace import Workspace
 
     class _FakeAdapter:
+        model_name = "t"
+
         def __init__(self, responses):
             self._responses = list(responses)
 
@@ -267,6 +270,8 @@ def test_main_loop_audits_spawn_subagent(tmp_path):
             )
 
     class _Ex:
+        tools: dict = {}
+
         def execute(self, tc):
             # Do not spawn a real sub-Runtime; only exercise audit path.
             return ToolResult.ok(
@@ -294,32 +299,14 @@ def test_main_loop_audits_spawn_subagent(tmp_path):
             Message(role="assistant", content="done", tool_calls=None),
         ]
     )
-    rt = object.__new__(Runtime)
-    rt.adapter = adapter
-    rt.workspace = Workspace(project_root=str(tmp_path))
-    rt.conversation = Conversation()
+    ws = Workspace(project_root=str(tmp_path))
+    rt = Runtime(adapter, ws, MemoryStore())
     rt.executor = _Ex()
-    rt._handlers = {t: [] for t in EventType}
-    rt._pending_action = None
-    rt._last_tool_calls = 0
-    rt._last_assistant_replies = []
-    rt.sync_layer = None
-    rt.world = None
-    rt._working_set = None
-    rt._stop_requested = False
-    rt._on_assistant_delta = None
-    rt._on_assistant_done = None
-    rt._assistant_streamed = False
-    rt._last_response_needs_display = False
-    rt._last_tool_display = ""
-    rt._last_tool_name = ""
 
     rt._run_conversation("spawn")
 
     records_path = tmp_path / ".forge" / "tool_call_records.jsonl"
     assert records_path.is_file()
-    import json
-
     lines = [
         ln for ln in records_path.read_text(encoding="utf-8").splitlines() if ln.strip()
     ]
