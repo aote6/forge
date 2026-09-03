@@ -1897,3 +1897,13 @@ WRITE_CONFIRM 分支在当前工具面下结构性不可达——不是死代码
   - 746 tests passed
   - 实机：旧 CONFLICT PENDING + 新 detect FAST_FORWARD → supersession 日志正确，get_runtime_state 三处一致，主 AI 从 32 tools 降到 12 tools
 - 新发现：主 AI 在用户选 abort 时实际传了 world_to_disk（参数惯性），工具回显方向与口头声明不符。与 scope 双编码同类，归入"主 AI → tool ABI 参数构造可靠性"问题。待后续统一处理。
+
+### 2026-09-03 resolve_sync_decision 方向不一致校验修复（018e6db）
+
+- 问题：`resolve_sync_decision` 幂等分支在 decision 已非 PENDING 时直接返回已有决策，不校验传入 direction 与已存 decision.direction 是否一致。用户选 abort 时，若已有 decision 是 world_to_disk/decided，新方向被静默吞掉。
+- 根因：幂等分支将「无决议对象」和「已决议但方向不同」两种情况混为一类处理，只检查状态类别不检查方向字段。与之前 stale PENDING 跨 basis 复用是同一形状的缺陷。
+- 修复：幂等分支开头加校验，`decision.direction != direction` 时 raise ValueError。同方向重复调用保持幂等不变。新增 2 个回归测试锁定行为（方向不一致拒绝 + 同方向幂等）。
+- 验证：748 tests passed（新增 test_resolve_sync_decision_direction_mismatch.py）。
+- 关联发现：
+  - 控制面工具（resolve_sync_decision / spawn_subagent / get_runtime_state）不在 tool_call_records 记录范围。MAIN_READ_ONLY_TOOL_NAMES 双重用途（schema 暴露 + 审计记录条件），需解耦后单独处理（P1 TODO）。
+  - conversation_log.jsonl 只存叙述文本，不存工具调用原始参数。审计追溯依赖 tool_call_records，但控制面工具全部缺失。
