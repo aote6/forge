@@ -25,12 +25,6 @@
   - 建议：user_stop 路径的 AgentResult 至少携带已执行工具摘要、已产生 evidence、原 AgentTask 摘要、停止原因；不做完整子任务持久化。
   - 优先级：P1
 
-- [ ] 子 AI 执行只读任务时被误拦为 user_denied_write。
-  - 发现场景：2026-09-02 子任务目标是查文件 object_id，但 read_file / run_command 只读命令多次被拦，最终 AgentResult blocked，evidence_count=0。
-  - 影响：只读侦查无法完成，主 AI 只能反复重派，进一步加剧过度侦查。
-  - 建议：先定位是 scope 解析、constraint_enforcer 还是 confirm_fn 导致只读被误判为写；先复现再修。
-  - 优先级：P1
-
 - [ ] 主 AI 可能把过度侦查从子 AI 转移到自己。
   - 发现场景：P1 给主 AI 开放 MAIN_READ_ONLY 后，主 AI 可能连续读取大量文件仍不形成判断，最后仍派宽泛任务。
   - 影响：token 浪费并未消失，只是从子循环转移到主循环。
@@ -132,10 +126,10 @@
   - 建议：新增控制面工具 list_recent_subtasks(limit=N)，返回最近 N 个 AgentResult 摘要。
   - 优先级：P3
 
-- [ ] 全局停止/暂停/放弃机制未实现。
-  - 现状：只有用户 q 或 Ctrl+C，无法只暂停子任务而保留主对话。
-  - 影响：子 AI 长任务跑偏时只能中断整个进程。
-  - 建议：基于 RuntimeState 设计全局信号（STOP / PAUSE / ABORT）。
+- [ ] 缺少独立 PAUSE / ABORT 语义，Ctrl+C 目前只能软停当前 turn。
+  - 现状：已支持运行中 Ctrl+C 软停并回到 forge>；尚不支持只停子任务但主对话继续等待，或显式 ABORT 清理 pending。
+  - 影响：子 AI 长任务跑偏时，只能软停整个当前 turn，不能单独暂停子任务后继续主对话。
+  - 建议：基于现有 stop_requested 和 RuntimeState 增加轻量 PAUSE / ABORT 信号，不引入复杂状态机。
   - 优先级：P2
 
 ### 主从分工 / 行为契约
@@ -144,12 +138,6 @@
   - 发现场景：删仓库、发垃圾嘟文、贴 API key 等语义上有害但技术可行的请求无法识别。
   - 建议方向：不做「AI 拒绝权」，做「风险提示 + 确认 + 极危险硬拦截」。
   - 优先级：P1（待深入研究）
-
-- [ ] 子循环只读工具反复弹确认，用户对大量只读操作也要逐条确认。
-  - 发现场景：2026-09-01 发嘟文任务中，子 AI 执行 20+ 次只读侦查，每次 run_command / read_file 都弹确认，真正需要确认的只有最后 post_toot。
-  - 影响：确认疲劳，用户无法区分关键写操作和普通只读侦查。主 AI 只读已放行，子循环若仍逐条确认，体验割裂更明显。
-  - 建议：子循环只读工具默认放行，仅 mutation / 外部副作用弹确认。
-  - 优先级：P1
 
 - [ ] FAST_FORWARD 方向唯一时，同步流程过度仪式化。
   - 发现场景：2026-09-01 forge_sync 实际运行中，系统已知方向唯一，仍走 resolve_sync_decision → spawn_subagent → 确认 → forge_sync → verify 全套流程。
