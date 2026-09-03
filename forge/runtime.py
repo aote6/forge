@@ -7,11 +7,11 @@ Production path (唯一):
     → ToolExecutor → IntentExecutor → Veritas commit/abort → Projection
 """
 from __future__ import annotations
+import sys
 
 import json
 import os
 import re
-import sys
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -2207,7 +2207,11 @@ class Runtime:
             return
 
         existing = self._sync_decision_store.load()
-        if existing is not None and existing.status == STATUS_PENDING:
+        if (
+            existing is not None
+            and existing.status == STATUS_PENDING
+            and existing.basis == status
+        ):
             decision = existing
             # keep RuntimeState.pending aligned
         elif (
@@ -2219,12 +2223,24 @@ class Runtime:
             self.sync_decision = existing
             return
         else:
+            if existing is not None and existing.status == STATUS_PENDING:
+                # Stale PENDING for a basis that no longer applies — the
+                # user never resolved it, but detect() has since moved on.
+                # Single-slot store, no history log by design: at minimum
+                # log the supersession so it isn't silently lost, and note
+                # the old decision_id is now invalid for resolve calls.
+                print(
+                    f"[sync] superseding unresolved decision "
+                    f"{existing.decision_id} (basis={existing.basis}) "
+                    f"with new basis={status}; old decision_id now invalid",
+                    file=sys.stderr,
+                )
             decision = SyncDecision.new_pending(basis=status)
             self._sync_decision_store.save(decision)
 
         self.sync_decision = decision
         detail = getattr(report, "detail", "") or ""
-        summary = f"sync_decision required: basis={status}"
+        summary = f"sync_decision required: basis={decision.basis}"
         if detail:
             summary = f"{summary} detail={detail}"
         self.runtime_state.phase = PHASE_AWAITING_USER
@@ -2899,7 +2915,6 @@ class Runtime:
                         )
                     )
         except Exception as e:
-            import sys
             print(f"[sync] external-change guard failed: {e}", file=sys.stderr)
         return None
 
@@ -3372,7 +3387,6 @@ class Runtime:
             elif needs_clarify(task):
                 messages.append(ForgeMessage(role="user", content=clarification_message()))
         except Exception as e:
-            import sys
             print(f"[forge] goal_clarify unavailable: {e}", file=sys.stderr)
 
         tool_calls_n = 0
