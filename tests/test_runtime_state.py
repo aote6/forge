@@ -304,3 +304,71 @@ def test_get_runtime_state_human_intervention_pending(tmp_path: Path):
 
     after = (tmp_path / ".forge" / "runtime_state.json").read_text(encoding="utf-8")
     assert after == before
+
+def test_get_runtime_state_fast_forward_has_next_action(tmp_path: Path):
+    from forge.runtime import Runtime
+    from forge.runtime_state import (
+        PENDING_KIND_SYNC_DECISION,
+        RuntimeState,
+        RuntimeStateStore,
+        Pending,
+        PHASE_AWAITING_USER,
+    )
+
+    st = RuntimeState(
+        phase=PHASE_AWAITING_USER,
+        pending=Pending(
+            kind=PENDING_KIND_SYNC_DECISION,
+            summary="basis=FAST_FORWARD_WORLD_TO_DISK",
+            payload={
+                "basis": "FAST_FORWARD_WORLD_TO_DISK",
+                "decision_id": "sd_test_ff",
+            },
+        ),
+    )
+    store = RuntimeStateStore(tmp_path)
+    store.save(st)
+
+    rt = object.__new__(Runtime)
+    rt.runtime_state = store.load()
+    rt.recovery = rt.runtime_state.recovery
+    rt._runtime_state_store = store
+
+    res = Runtime.get_runtime_state(rt)
+    assert res.success is True
+    assert res.payload["pending"]["next_action"] == {
+        "tool": "resolve_sync_decision",
+        "reason": "basis 唯一，无需侦查",
+    }
+
+
+def test_get_runtime_state_human_intervention_no_next_action(tmp_path: Path):
+    # human_intervention 的 pending.kind 不是 sync_decision，next_action 必须为 None，
+    # 即便 payload 里意外出现类似 FAST_FORWARD 字样的 reason 字段。
+    from forge.runtime import Runtime
+    from forge.runtime_state import (
+        PENDING_KIND_HUMAN_INTERVENTION,
+        RuntimeState,
+        RuntimeStateStore,
+        Pending,
+        PHASE_AWAITING_USER,
+    )
+
+    st = RuntimeState(
+        phase=PHASE_AWAITING_USER,
+        pending=Pending(
+            kind=PENDING_KIND_HUMAN_INTERVENTION,
+            summary="need choice",
+            payload={"reason": "FAST_FORWARD-looking text but wrong kind"},
+        ),
+    )
+    store = RuntimeStateStore(tmp_path)
+    store.save(st)
+
+    rt = object.__new__(Runtime)
+    rt.runtime_state = store.load()
+    rt.recovery = rt.runtime_state.recovery
+    rt._runtime_state_store = store
+
+    res = Runtime.get_runtime_state(rt)
+    assert res.payload["pending"]["next_action"] is None

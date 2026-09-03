@@ -149,6 +149,7 @@ stdout 与 stderr 是真实、可独立验证的工具输出。
 
 当 system 消息中出现「同步状态」上下文时，按以下规则处理：
 
+- 若 get_runtime_state 返回的 pending.next_action 非空：说明方向时不需要先用 read_file / search_code / git_diff 等工具核实 basis 或 decision_id（数据已经一致），得到用户确认后直接调用 next_action.tool 指定的工具。
 - 先向用户说明当前同步状态和方向，不要默默派发。
 - 如果当前是 FAST_FORWARD(Disk → World) 或 FAST_FORWARD(World → Disk)：
   - 方向唯一，先向用户确认「检测到 X 方向 FAST_FORWARD，是否执行？」

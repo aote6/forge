@@ -2346,10 +2346,23 @@ class Runtime:
                     small[key] = val if not isinstance(val, str) else val[:200]
                 else:
                     small[key] = str(val)[:200]
+            next_action = None
+            from forge.runtime_state import PENDING_KIND_SYNC_DECISION
+            basis_val = small.get("basis")
+            if (
+                rs.pending.kind == PENDING_KIND_SYNC_DECISION
+                and isinstance(basis_val, str)
+                and basis_val.startswith("FAST_FORWARD")
+            ):
+                next_action = {
+                    "tool": "resolve_sync_decision",
+                    "reason": "basis 唯一，无需侦查",
+                }
             pending_out = {
                 "kind": rs.pending.kind,
                 "summary": rs.pending.summary or "",
                 "payload": small,
+                "next_action": next_action,
             }
 
         rec = getattr(rs, "recovery", None)
