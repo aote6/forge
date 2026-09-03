@@ -2280,6 +2280,19 @@ class Runtime:
 
         decision = self._sync_decision_store.load()
         if decision is None or decision.status != STATUS_PENDING:
+            if decision is not None and decision.direction != direction:
+                # Already resolved to a *different* direction than what's
+                # being requested now — this is not a safe no-op. Silently
+                # returning the stale decision here is exactly the bug
+                # class that caused abort to be swallowed as world_to_disk.
+                raise ValueError(
+                    f"SyncDecision {decision.decision_id} already resolved "
+                    f"as direction={decision.direction!r} (status="
+                    f"{decision.status!r}); refusing to silently return it "
+                    f"for a new direction={direction!r} request. If this "
+                    "call is intentional, resolve against a fresh "
+                    "SyncDecision instead."
+                )
             # Idempotent: clear residual sync_decision index only (not HI).
             if (
                 self.runtime_state.pending is not None
