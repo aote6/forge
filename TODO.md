@@ -37,11 +37,9 @@
   - 建议：验证主 AI 在需要执行面验证时是否仍会 spawn；必要时在 prompt 或 AgentTask 构造层补强。
   - 优先级：P2
 
-- [ ] 主 AI 被 mutation policy 拒绝后，可能不会优雅转去 spawn_subagent。
-  - 发现场景：主 AI 想 write_file / str_replace，被 _main_tool_policy_denied 拒绝后，可能反复尝试或直接对用户说“不能做”。
-  - 影响：用户任务中断，主 AI 没有完成“拒绝 → 委托”的闭环。
-  - 建议：P1 落地后优先实际验证；必要时在 system_prompt 增加“被拒 mutation 后应改派子 AI”的明确指引。
-  - 优先级：P1
+- [x] 主 AI 被 mutation policy 拒绝后，不会优雅转去 spawn_subagent。
+  - 验证结果：2026-09-03 实机测试“种错字→修复错字”链路，主 AI 未尝试直接 mutation，而是主动 resolve_sync_decision 后派子 AI 执行写入；主从委托闭环成立。
+  - 状态：已关闭。
 
 ### 架构审计遗留
 
@@ -87,6 +85,7 @@
   - 发现场景：
     1. 2026-09-01 代码确认：SUBAGENT_SYSTEM 无「先计划再执行」约束，只有「不要无限搜索」软提示。
     2. 2026-09-02 实测：子 AI 连续使用 `pwd && ls -la`、`git ... && ls | head` 等组合命令做只读侦查，触发本可避免的确认。
+    3. 2026-09-03 全链路验证：改一行 docstring，子 AI 多次用 `pwd && ls && head`、`cat ... | head` 等组合命令侦查，导致多次额外确认；最终全链路消耗 32 个工具。
   - 影响：专用只读工具被绕过；组合命令触发确认疲劳；审计和证据质量下降。
   - 建议：在 SUBAGENT_SYSTEM 中明确：
     - 只读侦查默认使用 read_file / glob_files / search_code / git_diff 等专用工具。
@@ -140,7 +139,9 @@
   - 优先级：P1（待深入研究）
 
 - [ ] FAST_FORWARD 方向唯一时，同步流程过度仪式化。
-  - 发现场景：2026-09-01 forge_sync 实际运行中，系统已知方向唯一，仍走 resolve_sync_decision → spawn_subagent → 确认 → forge_sync → verify 全套流程。
+  - 发现场景：
+    1. 2026-09-01 forge_sync 实际运行中，系统已知方向唯一，仍走 resolve_sync_decision → spawn_subagent → 确认 → forge_sync → verify 全套流程。
+    2. 2026-09-03 主 AI 为处理一个方向唯一的 sync_decision，连续读多个同步状态/决策/代码文件，消耗大量只读工具后才 resolve；payload.basis 与 summary 不一致进一步加重侦查成本。
   - 影响：简单同步也变成多步状态机，用户和主 AI 都被流程拖着走。
   - 建议：方向唯一时允许主 AI 直接说明并请求确认，用户确认后走最短路径执行，不强制经过完整 decision + subagent 仪式。
   - 优先级：P2

@@ -1861,3 +1861,29 @@ WRITE_CONFIRM 分支在当前工具面下结构性不可达——不是死代码
 - 不支持运行中中文“停止”急停。
 - 不强制中断正在执行的 shell / LLM 请求。
 - STOP 后子 AI 已产生 evidence/上下文丢失，已记录为下一条 P1。
+
+
+## 主从协作全链路验证（2026-09-03）
+
+### 目的
+验证主 AI 被 mutation policy 约束时，是否自然委托子 AI，而不是直接写入或放弃。
+
+### 方法
+让主 AI 在 forge/runtime.py 顶部 docstring 种一个明显错字，再修复。
+
+### 结果
+- 主 AI 未尝试直接 mutation。
+- 先处理 pending sync_decision，主动 resolve_sync_decision(disk_to_world)。
+- spawn_subagent 执行 forge_sync，并 verify_subtask_evidence 验收。
+- 再 spawn_subagent 种错字，确认后 str_replace 成功。
+- 再 spawn_subagent 修复错字，确认后 str_replace 成功。
+- 主 AI 全程只读 + 委托，没有试图自己写文件。
+
+### 结论
+- mutation policy → 主 AI 委托子 AI 的闭环成立。
+- 关闭 TODO：主 AI 被 mutation policy 拒绝后不会优雅 spawn_subagent。
+
+### 暴露问题
+- 改一行注释消耗 32 个工具，多次额外确认。
+- 子 AI 仍偏好组合 shell 做只读侦查。
+- sync_decision 处理路径过重，payload.basis 与 summary 不一致增加侦查成本。
