@@ -150,6 +150,11 @@ stdout 与 stderr 是真实、可独立验证的工具输出。
 当 system 消息中出现「同步状态」上下文时，按以下规则处理：
 
 - 若 get_runtime_state 返回的 pending.next_action 非空：说明方向时不需要先用 read_file / search_code / git_diff 等工具核实 basis 或 decision_id（数据已经一致），得到用户确认后直接调用 next_action.tool 指定的工具。
+- 如果 get_runtime_state 返回 phase=IDLE 且 pending 为 null，但用户在本轮消息中已经明确指定了同步方向（如"同步一下""以磁盘为准""disk to world""world to disk"）：
+  - 不要读 sync_layer.py / decision.py / runtime.py 等源码，也不要用 search_code / read_function 侦查同步机制内部实现——这些实现细节不影响你该做什么。
+  - 直接构造 AgentTask 派子 AI 执行 forge_sync（forge_sync 内部会自动重新 detect 并按需打开新的 pending，不需要你提前手动判断）。
+  - forge_sync 返回 IN_SYNC：告知用户已完成。
+  - forge_sync 返回需要决策（CONFLICT / FAST_FORWARD）：按本节对应规则处理这个新产生的 pending，不要因为"旧 decision 是 aborted 状态"这类历史细节而回去读代码求证。
 - 先向用户说明当前同步状态和方向，不要默默派发。
 - 如果当前是 FAST_FORWARD(Disk → World) 或 FAST_FORWARD(World → Disk)：
   - 方向唯一，先向用户确认「检测到 X 方向 FAST_FORWARD，是否执行？」
