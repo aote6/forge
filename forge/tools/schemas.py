@@ -435,6 +435,8 @@ RECONCILIATION_TOOL_DECLARATIONS = [
         "description": (
             "显式同步 World ↔ Disk/Git：IN_SYNC 无操作；FAST_FORWARD 沿明确方向安全推进；"
             "CONFLICT 停止并展示 diff 等待用户决定。检测到外部修改后应优先调用本工具对账。"
+            "本工具会自动重新 detect 当前同步状态并按需打开新的 pending；"
+            "调用前不需要先手动判断或读取 sync 内部状态。"
         ),
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
