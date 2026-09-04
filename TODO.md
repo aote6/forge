@@ -216,3 +216,9 @@
 
 
 
+
+### sync_decision stale supersede 后 RuntimeState.pending 可能未持久化
+
+- [ ] 实机发现：forge_sync 判 stale 后，sync_decision.json 正确写入新 PENDING，但 runtime_state.json 的 pending 仍是 null。supersede_decided_with_pending 里 rs_store.save(rs) 理论上执行了，但文件没变。需要实机复现并定位。
+  - 优先级：P1
+  - 影响：Gate 的 runtime_state 索引和 sync_decision 文件不一致，主 AI 看到 pending=null 但 resolve 又被 Gate 拦住
