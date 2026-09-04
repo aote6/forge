@@ -48,6 +48,7 @@ def make_tools(
                     ALREADY_IN_SYNC,
                     APPLICABLE,
                     LEGACY_NO_GENERATION,
+                    PARTIAL_EXECUTION,
                     STATUS_DECIDED,
                     STALE,
                     SyncDecisionStore,
@@ -188,7 +189,123 @@ def make_tools(
                                 payload=payload,
                             )
 
-                        # world_to_disk 等：Phase B 仍只报告已授权未执行
+                        from forge.sync.decision import DIRECTION_WORLD_TO_DISK as _W2D
+
+                        if decision.direction == _W2D:
+                            out = sync_layer.apply_world_to_disk_decision(
+                                decision, report
+                            )
+                            # 持久化 progress（mark_count），防止 partial 被 supersede
+                            decision_store.save(decision)
+                            detail = str(getattr(out, "detail", "") or "")
+                            if detail.startswith("phase_c:preflight_stale"):
+                                if int(getattr(decision, "mark_count", 0) or 0) > 0:
+                                    payload = {
+                                        "mutation": True,
+                                        "protocol": "sync_decision_reconciliation",
+                                        "phase": "C",
+                                        "decision_status": "execution_failed",
+                                        "reconciliation_authorized": True,
+                                        "execution_pending": False,
+                                        "direction": decision.direction,
+                                        "decision_id": decision.decision_id,
+                                        "mark_count": decision.mark_count,
+                                        **out.to_dict(),
+                                    }
+                                    return ToolResult.fail(
+                                        display=(
+                                            out.format()
+                                            + "\n[phase C] preflight 失败但 mark_count>0；"
+                                            "保留 DECIDED，不 supersede（Phase D ownership）。"
+                                        ),
+                                        payload=payload,
+                                    )
+                                old_id = decision.decision_id
+                                new_decision = supersede_decided_with_pending(
+                                    sync_layer.project_root, report, sync_layer.state
+                                )
+                                if new_decision is None:
+                                    payload = {
+                                        "mutation": False,
+                                        "protocol": "sync_decision_reconciliation",
+                                        "phase": "C",
+                                        "decision_status": "stale",
+                                        "pending_opened": False,
+                                        "blocked_by": "human_intervention",
+                                        "old_decision_id": old_id,
+                                        **report.to_dict(),
+                                    }
+                                    return ToolResult.ok(
+                                        display=report.format()
+                                        + "\n[phase C] preflight stale，HI 阻止 supersede。",
+                                        payload=payload,
+                                    )
+                                payload = {
+                                    "mutation": False,
+                                    "protocol": "sync_decision_reconciliation",
+                                    "phase": "C",
+                                    "decision_status": "stale",
+                                    "pending_opened": True,
+                                    "old_decision_id": old_id,
+                                    "new_decision_id": new_decision.decision_id,
+                                    **report.to_dict(),
+                                }
+                                return ToolResult.ok(
+                                    display=(
+                                        report.format()
+                                        + "\n[phase C] preflight stale（mark_count=0），已替换为新 PENDING。"
+                                    ),
+                                    payload=payload,
+                                )
+                            if out.status == IN_SYNC:
+                                decision_store.clear()
+                                payload = {
+                                    "mutation": True,
+                                    "protocol": "sync_decision_reconciliation",
+                                    "phase": "C",
+                                    "decision_status": "cleared",
+                                    "reconciliation_authorized": True,
+                                    "execution_pending": False,
+                                    "direction": decision.direction,
+                                    "decision_id": decision.decision_id,
+                                    **out.to_dict(),
+                                }
+                                return ToolResult.ok(
+                                    display=(
+                                        out.format()
+                                        + "\n[phase C] world_to_disk 完成：verify=IN_SYNC，"
+                                        "SyncDecision 已清除。"
+                                    ),
+                                    payload=payload,
+                                )
+                            payload = {
+                                "mutation": True,
+                                "protocol": "sync_decision_reconciliation",
+                                "phase": "C",
+                                "decision_status": "execution_failed",
+                                "reconciliation_authorized": True,
+                                "execution_pending": False,
+                                "direction": decision.direction,
+                                "decision_id": decision.decision_id,
+                                "mark_count": int(
+                                    getattr(decision, "mark_count", 0) or 0
+                                ),
+                                **out.to_dict(),
+                            }
+                            return ToolResult.fail(
+                                display=(
+                                    out.format()
+                                    + "\n[phase C] world_to_disk 未完成；保留 DECIDED"
+                                    + (
+                                        "（mark_count>0，Phase D ownership）。"
+                                        if int(getattr(decision, "mark_count", 0) or 0)
+                                        > 0
+                                        else "。"
+                                    )
+                                ),
+                                payload=payload,
+                            )
+
                         payload = {
                             "mutation": False,
                             "protocol": "sync_decision_reconciliation",
@@ -205,11 +322,91 @@ def make_tools(
                                 report.format()
                                 + "\n[phase A] SyncDecision 已授权且仍 applicable："
                                 f"direction={decision.direction} decision_id={decision.decision_id}。"
-                                "\n本阶段不执行该方向 reconciliation（world_to_disk 待后续 Phase）。"
+                            ),
+                            payload=payload,
+                        )
+                    if kind == PARTIAL_EXECUTION:
+                        # mark_count>0：不得 supersede；尝试继续或报 execution_failed
+                        from forge.sync.decision import DIRECTION_WORLD_TO_DISK as _W2D
+
+                        if decision.direction == _W2D:
+                            out = sync_layer.apply_world_to_disk_decision(
+                                decision, report
+                            )
+                            decision_store.save(decision)
+                            if out.status == IN_SYNC:
+                                decision_store.clear()
+                                payload = {
+                                    "mutation": True,
+                                    "protocol": "sync_decision_reconciliation",
+                                    "phase": "C",
+                                    "decision_status": "cleared",
+                                    **out.to_dict(),
+                                }
+                                return ToolResult.ok(
+                                    display=out.format()
+                                    + "\n[phase C] partial 续跑完成 IN_SYNC。",
+                                    payload=payload,
+                                )
+                            payload = {
+                                "mutation": True,
+                                "protocol": "sync_decision_reconciliation",
+                                "phase": "C",
+                                "decision_status": "execution_failed",
+                                "mark_count": int(
+                                    getattr(decision, "mark_count", 0) or 0
+                                ),
+                                "decision_id": decision.decision_id,
+                                **out.to_dict(),
+                            }
+                            return ToolResult.fail(
+                                display=(
+                                    out.format()
+                                    + "\n[phase C] partial_execution：保留原 DECIDED，"
+                                    "不 supersede。"
+                                ),
+                                payload=payload,
+                            )
+                        payload = {
+                            "mutation": False,
+                            "protocol": "sync_decision_reconciliation",
+                            "phase": "C",
+                            "decision_status": "execution_failed",
+                            "mark_count": int(getattr(decision, "mark_count", 0) or 0),
+                            "decision_id": decision.decision_id,
+                            **report.to_dict(),
+                        }
+                        return ToolResult.fail(
+                            display=(
+                                report.format()
+                                + "\n[phase C] partial_execution 非 world_to_disk；"
+                                "保留 DECIDED。"
                             ),
                             payload=payload,
                         )
                     if kind in (STALE, LEGACY_NO_GENERATION):
+                        if int(getattr(decision, "mark_count", 0) or 0) > 0:
+                            payload = {
+                                "mutation": False,
+                                "protocol": "sync_decision_reconciliation",
+                                "phase": "C",
+                                "decision_status": "execution_failed",
+                                "reconciliation_authorized": True,
+                                "execution_pending": False,
+                                "mark_count": int(decision.mark_count or 0),
+                                "decision_id": decision.decision_id,
+                                "reason": kind,
+                                **report.to_dict(),
+                            }
+                            return ToolResult.fail(
+                                display=(
+                                    report.format()
+                                    + "\n[phase C] classify="
+                                    + kind
+                                    + " 但 mark_count>0；禁止 supersede，保留 DECIDED。"
+                                ),
+                                payload=payload,
+                            )
                         old_id = decision.decision_id
                         new_decision = supersede_decided_with_pending(
                             sync_layer.project_root, report, sync_layer.state

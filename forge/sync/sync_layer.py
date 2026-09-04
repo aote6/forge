@@ -713,7 +713,176 @@ class SyncLayer:
 
         return self.detect()
 
+    def apply_world_to_disk_decision(self, decision, report) -> "SyncReport":
+        """Phase C：DECIDED(world_to_disk)+授权 generation 下 per-receipt 物化。
+
+        - 执行前冻结 authorized receipt sequence；发现 version > G.world_version → 授权异常停止
+        - 每笔：FileProjection.apply 成功 → mark_disk_synced(version)（watermark 唯一推进）
+        - 不 clear SyncDecision；progress 写回 decision.mark_count / last_marked_version
+        - mark_count==0 时要求 classify==applicable；mark_count>0 时不因 fingerprint/dsv 偏离而 supersede
+        """
+        from forge.sync.decision import (
+            APPLICABLE,
+            DIRECTION_WORLD_TO_DISK,
+            PARTIAL_EXECUTION,
+            STATUS_DECIDED,
+            classify_decision_applicability,
+        )
+
+        if decision is None or getattr(decision, "status", None) != STATUS_DECIDED:
+            return SyncReport(
+                status=getattr(report, "status", CONFLICT) or CONFLICT,
+                detail="phase_c:preflight_rejected: decision not DECIDED",
+            )
+        if getattr(decision, "direction", None) != DIRECTION_WORLD_TO_DISK:
+            return SyncReport(
+                status=getattr(report, "status", CONFLICT) or CONFLICT,
+                detail="phase_c:preflight_rejected: direction is not world_to_disk",
+            )
+        gen = getattr(decision, "generation", None)
+        if not isinstance(gen, dict):
+            return SyncReport(
+                status=CONFLICT,
+                detail="phase_c:preflight_stale: missing generation",
+            )
+        try:
+            authorized_wv = int(gen.get("world_version"))
+        except (TypeError, ValueError):
+            return SyncReport(
+                status=CONFLICT,
+                detail="phase_c:preflight_stale: invalid generation.world_version",
+            )
+
+        mark_count = int(getattr(decision, "mark_count", 0) or 0)
+        if mark_count == 0:
+            kind = classify_decision_applicability(decision, report, self._state)
+            if kind != APPLICABLE:
+                return SyncReport(
+                    status=getattr(report, "status", CONFLICT) or CONFLICT,
+                    conflict_kind=getattr(report, "conflict_kind", None),
+                    world_version=getattr(report, "world_version", None),
+                    disk_commit=getattr(report, "disk_commit", "") or "",
+                    known_commit=getattr(report, "known_commit", "") or "",
+                    disk_synced_version=self._state.disk_synced_version,
+                    divergent_paths=list(getattr(report, "divergent_paths", None) or []),
+                    detail=f"phase_c:preflight_stale:{kind}",
+                )
+        else:
+            # partial：world_version 必须仍等于 G；其它偏离由 classify→PARTIAL_EXECUTION 处理
+            cur_wv = getattr(report, "world_version", None)
+            try:
+                cur_wv_i = int(cur_wv) if cur_wv is not None else None
+            except (TypeError, ValueError):
+                cur_wv_i = None
+            if cur_wv_i != authorized_wv:
+                return SyncReport(
+                    status=getattr(report, "status", CONFLICT) or CONFLICT,
+                    world_version=cur_wv,
+                    disk_synced_version=self._state.disk_synced_version,
+                    detail=(
+                        "phase_c:execution_failed:world_version mismatch "
+                        f"current={cur_wv_i!r} generation={authorized_wv!r}"
+                    ),
+                )
+
+        if self._file_projection is None:
+            return SyncReport(
+                status=CONFLICT,
+                conflict_kind=CONFLICT_CONTENT,
+                detail="phase_c: no FileProjection available for world_to_disk",
+            )
+
+        # 冻结 execution set（只查询一次）
+        s = self._state.disk_synced_version
+        try:
+            pending = self._world_file_receipts_beyond(s)
+        except Exception as e:
+            return SyncReport(
+                status=WORLD_UNAVAILABLE,
+                detail=f"phase_c: cannot list receipts: {e}",
+            )
+
+        # 授权异常：任何 version > G.world_version 必须 stop（不是静默过滤）
+        for r in pending:
+            ver = int(getattr(r, "version", 0) or 0)
+            if ver > authorized_wv:
+                return SyncReport(
+                    status=CONFLICT,
+                    world_version=getattr(report, "world_version", None),
+                    disk_synced_version=self._state.disk_synced_version,
+                    detail=(
+                        "phase_c:authorization_error: receipt version "
+                        f"{ver} > generation.world_version {authorized_wv}"
+                    ),
+                )
+
+        sequence = [
+            r
+            for r in pending
+            if int(getattr(r, "version", 0) or 0) <= authorized_wv
+        ]
+        # sequence 已冻结；循环中不得重新 get_receipts 纳入新 receipt
+
+        for receipt in sequence:
+            ver = int(getattr(receipt, "version", 0) or 0)
+            try:
+                result = self._file_projection.apply(
+                    receipt, getattr(receipt, "delta", None)
+                )
+            except Exception as e:
+                result = None
+                err = str(e)
+            else:
+                err = ""
+            if result is None or not getattr(result, "success", False):
+                reason = getattr(result, "reason", "") if result else err
+                return SyncReport(
+                    status=CONFLICT,
+                    conflict_kind=CONFLICT_CONTENT,
+                    world_version=getattr(report, "world_version", None),
+                    disk_commit=git_head_commit(self.project_root),
+                    known_commit=self._state.last_known_commit,
+                    disk_synced_version=self._state.disk_synced_version,
+                    detail=(
+                        f"phase_c:execution_failed: apply failed at version={ver}: {reason}"
+                    ),
+                )
+
+            written = list(getattr(result, "written_paths", None) or [])
+            deleted = list(getattr(result, "deleted_paths", None) or [])
+            # 若 FileProjection 用不同字段名，尽量兼容
+            if not written and not deleted:
+                info = {}
+                try:
+                    info = self._file_projection.prepare(
+                        getattr(receipt, "delta", None)
+                    ) or {}
+                except Exception:
+                    info = {}
+                written = list(info.get("files_modified", []) or [])
+                deleted = list(info.get("files_deleted", []) or [])
+
+            self._state.mark_disk_synced(
+                ver,
+                written,
+                deleted,
+                source="user_reconcile_world_wins",
+            )
+            if self._state.disk_synced_version > authorized_wv:
+                return SyncReport(
+                    status=CONFLICT,
+                    detail=(
+                        "phase_c:invariant_violation: watermark "
+                        f"{self._state.disk_synced_version} > authorized {authorized_wv}"
+                    ),
+                )
+            decision.mark_count = int(getattr(decision, "mark_count", 0) or 0) + 1
+            decision.last_marked_version = ver
+
+        return self.detect()
+
     def world_available(self) -> bool:
+
 
         """World（veritasd）是否可访问。"""
         try:

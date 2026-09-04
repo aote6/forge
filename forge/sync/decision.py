@@ -76,6 +76,8 @@ STALE = "stale"
 ALREADY_IN_SYNC = "already_in_sync"
 NOT_DECIDED = "not_decided"
 LEGACY_NO_GENERATION = "legacy_no_generation"
+# Phase C：已有 per-receipt mark 的 DECIDED，不得走普通 supersede
+PARTIAL_EXECUTION = "partial_execution"
 
 
 def fingerprint_managed_disk(paths: Iterable[str]) -> str:
@@ -174,6 +176,16 @@ def generation_is_complete(generation: Any) -> bool:
     return True
 
 
+def _stale_or_partial(decision: "SyncDecision") -> str:
+    """mark_count>0 的 world_to_disk 部分执行态：不得普通 STALE/supersede。"""
+    if (
+        getattr(decision, "direction", None) == DIRECTION_WORLD_TO_DISK
+        and int(getattr(decision, "mark_count", 0) or 0) > 0
+    ):
+        return PARTIAL_EXECUTION
+    return STALE
+
+
 def classify_decision_applicability(
     decision: SyncDecision | None,
     report: Any,
@@ -183,6 +195,10 @@ def classify_decision_applicability(
 
     不调用 detect()；由调用方传入最新 report。
     返回：applicable | stale | already_in_sync | not_decided | legacy_no_generation
+         | partial_execution
+
+    Phase C：一旦 mark_count>0，观察偏离不得变为可 supersede 的 STALE，
+    而返回 partial_execution，由控制面 execution_failed 保留原 DECIDED。
     """
     status = str(getattr(report, "status", None) or "")
     if status == IN_SYNC:
@@ -200,20 +216,9 @@ def classify_decision_applicability(
 
     gen = decision.generation
     if not generation_is_complete(gen):
+        if int(getattr(decision, "mark_count", 0) or 0) > 0:
+            return PARTIAL_EXECUTION
         return LEGACY_NO_GENERATION
-
-    # 精确比对 generation 与当前观察（v1.1 A.6 / Closure）
-    if str(gen.get("basis") or "") != status:
-        return STALE
-
-    report_ck = getattr(report, "conflict_kind", None)
-    if report_ck is not None:
-        report_ck = str(report_ck) or None
-    gen_ck = gen.get("conflict_kind")
-    if gen_ck is not None:
-        gen_ck = str(gen_ck) or None
-    if gen_ck != report_ck:
-        return STALE
 
     def _as_int(v: Any) -> int | None:
         if v is None:
@@ -223,26 +228,38 @@ def classify_decision_applicability(
         except (TypeError, ValueError):
             return None
 
+    if str(gen.get("basis") or "") != status:
+        return _stale_or_partial(decision)
+
+    report_ck = getattr(report, "conflict_kind", None)
+    if report_ck is not None:
+        report_ck = str(report_ck) or None
+    gen_ck = gen.get("conflict_kind")
+    if gen_ck is not None:
+        gen_ck = str(gen_ck) or None
+    if gen_ck != report_ck:
+        return _stale_or_partial(decision)
+
     if _as_int(gen.get("world_version")) != _as_int(
         getattr(report, "world_version", None)
     ):
-        return STALE
+        return _stale_or_partial(decision)
 
     report_dsv = getattr(report, "disk_synced_version", None)
     if report_dsv is None and sync_state is not None:
         report_dsv = getattr(sync_state, "disk_synced_version", None)
     if _as_int(gen.get("disk_synced_version")) != _as_int(report_dsv):
-        return STALE
+        return _stale_or_partial(decision)
 
     if str(gen.get("known_commit") or "") != str(
         getattr(report, "known_commit", None) or ""
     ):
-        return STALE
+        return _stale_or_partial(decision)
 
     if str(gen.get("disk_commit") or "") != str(
         getattr(report, "disk_commit", None) or ""
     ):
-        return STALE
+        return _stale_or_partial(decision)
 
     report_div = getattr(report, "divergent_paths", None) or []
     if isinstance(report_div, (list, tuple)):
@@ -251,18 +268,18 @@ def classify_decision_applicability(
         report_div_sorted = []
     gen_div = gen.get("divergent_paths") or []
     if not isinstance(gen_div, list):
-        return STALE
+        return _stale_or_partial(decision)
     gen_div_sorted = sorted({str(p) for p in gen_div if p})
     if gen_div_sorted != report_div_sorted:
-        return STALE
+        return _stale_or_partial(decision)
 
-    # 当前 path set（C2：不得只用 generation 旧路径）
     current_paths = managed_path_set_for_observation(report, sync_state)
     current_fp = fingerprint_managed_disk(current_paths)
     if current_fp != str(gen.get("path_hash_fingerprint") or ""):
-        return STALE
+        return _stale_or_partial(decision)
 
     return APPLICABLE
+
 
 
 @dataclass
@@ -276,6 +293,9 @@ class SyncDecision:
     created_at: float = 0.0
     decided_at: float | None = None
     generation: dict[str, Any] | None = None
+    # Phase C progress（非完整 crash recovery；仅防止 partial 后被 supersede）
+    mark_count: int = 0
+    last_marked_version: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -285,6 +305,8 @@ class SyncDecision:
             "status": self.status,
             "created_at": self.created_at,
             "decided_at": self.decided_at,
+            "mark_count": int(self.mark_count or 0),
+            "last_marked_version": self.last_marked_version,
         }
         if self.generation is not None:
             d["generation"] = dict(self.generation)
@@ -319,6 +341,18 @@ class SyncDecision:
         generation = data.get("generation")
         if generation is not None and not isinstance(generation, dict):
             generation = None
+        try:
+            mark_count = int(data.get("mark_count") or 0)
+        except (TypeError, ValueError):
+            mark_count = 0
+        if mark_count < 0:
+            mark_count = 0
+        last_marked_version = data.get("last_marked_version")
+        if last_marked_version is not None:
+            try:
+                last_marked_version = int(last_marked_version)
+            except (TypeError, ValueError):
+                last_marked_version = None
         return cls(
             decision_id=did,
             basis=basis,
@@ -327,6 +361,8 @@ class SyncDecision:
             created_at=created_at,
             decided_at=decided_at,
             generation=generation,
+            mark_count=mark_count,
+            last_marked_version=last_marked_version,
         )
 
     @classmethod
