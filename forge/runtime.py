@@ -3157,6 +3157,17 @@ class Runtime:
             return display
 
         result = self.executor.execute(tc)
+        if isinstance(getattr(result, "payload", None), dict) and (
+            result.payload.get("protocol") == "sync_decision_reconciliation"
+        ):
+            # forge_sync 等 reconciliation 工具可能通过
+            # supersede_decided_with_pending() 直接改写 runtime_state.json，
+            # 绕过 self.runtime_state 内存缓存（tools/__init__.py 里这条路径
+            # 用的是独立的 RuntimeStateStore 实例，不经过 Runtime.self）。
+            # 重新 load，避免本回合后续 save(self.runtime_state) 用旧内存状态
+            # 把刚落盘的新 pending 覆盖回去。
+            self.runtime_state = self._runtime_state_store.load()
+            self.recovery = self.runtime_state.recovery
         self._pending_action = None
         self._last_tool_display = result.display or ""
         self._last_tool_name = tc.name
@@ -3758,6 +3769,15 @@ class Runtime:
                 if guard is None:
                     guard = self._guard_external_change(tc.name)
                 result = guard if guard is not None else self.executor.execute(tc)
+                if isinstance(getattr(result, "payload", None), dict) and (
+                    result.payload.get("protocol") == "sync_decision_reconciliation"
+                ):
+                    # forge_sync 等 reconciliation 工具可能通过
+                    # supersede_decided_with_pending() 直接改写 runtime_state.json，
+                    # 绕过 self.runtime_state 内存缓存。
+                    # 重新 load，避免本回合后续 save 用旧内存状态覆盖新 pending。
+                    self.runtime_state = self._runtime_state_store.load()
+                    self.recovery = self.runtime_state.recovery
                 tool_calls_n += 1
                 self._last_tool_display = result.display or ""
                 self._last_tool_name = tc.name
