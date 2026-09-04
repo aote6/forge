@@ -626,7 +626,95 @@ class SyncLayer:
 
     # ── runtime external-change guard ──────────────────────────
 
+    def apply_disk_to_world_decision(self, decision, report) -> "SyncReport":
+        """Phase B：在已授权 DECIDED(disk_to_world)+generation 下执行 workspace-wide supersede。
+
+        控制面负责 classify / clear / supersede；本方法只：
+        preflight（current observation == G）→ accept_disk_wins → detect verify。
+        任何 SyncState 写入仅发生在 preflight 通过之后。
+        不 clear SyncDecision，不打开 PENDING。
+        """
+        from forge.sync.decision import (
+            APPLICABLE,
+            DIRECTION_DISK_TO_WORLD,
+            STATUS_DECIDED,
+            classify_decision_applicability,
+        )
+
+        # Preflight：在任何 SyncState mutation 之前
+        if decision is None or getattr(decision, "status", None) != STATUS_DECIDED:
+            return SyncReport(
+                status=getattr(report, "status", CONFLICT) or CONFLICT,
+                detail="phase_b:preflight_rejected: decision not DECIDED",
+            )
+        if getattr(decision, "direction", None) != DIRECTION_DISK_TO_WORLD:
+            return SyncReport(
+                status=getattr(report, "status", CONFLICT) or CONFLICT,
+                detail="phase_b:preflight_rejected: direction is not disk_to_world",
+            )
+        gen = getattr(decision, "generation", None)
+        if not isinstance(gen, dict):
+            return SyncReport(
+                status=getattr(report, "status", CONFLICT) or CONFLICT,
+                detail="phase_b:preflight_stale: missing generation",
+            )
+
+        kind = classify_decision_applicability(decision, report, self._state)
+        if kind != APPLICABLE:
+            return SyncReport(
+                status=getattr(report, "status", CONFLICT) or CONFLICT,
+                conflict_kind=getattr(report, "conflict_kind", None),
+                world_version=getattr(report, "world_version", None),
+                disk_commit=getattr(report, "disk_commit", "") or "",
+                known_commit=getattr(report, "known_commit", "") or "",
+                disk_synced_version=getattr(report, "disk_synced_version", 0) or 0,
+                divergent_paths=list(getattr(report, "divergent_paths", None) or []),
+                detail=f"phase_b:preflight_stale:{kind}",
+            )
+
+        # 严格：current.world_version 必须等于 G.world_version（classify 已查；双保险）
+        try:
+            authorized = int(gen.get("world_version"))
+        except (TypeError, ValueError):
+            return SyncReport(
+                status=CONFLICT,
+                detail="phase_b:preflight_stale: invalid generation.world_version",
+            )
+        cur_wv = getattr(report, "world_version", None)
+        try:
+            cur_wv_i = int(cur_wv) if cur_wv is not None else None
+        except (TypeError, ValueError):
+            cur_wv_i = None
+        if cur_wv_i != authorized:
+            return SyncReport(
+                status=getattr(report, "status", CONFLICT) or CONFLICT,
+                world_version=cur_wv,
+                detail=(
+                    "phase_b:preflight_stale: world_version mismatch "
+                    f"current={cur_wv_i!r} generation={authorized!r}"
+                ),
+            )
+
+        # 唯一 SyncState mutation
+        self._state.accept_disk_wins(
+            authorized_world_version=authorized,
+            source="user_reconcile_disk_wins",
+            recompute_hashes=True,
+        )
+        # 不变量：watermark_after <= G.world_version
+        if self._state.disk_synced_version > authorized:
+            return SyncReport(
+                status=CONFLICT,
+                detail=(
+                    "phase_b:invariant_violation: watermark "
+                    f"{self._state.disk_synced_version} > authorized {authorized}"
+                ),
+            )
+
+        return self.detect()
+
     def world_available(self) -> bool:
+
         """World（veritasd）是否可访问。"""
         try:
             self._world.get_version()

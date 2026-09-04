@@ -155,6 +155,56 @@ class SyncState:
         }
         self._save()
 
+    def accept_disk_wins(
+        self,
+        authorized_world_version: int,
+        *,
+        source: str = "user_reconcile_disk_wins",
+        recompute_hashes: bool = True,
+    ) -> None:
+        """用户授权 disk_to_world：一次 durable mutation 完成 baseline + watermark supersede。
+
+        - 仅刷新已有 last_known_file_hashes（缺失 drop；不纳入 untracked）
+        - 更新 last_known_commit
+        - last_sync.source 默认为 user_reconcile_disk_wins
+        - disk_synced_version := authorized_world_version
+        - 不变量：最终 watermark <= authorized_world_version（赋值即为授权上界）
+        - 若当前 watermark 已 > authorized：拒绝写入（应在 preflight 阶段已拦截）
+        """
+        try:
+            authorized = int(authorized_world_version)
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"authorized_world_version must be int, got {authorized_world_version!r}"
+            ) from e
+        if authorized < 0:
+            raise ValueError(f"authorized_world_version must be >= 0, got {authorized}")
+        if self._disk_synced_version > authorized:
+            raise ValueError(
+                f"refuse accept_disk_wins: current disk_synced_version="
+                f"{self._disk_synced_version} > authorized={authorized}"
+            )
+
+        if recompute_hashes:
+            for path in list(self._last_known_file_hashes.keys()):
+                digest = hash_file(path)
+                if digest is None:
+                    self._last_known_file_hashes.pop(path, None)
+                else:
+                    self._last_known_file_hashes[path] = digest
+
+        commit = git_head_commit(self.project_root)
+        self._last_known_commit = commit or self._last_known_commit
+        # watermark 精确设为授权上界；永不超过 authorized
+        self._disk_synced_version = authorized
+        self._last_sync = {
+            "source": source or "user_reconcile_disk_wins",
+            "version": authorized,
+            "commit": self._last_known_commit,
+            "at": time.time(),
+        }
+        self._save()
+
     def forget_paths(self, paths: list[str]) -> None:
         """从已知集合中移除路径（回滚失败 / 磁盘状态不确定时使用）。
 

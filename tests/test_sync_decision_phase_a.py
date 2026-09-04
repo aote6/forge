@@ -203,7 +203,7 @@ def test_supersede_atomic_replaces_decided(tmp_path: Path):
 
 
 def test_forge_sync_authorized_pending_no_syncstate_writes(tmp_path: Path):
-    """resolve 后 applicable → forge_sync 返回已授权未执行，且不调用 SyncState 写入。"""
+    """resolve 后 applicable + disk_to_world → 调用 executor，不调用 sync() 或旧 SyncState 写入。"""
     f = tmp_path / "m.txt"
     f.write_text("v1", encoding="utf-8")
     st = _state({str(f): "x"}, dsv=5)
@@ -219,33 +219,23 @@ def test_forge_sync_authorized_pending_no_syncstate_writes(tmp_path: Path):
     d.apply_direction(DIRECTION_DISK_TO_WORLD)
     SyncDecisionStore(tmp_path).save(d)
 
+    in_sync = SimpleNamespace(
+        status=IN_SYNC,
+        world_version=10,
+        disk_synced_version=10,
+        known_commit="k",
+        disk_commit="d",
+        divergent_paths=[],
+        detail="",
+        to_dict=lambda: {"status": IN_SYNC},
+        format=lambda: "sync_status: IN_SYNC",
+    )
+
     sync_layer = MagicMock()
     sync_layer.project_root = str(tmp_path)
     sync_layer.state = st
-    sync_layer.detect.return_value = SimpleNamespace(
-        status=CONFLICT,
-        conflict_kind="content_divergence",
-        world_version=10,
-        disk_synced_version=5,
-        known_commit="k",
-        disk_commit="d",
-        divergent_paths=[str(f)],
-        detail="conflict",
-        to_dict=lambda: {
-            "status": CONFLICT,
-            "world_version": 10,
-            "disk_synced_version": 5,
-            "known_commit": "k",
-            "disk_commit": "d",
-            "divergent_paths": [str(f)],
-            "conflict_kind": "content_divergence",
-            "detail": "conflict",
-            "world_advanced": True,
-            "disk_advanced": True,
-            "diff_hint": "",
-        },
-        format=lambda: "sync_status: CONFLICT",
-    )
+    sync_layer.detect.return_value = report
+    sync_layer.apply_disk_to_world_decision.return_value = in_sync
     sync_layer.sync = MagicMock(
         side_effect=AssertionError("sync() must not run when applicable")
     )
@@ -263,12 +253,10 @@ def test_forge_sync_authorized_pending_no_syncstate_writes(tmp_path: Path):
     )
     result = tools["forge_sync"]()
     assert result.success is True
-    assert result.payload.get("reconciliation_authorized") is True
-    assert result.payload.get("execution_pending") is True
+    assert result.payload.get("decision_status") == "cleared"
     assert result.payload.get("direction") == DIRECTION_DISK_TO_WORLD
-    assert result.payload.get("decision_status") == "authorized_pending_execution"
     sync_layer.sync.assert_not_called()
-
+    sync_layer.apply_disk_to_world_decision.assert_called_once()
 
 def test_forge_sync_stale_opens_new_pending(tmp_path: Path):
     f = tmp_path / "m.txt"

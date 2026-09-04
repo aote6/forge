@@ -90,6 +90,105 @@ def make_tools(
                             payload=payload,
                         )
                     if kind == APPLICABLE:
+                        from forge.sync.decision import DIRECTION_DISK_TO_WORLD
+
+                        if decision.direction == DIRECTION_DISK_TO_WORLD:
+                            # Phase B：preflight+accept_disk_wins 在 SyncLayer；clear 在控制面
+                            out = sync_layer.apply_disk_to_world_decision(
+                                decision, report
+                            )
+                            detail = str(getattr(out, "detail", "") or "")
+                            if detail.startswith("phase_b:preflight_stale"):
+                                old_id = decision.decision_id
+                                new_decision = supersede_decided_with_pending(
+                                    sync_layer.project_root, report, sync_layer.state
+                                )
+                                if new_decision is None:
+                                    payload = {
+                                        "mutation": False,
+                                        "protocol": "sync_decision_reconciliation",
+                                        "phase": "B",
+                                        "decision_status": "stale",
+                                        "reconciliation_authorized": False,
+                                        "execution_pending": False,
+                                        "pending_opened": False,
+                                        "reason": "preflight_stale",
+                                        "blocked_by": "human_intervention",
+                                        "old_decision_id": old_id,
+                                        **report.to_dict(),
+                                    }
+                                    return ToolResult.ok(
+                                        display=(
+                                            report.format()
+                                            + "\n[phase B] preflight stale，但 HI pending 阻止 supersede。"
+                                        ),
+                                        payload=payload,
+                                    )
+                                payload = {
+                                    "mutation": False,
+                                    "protocol": "sync_decision_reconciliation",
+                                    "phase": "B",
+                                    "decision_status": "stale",
+                                    "reconciliation_authorized": False,
+                                    "execution_pending": False,
+                                    "pending_opened": True,
+                                    "reason": "preflight_stale",
+                                    "old_decision_id": old_id,
+                                    "new_decision_id": new_decision.decision_id,
+                                    **report.to_dict(),
+                                }
+                                return ToolResult.ok(
+                                    display=(
+                                        report.format()
+                                        + "\n[phase B] preflight：观察已偏离 generation，已原子替换为新 PENDING。"
+                                        f"\nnew_decision_id={new_decision.decision_id}"
+                                    ),
+                                    payload=payload,
+                                )
+                            if out.status == IN_SYNC:
+                                decision_store.clear()
+                                payload = {
+                                    "mutation": True,
+                                    "protocol": "sync_decision_reconciliation",
+                                    "phase": "B",
+                                    "decision_status": "cleared",
+                                    "reconciliation_authorized": True,
+                                    "execution_pending": False,
+                                    "direction": decision.direction,
+                                    "decision_id": decision.decision_id,
+                                    "last_sync_source": "user_reconcile_disk_wins",
+                                    **out.to_dict(),
+                                }
+                                return ToolResult.ok(
+                                    display=(
+                                        out.format()
+                                        + "\n[phase B] disk_to_world 完成：verify=IN_SYNC，"
+                                        "SyncDecision 已清除。"
+                                    ),
+                                    payload=payload,
+                                )
+                            # verify 失败：保留 DECIDED，不 supersede
+                            payload = {
+                                "mutation": True,
+                                "protocol": "sync_decision_reconciliation",
+                                "phase": "B",
+                                "decision_status": "execution_failed",
+                                "reconciliation_authorized": True,
+                                "execution_pending": False,
+                                "direction": decision.direction,
+                                "decision_id": decision.decision_id,
+                                **out.to_dict(),
+                            }
+                            return ToolResult.fail(
+                                display=(
+                                    out.format()
+                                    + "\n[phase B] disk_to_world 执行后 verify 未达 IN_SYNC；"
+                                    "保留 DECIDED，不自动重新授权。"
+                                ),
+                                payload=payload,
+                            )
+
+                        # world_to_disk 等：Phase B 仍只报告已授权未执行
                         payload = {
                             "mutation": False,
                             "protocol": "sync_decision_reconciliation",
@@ -106,8 +205,7 @@ def make_tools(
                                 report.format()
                                 + "\n[phase A] SyncDecision 已授权且仍 applicable："
                                 f"direction={decision.direction} decision_id={decision.decision_id}。"
-                                "\n本阶段不执行 reconciliation（不修改 SyncState / 磁盘）；"
-                                "待执行层上线后再推进。"
+                                "\n本阶段不执行该方向 reconciliation（world_to_disk 待后续 Phase）。"
                             ),
                             payload=payload,
                         )
