@@ -215,3 +215,13 @@
   - 优先级：P2
 
 
+
+### Phase D 恢复完整性
+
+- [ ] `forge_sync` 恢复入口补 mark 时 `written_paths=[]`，没从 attempt 的 expected effects 拿真实路径。恢复后 `last_known_file_hashes` 可能没更新。
+  - 优先级：P1
+  - 影响：恢复补 mark 后 baseline hash 不刷新，下次 detect 可能误判磁盘变化
+
+- [ ] 端到端测试覆盖不足：现有集成测试只验证 attempt 挡住重复执行，没覆盖"崩溃→重启→forge_sync 恢复→补 mark→继续剩余 receipt"完整链。
+  - 优先级：P2
+  - 影响：恢复路径的真实闭环没有端到端证明
