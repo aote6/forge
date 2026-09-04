@@ -79,20 +79,6 @@
   - 建议：确认无测试依赖后清理，不碰子循环 confirm_fn / Execution Pause。
   - 优先级：P3
 
-### 子 AI prompt 审查
-
-- [ ] 子 AI 执行层工具偏好不清晰：SUBAGENT_SYSTEM 未明确约束“只读优先专用工具、避免组合 shell”。
-  - 发现场景：
-    1. 2026-09-01 代码确认：SUBAGENT_SYSTEM 无「先计划再执行」约束，只有「不要无限搜索」软提示。
-    2. 2026-09-02 实测：子 AI 连续使用 `pwd && ls -la`、`git ... && ls | head` 等组合命令做只读侦查，触发本可避免的确认。
-    3. 2026-09-03 全链路验证：改一行 docstring，子 AI 多次用 `pwd && ls && head`、`cat ... | head` 等组合命令侦查，导致多次额外确认；最终全链路消耗 32 个工具。
-  - 影响：专用只读工具被绕过；组合命令触发确认疲劳；审计和证据质量下降。
-  - 建议：在 SUBAGENT_SYSTEM 中明确：
-    - 只读侦查默认使用 read_file / glob_files / search_code / git_diff 等专用工具。
-    - run_command 仅在专用工具无法覆盖时使用。
-    - 禁止用 &&、|、; 等组合 shell 做日常侦查。
-  - 优先级：P1
-
 ### 系统集成能力
 
 - [ ] Forge CLI 缺少单次机器调用入口（类似 claude -p），stdin 管道模式结束后 EOFError。
