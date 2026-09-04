@@ -1970,3 +1970,28 @@ R2 只做了"打开决策→用户 resolve→清除 pending"，但没有执行�
 
 ### 结论
 同步安全链从"resolve 后 forge_sync 又 CONFLICT"到"决策→授权→执行→验证→恢复"完整闭环。
+
+## 2026-09-04 修复与记录
+
+### P1: sync_decision stale pending 被旧内存覆盖（commit bd3745d）
+- 根因：supersede_decided_with_pending() 通过独立 RuntimeStateStore 直接改写 runtime_state.json，但 Runtime 内存中的 self.runtime_state 不知道盘面已变。后续任意一次 save(self.runtime_state) 用旧内存状态覆盖了刚落盘的新 pending。
+- 修复：两处 executor.execute() 后检测 payload.protocol == sync_decision_reconciliation，重新 load runtime_state 对齐内存。
+- 验证：全量 799 passed。
+
+### P1: 子 AI 组合 shell 命令成本不可见（commit ed215e9）
+- 根因：run_command schema 描述只说"危险命令会被拦截"，未提示组合命令会触发确认门禁；SUBAGENT_SYSTEM 也没有工具偏好约束。
+- 修复：run_command 描述增加"&& / | / ; 组合命令会触发确认门禁"提示，并建议只读侦查优先用专用工具；SUBAGENT_SYSTEM 增加一条工具偏好规则。
+- 性质：纯 prompt 改动，不碰执行逻辑，保留组合命令可用性。
+- 验证：65 passed。
+
+### P0 新记录：主 AI 对子 AI 执行过程无运行时可见性（commit 09ba2c9）
+- 现状：spawn_subagent 同步阻塞，子循环 TOOL_CALL_START/END 事件仅通过 emit 流向用户终端，主 AI 的 LLM 上下文完全收不到中间过程。
+- 本质：主 AI 在子 AI 执行期间没有"轮到它说话"的时间窗，不是信息没传，是没有说话的机会。
+- 建议方向：复用 checkpoint/pause 基础设施，将 run_subagent 改为周期性检查点回看。具体参数需单独设计。
+
+### P2: 裸多行粘贴被第一个 CR 截断（commit 0de6f01）
+- 根因：Android App 到 Termux 粘贴可能不带 bracketed paste 标记，只有裸字节流。非 in_paste 路径收到第一个 CR 就立即提交。
+- 修复：新增 _stdin_has_pending()，在非 BP 路径 CR/LF 提交前做 15ms select lookahead。有后续输入则 CR/LF 视为内容换行，无后续则正常提交。
+- 性质：工程启发式，不判断"是不是粘贴"，只判断"这个换行到达时输入流是否还在继续"。理论上不能 100% 区分，但覆盖典型整段粘贴场景。
+- BP 路径、反斜杠续行、普通单行 Enter 行为不变。
+- 验证：tests/test_tui_input.py 38 passed，全量 808 passed。
