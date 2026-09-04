@@ -82,6 +82,18 @@ def _hash_file(path: Path) -> Optional[str]:
     return hash_file(str(path))
 
 
+def _resolve_disk_path(root: Path, path: str) -> Path:
+    """Resolve a recorded path against `root`, honoring absolute paths.
+
+    Projection writes absolute paths into the expected effect (via
+    FileProjection._resolve); standalone recovery tests use relative
+    paths. `Path("/a") / "/b"` returns `/b`, so we must branch on
+    absoluteness explicitly instead of relying on pathlib join.
+    """
+    p = Path(path)
+    return p if p.is_absolute() else root / p
+
+
 def _receipt_get(receipt: Any, key: str, default: Any = None) -> Any:
     """Read `key` off a receipt whether it's an object or a dict."""
     if isinstance(receipt, dict):
@@ -90,24 +102,22 @@ def _receipt_get(receipt: Any, key: str, default: Any = None) -> Any:
 
 
 def _expected_effect_for_receipt(receipt: Any) -> dict:
-    """Compute expected effect for a receipt.
+    """Compute the canonical expected effect for one simplified receipt.
 
     Real integration computes expected effects from FileProjection.prepare()
-    and passes them explicitly to set_expected_effect(effect=...). This
-    function is kept for standalone recovery tests that use simplified
-    receipt dicts with path/content/op fields.
-    """
-    """Compute the expected post-apply disk state for one receipt.
+    (which also yields the post-apply content hashes) and passes them
+    explicitly via set_expected_effect(effect=...). This function is kept
+    for standalone recovery tests that use simplified receipt dicts with
+    path/content/op fields.
 
-    Returns {"path": <str>, "effect": <content_hash str> | MISSING}.
+    Canonical format (must match recover()):
 
-    # ASSUME: adjust the delete-detection and hash source below to match
-    # the real receipt schema. As written: a receipt is treated as a
-    # delete if op/action == "delete" or a truthy `.deleted` flag is
-    # present; otherwise the receipt's own carried content (if present)
-    # is hashed directly (avoids depending on FileProjection internals),
-    # falling back to hashing whatever apply() leaves on disk turns out
-    # to be — see NOTE in ReconcileAttemptStore.record_expected_effect.
+        {"written_paths": [{"path": str, "hash": str}], "deleted_paths": [str]}
+
+    A receipt is treated as a delete when op/action == "delete" or a
+    truthy `.deleted` flag is present; otherwise the receipt's own carried
+    content (if present) is hashed directly with the same sha256 hex that
+    `_hash_file` (git_utils.hash_file) produces.
     """
     path = _receipt_get(receipt, "path")
     if path is None:
@@ -116,21 +126,21 @@ def _expected_effect_for_receipt(receipt: Any) -> dict:
     op = _receipt_get(receipt, "op") or _receipt_get(receipt, "action")
     deleted = _receipt_get(receipt, "deleted", False)
     if deleted or op == "delete":
-        return {"path": str(path), "effect": MISSING}
+        return {"written_paths": [], "deleted_paths": [str(path)]}
 
     content = _receipt_get(receipt, "content")
     if content is not None:
         if isinstance(content, str):
             content = content.encode("utf-8")
-        return {"path": str(path), "effect": hashlib.sha256(content).hexdigest()}
+        digest = hashlib.sha256(content).hexdigest()
+        return {"written_paths": [{"path": str(path), "hash": digest}], "deleted_paths": []}
 
     # Receipt doesn't carry raw content (e.g. it's a diff/patch receipt).
-    # Caller (sync_layer) should compute the expected hash itself from
-    # whatever it's about to hand to FileProjection.apply() and pass it
-    # in via ReconcileAttemptStore.set_expected_effect(index, effect=...)
-    # BEFORE calling apply(). Returning None here signals "unknown /
-    # caller must supply".
-    return {"path": str(path), "effect": None}
+    # Caller (sync_layer) should compute the expected hash itself and pass
+    # it in via set_expected_effect(index, effect=...). Returning an empty
+    # effect signals "unknown / caller must supply"; set_expected_effect
+    # raises on the empty effect so the caller can't silently skip it.
+    return {"written_paths": [], "deleted_paths": []}
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -276,14 +286,18 @@ class ReconcileAttemptStore:
         BEFORE that receipt is applied. Must be called before the
         corresponding FileProjection.apply().
 
+        `effect` uses the canonical format (see recover() docstring):
+
+            {"written_paths": [{"path": str, "hash": str}], "deleted_paths": [str]}
+
         If `effect` is omitted, it's computed from the receipt itself via
         `_expected_effect_for_receipt` (works when the receipt carries
         its own target content; for diff-only receipts pass `effect`
-        explicitly — see module docstring ASSUMPTION #2).
+        explicitly).
         """
         if effect is None:
             effect = _expected_effect_for_receipt(attempt.execution_receipts[index])
-            if effect.get("effect") is None:
+            if not effect.get("written_paths") and not effect.get("deleted_paths"):
                 raise ValueError(
                     f"cannot derive expected effect for receipt index {index}; "
                     "caller must pass effect= explicitly for diff-style receipts"
@@ -341,15 +355,28 @@ def recover(store: ReconcileAttemptStore, root: Path | str) -> RecoveryResult:
     was never attempted). Does NOT re-query the receipt list from
     anywhere else; uses only the frozen sequence already on disk.
 
+    Expected-effect format (canonical — `apply_world_to_disk_decision`
+    and this function must agree on it):
+
+        {
+            "written_paths": [{"path": str, "hash": sha256_hex}, ...],
+            "deleted_paths": [str, ...],
+        }
+
+    `written_paths` hold the post-apply expectations: each file must exist
+    with exactly `hash` (the same sha256 hex `hash_file` returns). A
+    missing `hash` falls back to a mere-existence check. `deleted_paths`
+    must NOT exist after apply.
+
     Returns:
       action="none"                 -> no IN_PROGRESS attempt found, nothing to do
       action="backfilled_and_ready" -> boundary receipt's disk effect matched
                                         expectation exactly; mark_disk_synced was
-                                        NOT called here (caller must call it —
-                                        see sync_layer integration note below)
-                                        and next_receipt_index has been advanced.
-                                        Caller should resume the normal apply
-                                        loop from the new next_receipt_index.
+                                        NOT called here (caller must call it) and
+                                        next_receipt_index was NOT advanced here
+                                        (caller calls record_progress). Caller
+                                        should backfill the mark for this receipt
+                                        then resume the apply loop.
       action="stopped"              -> mismatch or ambiguity. attempt is left
                                         untouched (still IN_PROGRESS) on disk.
                                         Caller MUST NOT resume the loop and
@@ -376,30 +403,77 @@ def recover(store: ReconcileAttemptStore, root: Path | str) -> RecoveryResult:
         # to reconcile — the receipt simply hasn't been attempted.
         return RecoveryResult(action="backfilled_and_ready", attempt=attempt)
 
-    path = root / expected["path"]
-    expected_effect = expected["effect"]
-    actual_hash = _hash_file(path)
-    actual_effect = MISSING if actual_hash is None else actual_hash
+    if not isinstance(expected, dict):
+        return RecoveryResult(
+            action="stopped",
+            attempt=attempt,
+            reason=(
+                f"expected effect for receipt index {idx} is not a dict: "
+                f"{expected!r}; manual inspection required"
+            ),
+            mismatched_index=idx,
+        )
 
-    if actual_effect == expected_effect:
-        # apply() succeeded before the crash; mark_disk_synced() did not.
-        # Backfill: advance the boundary by one. Caller is responsible for
-        # calling mark_disk_synced(receipt.version) for THIS receipt
-        # (sync_layer owns the SyncState reference, not this module) and
-        # then calling store.record_progress(...) to persist the advance —
-        # or call record_progress here if you'd rather centralize it.
+    written = list(expected.get("written_paths") or [])
+    deleted = list(expected.get("deleted_paths") or [])
+
+    if not written and not deleted:
+        # No disk effect recorded — nothing to verify, same as "not yet
+        # attempted". Safe for the caller to resume from this receipt.
         return RecoveryResult(action="backfilled_and_ready", attempt=attempt)
 
-    # Mismatch or ambiguous (partial write, wrong content, wrong
-    # presence/absence). Fail loud. Do not touch the attempt file, do not
-    # advance, do not let the decision be superseded.
-    return RecoveryResult(
-        action="stopped",
-        attempt=attempt,
-        reason="disk state does not match expected post-apply effect for the "
-               "boundary receipt; manual inspection required",
-        mismatched_index=idx,
-        mismatched_path=expected["path"],
-        expected=expected_effect,
-        actual=actual_effect,
-    )
+    # ── verify written paths: must exist with exactly the stored hash ──
+    for entry in written:
+        if isinstance(entry, str):
+            path_str, exp_hash = entry, None
+        else:
+            path_str = entry.get("path")
+            exp_hash = entry.get("hash")
+        if not path_str:
+            continue
+        disk_path = _resolve_disk_path(root, str(path_str))
+        actual_hash = _hash_file(disk_path)
+        actual_effect = MISSING if actual_hash is None else actual_hash
+        if exp_hash is not None:
+            ok = actual_effect == exp_hash
+        else:
+            # No stored hash (legacy/partial data): require mere existence.
+            ok = actual_hash is not None
+        if not ok:
+            return RecoveryResult(
+                action="stopped",
+                attempt=attempt,
+                reason=(
+                    "disk state does not match expected post-apply effect "
+                    "for the boundary receipt; manual inspection required"
+                ),
+                mismatched_index=idx,
+                mismatched_path=str(path_str),
+                expected=exp_hash,
+                actual=actual_effect,
+            )
+
+    # ── verify deleted paths: must not exist ──
+    for path_str in deleted:
+        disk_path = _resolve_disk_path(root, str(path_str))
+        actual_hash = _hash_file(disk_path)
+        if actual_hash is not None:
+            return RecoveryResult(
+                action="stopped",
+                attempt=attempt,
+                reason=(
+                    "disk state does not match expected post-apply effect "
+                    "for the boundary receipt (expected deleted path still "
+                    "present); manual inspection required"
+                ),
+                mismatched_index=idx,
+                mismatched_path=str(path_str),
+                expected=MISSING,
+                actual=actual_hash,
+            )
+
+    # apply() succeeded before the crash; mark_disk_synced() did not.
+    # Backfill signal: the caller must call mark_disk_synced(receipt.version)
+    # for THIS receipt and then store.record_progress(...) to persist the
+    # advance before resuming the normal apply loop.
+    return RecoveryResult(action="backfilled_and_ready", attempt=attempt)

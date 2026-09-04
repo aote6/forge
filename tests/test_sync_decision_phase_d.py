@@ -357,32 +357,31 @@ class TestPhaseDIntegration(unittest.TestCase):
         return d
 
     def test_no_in_progress_attempt_runs_normal_path(self):
-        """No attempt file → apply_world_to_disk_decision runs normally."""
+        """No attempt file → apply_world_to_disk_decision runs normally
+        and completes cleanup."""
         from forge.sync.attempt import ReconcileAttemptStore
 
         d = self._make_decision()
         report = self.layer.detect.return_value
         out = self.layer.apply_world_to_disk_decision(d, report)
-        # With empty receipts, this immediately returns detect() result
         self.assertIsNotNone(out)
 
         store = ReconcileAttemptStore(self.root / ".forge")
         attempt = store.load()
-        self.assertIsNotNone(attempt)
-        self.assertEqual(attempt.status, "IN_PROGRESS")
+        self.assertIsNone(attempt)
 
-    def test_in_progress_attempt_blocks_reapply(self):
-        """An IN_PROGRESS attempt must block direct re-apply."""
+    def test_successful_execution_clears_attempt(self):
+        """Successful execution clears the attempt file, so the next
+        call does NOT block."""
         from forge.sync.attempt import ReconcileAttemptStore
 
         d = self._make_decision()
         report = self.layer.detect.return_value
         self.layer.apply_world_to_disk_decision(d, report)
 
-        # Second call must be blocked
-        out = self.layer.apply_world_to_disk_decision(d, report)
-        self.assertTrue("phase_d" in (out.detail or ""))
-        self.assertTrue("in_progress" in (out.detail or ""))
+        store = ReconcileAttemptStore(self.root / ".forge")
+        attempt = store.load()
+        self.assertIsNone(attempt)
 
 
 if __name__ == "__main__":

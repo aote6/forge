@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -153,6 +154,10 @@ class FileProjection(Projection):
         files_created = []
         files_modified = []
         files_deleted = []
+        # path -> sha256 hex of the content apply() will actually write.
+        # Mirrors apply()'s content derivation exactly so ReconcileAttempt
+        # can record the *post-apply* hash before touching disk.
+        target_hashes: dict[str, str] = {}
 
         for object_id, writes in self._group_writes_by_object(delta).items():
             path = self._get_path(writes)
@@ -170,16 +175,32 @@ class FileProjection(Projection):
                     new_content = self.patch_engine.apply_edits(original, self._dicts_to_edits(operations))
                     patch = self.patch_engine.diff(original, new_content, path)
                 elif content is not None:
+                    new_content = content
                     patch = self.patch_engine.diff(original, content, path)
                 else:
+                    new_content = None
                     patch = ""
                 if patch.strip():
                     diffs[path] = patch
                     files_modified.append(path)
+                    if new_content is not None:
+                        target_hashes[path] = hashlib.sha256(
+                            new_content.encode("utf-8")
+                        ).hexdigest()
             else:
                 files_created.append(path)
-                preview = (content or "")[:500]
-                if len(content or "") > 500:
+                # apply() writes either the edit result (operations on "") or
+                # the raw content, exactly like the loop above.
+                if operations:
+                    new_content = self.patch_engine.apply_edits("", self._dicts_to_edits(operations))
+                else:
+                    new_content = content
+                if new_content is not None:
+                    target_hashes[path] = hashlib.sha256(
+                        new_content.encode("utf-8")
+                    ).hexdigest()
+                preview = (new_content or "")[:500]
+                if len(new_content or "") > 500:
                     preview += "\n...(truncated)"
                 diffs[path] = preview
 
@@ -198,6 +219,7 @@ class FileProjection(Projection):
             "files_created": files_created,
             "files_modified": files_modified,
             "files_deleted": files_deleted,
+            "target_hashes": target_hashes,
             "requires_confirmation": True,
         }
 

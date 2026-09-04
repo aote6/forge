@@ -843,22 +843,26 @@ class SyncLayer:
         for i, receipt in enumerate(sequence):
             ver = int(getattr(receipt, "version", 0) or 0)
 
-            # Phase D：apply 前 durable 写 expected effects
+            # Phase D：apply 前 durable 写 expected effects（含 apply 后内容 hash）
             try:
                 info = self._file_projection.prepare(
                     getattr(receipt, "delta", None)
                 ) or {}
             except Exception:
                 info = {}
-            written_before = list(info.get("files_modified", []) or [])
+            written_before = list(info.get("files_modified", []) or []) + list(
+                info.get("files_created", []) or []
+            )
             deleted_before = list(info.get("files_deleted", []) or [])
+            target_hashes = info.get("target_hashes", {}) or {}
             expected_effect = {
-                "written_paths": written_before,
+                "written_paths": [
+                    {"path": p, "hash": target_hashes.get(p)}
+                    for p in written_before
+                ],
                 "deleted_paths": deleted_before,
             }
-            attempt_store.set_expected_effect(
-                attempt, i, effect={"paths": expected_effect}
-            )
+            attempt_store.set_expected_effect(attempt, i, effect=expected_effect)
 
             try:
                 result = self._file_projection.apply(
@@ -913,6 +917,17 @@ class SyncLayer:
                 )
             decision.mark_count = int(getattr(decision, "mark_count", 0) or 0) + 1
             decision.last_marked_version = ver
+
+            # Phase D：mark 成功后 durable 更新 attempt progress
+            attempt_store.record_progress(
+                attempt,
+                next_receipt_index=i + 1,
+                last_marked_version=ver,
+            )
+
+        # 所有 receipt 处理完：标记 attempt 完成，清除 attempt 文件
+        attempt_store.mark_completed(attempt)
+        attempt_store.clear()
 
         return self.detect()
 
