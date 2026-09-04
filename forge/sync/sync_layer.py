@@ -840,8 +840,26 @@ class SyncLayer:
 
         attempt = attempt_store.create(decision, sequence)
 
-        for receipt in sequence:
+        for i, receipt in enumerate(sequence):
             ver = int(getattr(receipt, "version", 0) or 0)
+
+            # Phase D：apply 前 durable 写 expected effects
+            try:
+                info = self._file_projection.prepare(
+                    getattr(receipt, "delta", None)
+                ) or {}
+            except Exception:
+                info = {}
+            written_before = list(info.get("files_modified", []) or [])
+            deleted_before = list(info.get("files_deleted", []) or [])
+            expected_effect = {
+                "written_paths": written_before,
+                "deleted_paths": deleted_before,
+            }
+            attempt_store.set_expected_effect(
+                attempt, i, effect={"paths": expected_effect}
+            )
+
             try:
                 result = self._file_projection.apply(
                     receipt, getattr(receipt, "delta", None)
