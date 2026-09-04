@@ -56,6 +56,7 @@ _STOP_WHEN_RE = re.compile(
 SUBAGENT_SYSTEM = """你是 Forge 子 Agent。完成主 Agent 交给你的子任务。
 - 用工具探索与必要的小修改（str_replace / write_file）。
 - 不要无限搜索；找到结论后停止调用工具。
+- 只读侦查优先用 read_file / glob_files / search_code / git_diff 等专用工具；避免用 && / | / ; 拼接 shell 命令做侦查——组合命令会触发确认门禁，消耗额外回合。专用工具覆盖不到时才用 run_command。
 - 每一轮回复（无论是否调用工具）必须单独包含一行循环控制信号，格式固定为其一：
   STOP_WHEN: not_met
   STOP_WHEN: met

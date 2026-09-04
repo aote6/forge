@@ -94,7 +94,13 @@ READ_ONLY_TOOL_DECLARATIONS = [
     },
     {
         "name": "run_command",
-        "description": "在项目根执行 shell（测试、构建、脚本）。危险命令会被拦截。",
+        "description": (
+            "在项目根执行 shell（测试、构建、脚本）。危险命令会被拦截；"
+            "用 && / | / ; 拼接的组合命令会触发确认门禁，增加交互开销。"
+            "只读侦查优先用 read_file / glob_files / search_code / git_diff "
+            "等专用工具（不触发确认）；run_command 用于专用工具覆盖不到的场景"
+            "（跑测试、构建、执行脚本、必须用管道处理输出等）。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
