@@ -66,6 +66,64 @@ def make_tools(
                         )
                     )
 
+                # Phase D：先处理可能存在的 IN_PROGRESS reconcile attempt
+                import pathlib as _pathlib
+                from forge.sync.attempt import ReconcileAttemptStore, recover as recover_attempt
+
+                attempt_store = ReconcileAttemptStore(
+                    _pathlib.Path(sync_layer.project_root) / ".forge"
+                )
+                recovery = recover_attempt(
+                    attempt_store, _pathlib.Path(sync_layer.project_root)
+                )
+                if recovery.action == "stopped":
+                    payload = {
+                        "mutation": False,
+                        "protocol": "sync_decision_reconciliation",
+                        "phase": "D",
+                        "decision_status": "recovery_blocked",
+                        "reconciliation_authorized": False,
+                        "execution_pending": False,
+                        "reason": recovery.reason,
+                        "mismatched_path": recovery.mismatched_path,
+                        "expected": recovery.expected,
+                        "actual": recovery.actual,
+                    }
+                    return ToolResult.fail(
+                        display=(
+                            "⛔ Phase D recovery blocked：崩溃恢复时磁盘状态不匹配，"
+                            "无法证明当前 receipt 的 expected effect。\n"
+                            f"reason: {recovery.reason}\n"
+                            f"mismatched_path: {recovery.mismatched_path}\n"
+                            f"expected: {recovery.expected}\n"
+                            f"actual: {recovery.actual}\n"
+                            "禁止 supersede，禁止继续执行。需要人工检查。"
+                        ),
+                        payload=payload,
+                    )
+                if recovery.action == "backfilled_and_ready" and recovery.attempt is not None:
+                    # 边界 receipt 已写盘但 mark 未落：补 mark
+                    attempt = recovery.attempt
+                    idx = attempt.next_receipt_index
+                    if idx > 0 and idx <= len(attempt.execution_receipts):
+                        boundary = attempt.execution_receipts[idx - 1]
+                        ver = None
+                        if isinstance(boundary, dict):
+                            ver = boundary.get("version")
+                        else:
+                            ver = getattr(boundary, "version", None)
+                        if ver is not None:
+                            try:
+                                sync_layer.state.mark_disk_synced(
+                                    int(ver),
+                                    written_paths=[],
+                                    deleted_paths=[],
+                                    source="user_reconcile_world_wins",
+                                )
+                            except Exception as e:
+                                import sys as _sys
+                                print(f"[phase_d] backfill mark failed: {e}", file=_sys.stderr)
+
                 # Phase A：DECIDED 协议分支（在 sync() 之前；只读 detect，不碰 SyncState 写入）
                 report = sync_layer.detect()
                 decision_store = SyncDecisionStore(sync_layer.project_root)
