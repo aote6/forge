@@ -7,6 +7,10 @@
 - 交互时向终端发送 \\x1b[?2004h 启用 bracketed paste。
   Termux 等支持它的终端会把粘贴内容包在 \\x1b[200~ ... \\x1b[201~
   里，粘贴内部的换行是字面换行，只有 \\x1b[201~ 到达才整体提交。
+- 裸流兜底（无 BP 标记时）：在非 in_paste 路径上，若本将因 CR/LF
+  提交，则对 stdin 做极短 lookahead；若已有后续可读字节，则把该
+  CR/LF 视为内容换行而非提交。这是工程启发式，不能理论上 100%
+  区分「用户 Enter」与「粘贴流中的换行」。
 - 手动兜底：行尾以反斜杠 \\ 结尾时，下一行继续拼接到同一条消息
   （适用于不支持 bracketed paste 的终端）。
 - 基本编辑：退格删除；Ctrl+C 抛 KeyboardInterrupt；Ctrl+D 空输入返回 None。
@@ -19,7 +23,7 @@
 - 改为基于实际显示宽度（east_asian_width）计算占用行数，用相对光标上移
   + 逐行清行（\\x1b[2K）后整段重写。宽字符/emoji/中文折行都能正确处理。
 
-key_source / write 参数供测试注入，避免依赖真实终端。
+key_source / write / pending_check 参数供测试注入，避免依赖真实终端。
 """
 
 from __future__ import annotations
@@ -39,10 +43,19 @@ except ImportError:  # pragma: no cover - 非 POSIX 平台
     tty = None
     _POSIX = False
 
+try:
+    import select as _select
+except ImportError:  # pragma: no cover
+    _select = None
+
 _BP_START = "\x1b[200~"  # bracketed paste 开始
 _BP_END = "\x1b[201~"  # bracketed paste 结束
 _BP_ENABLE = "\x1b[?2004h"
 _BP_DISABLE = "\x1b[?2004l"
+
+# CR/LF 提交前 stdin lookahead 超时（秒）。仅用于「是否已有后续字节」，
+# 不是全局按键间隔启发式。保持极短，避免拖慢普通 Enter。
+_PENDING_LOOKAHEAD_SEC = 0.015
 
 
 def _char_width(ch: str) -> int:
@@ -184,10 +197,35 @@ def _read_key(fd) -> str | None:
     return bytes(seq).decode("utf-8", "replace")
 
 
+def _stdin_has_pending(fd: int, timeout: float = _PENDING_LOOKAHEAD_SEC) -> bool:
+    """True if stdin already has (or soon has) readable data.
+
+    Used only at the CR/LF submit boundary. Engineering heuristic — not a
+    perfect paste detector. Fail-closed: any error → False (submit).
+    """
+    if _select is None:
+        return False
+    try:
+        r, _, _ = _select.select([fd], [], [], timeout)
+        return bool(r)
+    except Exception:
+        return False
+
+
 def _read_loop(
-    prompt: str, key_source, write, width: int | None = None
+    prompt: str,
+    key_source,
+    write,
+    width: int | None = None,
+    pending_check=None,
 ) -> tuple[str | None, bool]:
-    """核心状态机。返回 (result, submitted)；submitted=False 表示异常中断。"""
+    """核心状态机。返回 (result, submitted)；submitted=False 表示异常中断。
+
+    pending_check: optional callable () -> bool. When about to submit on
+    CR/LF outside bracketed-paste, if pending_check() is True the CR/LF is
+    treated as a content newline instead. Production wires this to
+    select()-based stdin lookahead; tests inject an explicit checker.
+    """
     if width is None:
         width = _get_terminal_width()
 
@@ -220,12 +258,21 @@ def _read_loop(
             elif not ch.startswith("\x1b"):
                 buffer += ch
             continue
-        # 非粘贴：回车提交
+        # 非粘贴：回车——默认提交；若 lookahead 显示流仍在继续则当换行
         if ch in ("\r", "\n"):
             if buffer.rstrip().endswith("\\"):
                 buffer = buffer.rstrip()[:-1] + "\n"
                 prev_lines = _render(write, clean, buffer, prev_lines, width)
                 continue
+            if pending_check is not None:
+                try:
+                    more = bool(pending_check())
+                except Exception:
+                    more = False
+                if more:
+                    buffer += "\n"
+                    prev_lines = _render(write, clean, buffer, prev_lines, width)
+                    continue
             return buffer, True
         if ch in ("\x7f", "\x08"):  # 退格
             if buffer:
@@ -244,17 +291,28 @@ def _read_loop(
 
 
 def read_multiline_input(
-    prompt: str = "> ", key_source=None, write=None, width: int | None = None
+    prompt: str = "> ",
+    key_source=None,
+    write=None,
+    width: int | None = None,
+    pending_check=None,
 ) -> str | None:
     """读取一条（可能多行）输入，返回 str；EOF / Ctrl+D 空输入返回 None。
 
-    key_source / write 仅供测试注入；默认从终端读取。
+    key_source / write / pending_check 仅供测试注入；默认从终端读取。
     width 为 None 时用真实终端宽度（_get_terminal_width()），否则强制指定
     折行宽度（供窄屏测试与固定宽度场景使用）。纯透传，不改变算法。
+
+    pending_check: 可选 () -> bool。测试用；真实 tty 路径忽略此参数，
+    改为对 stdin fd 做 select lookahead。
     """
     if key_source is not None:
         result, _submitted = _read_loop(
-            prompt, key_source, write or (lambda s: None), width=width
+            prompt,
+            key_source,
+            write or (lambda s: None),
+            width=width,
+            pending_check=pending_check,
         )
         return result
 
@@ -275,13 +333,18 @@ def read_multiline_input(
     def _ks():
         return _read_key(fd)
 
+    def _pending():
+        return _stdin_has_pending(fd)
+
     def _wr(s: str) -> None:
         sys.stdout.write(s)
         sys.stdout.flush()
 
     _wr(_BP_ENABLE)
     try:
-        result, submitted = _read_loop(prompt, _ks, _wr, width=width)
+        result, submitted = _read_loop(
+            prompt, _ks, _wr, width=width, pending_check=_pending
+        )
         if submitted:
             if not (result or "").endswith("\n"):
                 _wr("\r\n")  # 结束本行，让后续输出从新行开始

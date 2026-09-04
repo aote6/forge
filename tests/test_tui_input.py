@@ -19,6 +19,10 @@ class Feed:
     def __call__(self):
         return self._keys.pop(0) if self._keys else None
 
+    def has_pending(self) -> bool:
+        """True when more keys remain — models stdin still readable after CR."""
+        return bool(self._keys)
+
 
 def feed(*chunks):
     """把字符串按字符拆开、转义序列保持整段，组成按键流。"""
@@ -393,3 +397,76 @@ def test_narrow_backspace_no_residue():
     expected = text[:-3]
     assert out == expected
     assert "".join(vt.screen()) == "💬 > " + expected
+
+
+# ── bare multiline (no bracketed-paste markers) + pending lookahead ──
+
+
+def test_bare_cr_with_pending_becomes_newline():
+    """CR 到达时仍有后续键：CR → \\n，不提交。"""
+    src = feed("a", "\r", "b", "\r")
+    out = read_multiline_input(key_source=src, pending_check=src.has_pending)
+    assert out == "a\nb"
+
+
+def test_bare_multiline_paste_one_submission():
+    """裸流 line1\\rline2\\rline3 + 最终 Enter → 一次得到三行。"""
+    src = feed("line1", "\r", "line2", "\r", "line3", "\r")
+    out = read_multiline_input(key_source=src, pending_check=src.has_pending)
+    assert out == "line1\nline2\nline3"
+
+
+def test_bare_multiline_waits_for_final_enter():
+    """中间 CR 因 pending 不提交；队列耗尽后的 Enter 才提交。"""
+    # After line3 there is one more \\r with empty pending → submit
+    src = feed("x", "\r", "y", "\r")
+    out = read_multiline_input(key_source=src, pending_check=src.has_pending)
+    assert out == "x\ny"
+
+
+def test_enter_without_pending_still_submits_immediately():
+    """普通 hello\\r 且无 pending → 立即提交（不依赖真实时间）。"""
+    src = feed("h", "e", "l", "l", "o", "\r")
+    out = read_multiline_input(key_source=src, pending_check=src.has_pending)
+    assert out == "hello"
+
+
+def test_enter_without_pending_check_unchanged():
+    """未注入 pending_check 时行为与改造前一致：首个 CR 即提交。"""
+    out = read_multiline_input(key_source=feed("line1", "\r", "line2", "\r"))
+    assert out == "line1"
+
+
+def test_bare_lf_with_pending_becomes_newline():
+    """LF 与 CR 同等：有 pending 时视为内容换行。"""
+    src = feed("a", "\n", "b", "\n")
+    out = read_multiline_input(key_source=src, pending_check=src.has_pending)
+    assert out == "a\nb"
+
+
+def test_backslash_continuation_still_works_with_pending_check():
+    """反斜杠续行优先于 pending lookahead，行为不变。"""
+    src = feed("a", "\\", "\r", "b", "\r")
+    out = read_multiline_input(key_source=src, pending_check=src.has_pending)
+    assert out == "a\nb"
+
+
+def test_bracketed_paste_unaffected_by_pending_check():
+    """BP 路径不走 pending 分支；注入 pending_check 也不应干扰。"""
+    src = feed("\x1b[200~", "l1\nl2\nl3", "\x1b[201~", "\r")
+    out = read_multiline_input(key_source=src, pending_check=src.has_pending)
+    assert out == "l1\nl2\nl3"
+
+
+def test_stdin_has_pending_uses_select(monkeypatch):
+    """_stdin_has_pending 委托 select；可读 → True，超时 → False。"""
+    calls = []
+
+    def fake_select(r, w, x, timeout):
+        calls.append(timeout)
+        return (r if timeout == 0.0 else []), [], []
+
+    monkeypatch.setattr(tui_input._select, "select", fake_select)
+    assert tui_input._stdin_has_pending(0, timeout=0.0) is True
+    assert tui_input._stdin_has_pending(0, timeout=0.015) is False
+    assert calls == [0.0, 0.015]
