@@ -102,7 +102,8 @@ def make_tools(
                         payload=payload,
                     )
                 if recovery.action == "backfilled_and_ready" and recovery.attempt is not None:
-                    # 边界 receipt 已写盘但 mark 未落：补 mark
+                    # 边界 receipt 已写盘但 mark 未落：补 mark，并用
+                    # attempt 里冻结的 expected effects 重建 baseline hash
                     attempt = recovery.attempt
                     idx = attempt.next_receipt_index
                     if idx > 0 and idx <= len(attempt.execution_receipts):
@@ -112,12 +113,25 @@ def make_tools(
                             ver = boundary.get("version")
                         else:
                             ver = getattr(boundary, "version", None)
+
+                        written_paths: list[str] = []
+                        deleted_paths: list[str] = []
+                        expected = attempt.expected_effect_at(idx - 1)
+                        if isinstance(expected, dict):
+                            for entry in expected.get("written_paths") or []:
+                                pth = entry.get("path") if isinstance(entry, dict) else str(entry)
+                                if pth:
+                                    written_paths.append(str(pth))
+                            for pth in expected.get("deleted_paths") or []:
+                                if pth:
+                                    deleted_paths.append(str(pth))
+
                         if ver is not None:
                             try:
                                 sync_layer.state.mark_disk_synced(
                                     int(ver),
-                                    written_paths=[],
-                                    deleted_paths=[],
+                                    written_paths=written_paths,
+                                    deleted_paths=deleted_paths,
                                     source="user_reconcile_world_wins",
                                 )
                             except Exception as e:
