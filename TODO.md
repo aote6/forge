@@ -37,10 +37,6 @@
   - 建议：验证主 AI 在需要执行面验证时是否仍会 spawn；必要时在 prompt 或 AgentTask 构造层补强。
   - 优先级：P2
 
-- [x] 主 AI 被 mutation policy 拒绝后，不会优雅转去 spawn_subagent。
-  - 验证结果：2026-09-03 实机测试“种错字→修复错字”链路，主 AI 未尝试直接 mutation，而是主动 resolve_sync_decision 后派子 AI 执行写入；主从委托闭环成立。
-  - 状态：已关闭。
-
 ### 架构审计遗留
 
 - [ ] Checkpoint clear 失败可能留下双文件。
