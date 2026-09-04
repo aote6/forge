@@ -120,17 +120,27 @@ def test_authorization_error_when_receipt_above_generation(tmp_path: Path):
     d = SyncDecision.new_pending(CONFLICT, gen)
     d.apply_direction(DIRECTION_WORLD_TO_DISK)
 
-    high = SimpleNamespace(version=99, delta=None, source="forge_tool")
+    # file-touching delta required so receipt survives _world_file_receipts_beyond filter
+    high = SimpleNamespace(
+        version=99,
+        delta=SimpleNamespace(memory_written=[{"state_id": 0}], objects_deleted=[]),
+        source="forge_tool",
+    )
     world = MagicMock()
     world.get_receipts_since.return_value = [high]
     world.get_version.return_value = 10
 
     layer = SyncLayer(str(tmp_path), world_runtime=world, sync_state=st)
     layer._file_projection = MagicMock()
+    # 避免末尾 detect() 在非 git tmp_path 返回 NOT_A_GIT_REPO 掩盖 authorization_error
+    layer.detect = MagicMock(
+        side_effect=AssertionError("detect must not run after authorization_error")
+    )
     out = layer.apply_world_to_disk_decision(d, report)
     assert "authorization_error" in (out.detail or "")
     assert st.disk_synced_version == 5
     assert d.mark_count == 0
+    layer.detect.assert_not_called()
 
 
 def test_per_receipt_mark_advances_watermark(tmp_path: Path):
@@ -146,8 +156,10 @@ def test_per_receipt_mark_advances_watermark(tmp_path: Path):
     d = SyncDecision.new_pending(CONFLICT, gen)
     d.apply_direction(DIRECTION_WORLD_TO_DISK)
 
-    r1 = SimpleNamespace(version=6, delta=None, source="forge_tool")
-    r2 = SimpleNamespace(version=8, delta=None, source="forge_tool")
+    # delta must touch files or receipts are filtered out before the loop
+    delta = SimpleNamespace(memory_written=[{"state_id": 0}], objects_deleted=[])
+    r1 = SimpleNamespace(version=6, delta=delta, source="forge_tool")
+    r2 = SimpleNamespace(version=8, delta=delta, source="forge_tool")
     world = MagicMock()
     world.get_receipts_since.return_value = [r1, r2]
     world.get_version.return_value = 12
@@ -163,10 +175,12 @@ def test_per_receipt_mark_advances_watermark(tmp_path: Path):
 
     layer = SyncLayer(str(tmp_path), world_runtime=world, sync_state=st)
     layer._file_projection = proj
-    # detect after will fail world - mock detect at end
     layer.detect = MagicMock(
         return_value=SyncReport(status=IN_SYNC, world_version=12, disk_synced_version=8)
     )
+
+    # 确认入口 classify 为 applicable（fixture 与 generation 一致）
+    assert classify_decision_applicability(d, report, st) == APPLICABLE
 
     out = layer.apply_world_to_disk_decision(d, report)
     assert d.mark_count == 2

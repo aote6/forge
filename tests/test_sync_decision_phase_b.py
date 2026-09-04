@@ -225,7 +225,8 @@ def test_forge_sync_execution_failed_keeps_decided(tmp_path: Path):
     assert loaded.status == STATUS_DECIDED
 
 
-def test_forge_sync_world_to_disk_still_pending_execution(tmp_path: Path):
+def test_forge_sync_world_to_disk_invokes_phase_c_executor(tmp_path: Path):
+    """Phase C：applicable + world_to_disk 走 apply_world_to_disk_decision，不调用 sync()。"""
     f = tmp_path / "m.txt"
     f.write_text("v1", encoding="utf-8")
     st = SyncState(tmp_path)
@@ -249,6 +250,8 @@ def test_forge_sync_world_to_disk_still_pending_execution(tmp_path: Path):
     d.apply_direction(DIRECTION_WORLD_TO_DISK)
     SyncDecisionStore(tmp_path).save(d)
 
+    in_sync = SyncReport(status=IN_SYNC, world_version=10, disk_synced_version=10)
+
     layer = MagicMock()
     layer.project_root = str(tmp_path)
     layer.state = st
@@ -256,10 +259,13 @@ def test_forge_sync_world_to_disk_still_pending_execution(tmp_path: Path):
     layer.apply_disk_to_world_decision = MagicMock(
         side_effect=AssertionError("must not run disk_to_world path")
     )
+    layer.apply_world_to_disk_decision = MagicMock(return_value=in_sync)
     layer.sync = MagicMock(side_effect=AssertionError("must not sync"))
 
     tools = make_tools(workspace=MagicMock(), allow_mutation=False, sync_layer=layer)
     result = tools["forge_sync"]()
-    assert result.success is True
-    assert result.payload.get("execution_pending") is True
-    assert result.payload.get("direction") == DIRECTION_WORLD_TO_DISK
+    assert result.success is True or getattr(result, "ok", None) is True
+    layer.apply_world_to_disk_decision.assert_called_once()
+    layer.sync.assert_not_called()
+    assert result.payload.get("decision_status") == "cleared"
+    assert result.payload.get("phase") == "C"
