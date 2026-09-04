@@ -1949,7 +1949,7 @@ R2 只做了"打开决策→用户 resolve→清除 pending"，但没有执行�
 - 执行前冻结 receipt sequence，发现 version > G.world_version 即 authorization_error 停止
 - `SyncDecision` 增加 `mark_count` / `last_marked_version`；partial execution 后 classify 返回 PARTIAL_EXECUTION，禁止普通 supersede
 
-### Phase D — 崩溃恢复（commit 1825b8e + ed09693）
+### Phase D — 崩溃恢复（commit 1825b8e + ed09693 + 561243e + 22facac）
 - 新增 `forge/sync/attempt.py`：ReconcileAttemptStore + recover()
 - `.forge/reconcile_attempt.json` durable 记录冻结 execution_receipts、expected_path_effects、next_receipt_index
 - 核心顺序：expected effects durable → apply → mark → progress durable
@@ -1957,8 +1957,16 @@ R2 只做了"打开决策→用户 resolve→清除 pending"，但没有执行�
 - 磁盘不匹配或含糊 → STOP，不 supersede，不自动继续
 - `forge_sync()` 入口先跑 recover()，stopped 时返回 recovery_blocked
 
+### Phase D 修复（commit 561243e + 22facac）
+- 统一 expected effect 格式：`{"written_paths": [{"path": str, "hash": sha256}], "deleted_paths": [str]}`，写入和恢复两端一致
+- `FileProjection.prepare()` 新增 `target_hashes`：apply 前就能算出写盘后内容 hash
+- `recover()` 重写为多路径比对：written 要求存在且 hash 一致，deleted 要求不存在
+- 修复：执行成功后 attempt 未清理，导致下次 forge_sync 误判为需要恢复
+- 修复：恢复补 mark 时用空路径，导致 baseline hash 不刷新
+- 新增 `tests/test_recovery_e2e.py`：无 MagicMock 的真实崩溃恢复端到端测试
+
 ### 测试
-- 全量 794 passed，1 skipped（端到端集成测试壳，待补真实实现）
+- 全量 799 passed，0 skipped
 
 ### 结论
 同步安全链从"resolve 后 forge_sync 又 CONFLICT"到"决策→授权→执行→验证→恢复"完整闭环。
