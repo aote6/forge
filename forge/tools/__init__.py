@@ -40,9 +40,20 @@ def make_tools(
 
             报告同时承载同步状态；只读状态查询可用 Runtime.sync_status() 或 CLI `status`。
             R2: RuntimeState.pending.kind==sync_decision 时拒绝推进。
+            Phase A: DECIDED + applicable → 返回已授权未执行，不推进 SyncState / 磁盘。
             """
             try:
                 from forge.runtime_state import sync_decision_pending_blocks
+                from forge.sync.decision import (
+                    ALREADY_IN_SYNC,
+                    APPLICABLE,
+                    LEGACY_NO_GENERATION,
+                    STATUS_DECIDED,
+                    STALE,
+                    SyncDecisionStore,
+                    classify_decision_applicability,
+                    supersede_decided_with_pending,
+                )
 
                 blocked, summary = sync_decision_pending_blocks(sync_layer.project_root)
                 if blocked:
@@ -53,15 +64,116 @@ def make_tools(
                             "请先 resolve_sync_decision(direction=disk_to_world|world_to_disk|abort)。"
                         )
                     )
+
+                # Phase A：DECIDED 协议分支（在 sync() 之前；只读 detect，不碰 SyncState 写入）
+                report = sync_layer.detect()
+                decision_store = SyncDecisionStore(sync_layer.project_root)
+                decision = decision_store.load()
+                if decision is not None and decision.status == STATUS_DECIDED:
+                    kind = classify_decision_applicability(
+                        decision, report, sync_layer.state
+                    )
+                    if kind == ALREADY_IN_SYNC or report.status == IN_SYNC:
+                        decision_store.clear()
+                        payload = {
+                            "mutation": False,
+                            "protocol": "sync_decision_reconciliation",
+                            "phase": "A",
+                            "decision_status": "cleared",
+                            "reconciliation_authorized": False,
+                            "execution_pending": False,
+                            **report.to_dict(),
+                        }
+                        return ToolResult.ok(
+                            display=report.format()
+                            + "\n[phase A] IN_SYNC：已清除 durable SyncDecision。",
+                            payload=payload,
+                        )
+                    if kind == APPLICABLE:
+                        payload = {
+                            "mutation": False,
+                            "protocol": "sync_decision_reconciliation",
+                            "phase": "A",
+                            "decision_status": "authorized_pending_execution",
+                            "reconciliation_authorized": True,
+                            "execution_pending": True,
+                            "direction": decision.direction,
+                            "decision_id": decision.decision_id,
+                            **report.to_dict(),
+                        }
+                        return ToolResult.ok(
+                            display=(
+                                report.format()
+                                + "\n[phase A] SyncDecision 已授权且仍 applicable："
+                                f"direction={decision.direction} decision_id={decision.decision_id}。"
+                                "\n本阶段不执行 reconciliation（不修改 SyncState / 磁盘）；"
+                                "待执行层上线后再推进。"
+                            ),
+                            payload=payload,
+                        )
+                    if kind in (STALE, LEGACY_NO_GENERATION):
+                        old_id = decision.decision_id
+                        new_decision = supersede_decided_with_pending(
+                            sync_layer.project_root, report, sync_layer.state
+                        )
+                        if new_decision is None:
+                            # HI owns the slot: do not touch SyncDecision artifact.
+                            payload = {
+                                "mutation": False,
+                                "protocol": "sync_decision_reconciliation",
+                                "phase": "A",
+                                "decision_status": "stale",
+                                "reconciliation_authorized": False,
+                                "execution_pending": False,
+                                "pending_opened": False,
+                                "reason": kind,
+                                "blocked_by": "human_intervention",
+                                "old_decision_id": old_id,
+                                **report.to_dict(),
+                            }
+                            return ToolResult.ok(
+                                display=(
+                                    report.format()
+                                    + f"\n[phase A] SyncDecision stale ({kind})，"
+                                    "但 RuntimeState 存在 human_intervention pending；"
+                                    "未覆盖 SyncDecision，请先处理 HI。"
+                                ),
+                                payload=payload,
+                            )
+                        payload = {
+                            "mutation": False,
+                            "protocol": "sync_decision_reconciliation",
+                            "phase": "A",
+                            "decision_status": "stale",
+                            "reconciliation_authorized": False,
+                            "execution_pending": False,
+                            "pending_opened": True,
+                            "reason": kind,
+                            "old_decision_id": old_id,
+                            "new_decision_id": new_decision.decision_id,
+                            **report.to_dict(),
+                        }
+                        return ToolResult.ok(
+                            display=(
+                                report.format()
+                                + f"\n[phase A] SyncDecision stale ({kind})："
+                                f"旧 decision_id={old_id} 已原子替换为新 PENDING "
+                                f"new_decision_id={new_decision.decision_id}。"
+                                "\n请重新 resolve_sync_decision(direction=...)。"
+                            ),
+                            payload=payload,
+                        )
+
                 # P2-1c 清账：先看是否正处在 Disk → World 分叉；若 forge_sync 成功把它
                 # FAST_FORWARD 回 World，则清掉对应的 direct_disk 待对账标记。
                 try:
                     was_disk_to_world = (
-                        sync_layer.detect().status == FAST_FORWARD_DISK_TO_WORLD
+                        report.status == FAST_FORWARD_DISK_TO_WORLD
                     )
                 except Exception:
                     was_disk_to_world = False
                 report = sync_layer.sync()
+
                 ok = report.status == IN_SYNC
                 payload = {"mutation": True, **report.to_dict()}
                 display = report.format()

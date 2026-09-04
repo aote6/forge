@@ -2169,6 +2169,7 @@ class Runtime:
             STATUS_DECIDED,
             STATUS_PENDING,
             SyncDecision,
+            build_sync_decision_generation,
             needs_sync_decision,
         )
         from forge.sync.sync_layer import IN_SYNC
@@ -2240,7 +2241,11 @@ class Runtime:
                     f"with new basis={status}; old decision_id now invalid",
                     file=sys.stderr,
                 )
-            decision = SyncDecision.new_pending(basis=status)
+            sync_state = None
+            if getattr(self, "sync_layer", None) is not None:
+                sync_state = getattr(self.sync_layer, "state", None)
+            generation = build_sync_decision_generation(report, sync_state)
+            decision = SyncDecision.new_pending(basis=status, generation=generation)
             self._sync_decision_store.save(decision)
 
         self.sync_decision = decision
@@ -2266,6 +2271,7 @@ class Runtime:
 
         direction: disk_to_world | world_to_disk | abort
         不自动执行 forge_sync；决议后 Gate 放行，由调用方再推进同步。
+        不重算、不修改 generation（授权边界在 open 时冻结）。
 
         Persist order (P1-01): apply_direction → save SD terminal → clear RS.pending.
         Never clear the index before the decision body reaches a terminal status.
