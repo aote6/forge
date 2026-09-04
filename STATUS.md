@@ -1922,3 +1922,43 @@ WRITE_CONFIRM 分支在当前工具面下结构性不可达——不是死代码
   - 集成：真实 Runtime 构造（Runtime(adapter, ws, MemoryStore())）走 _run_conversation → MAIN_AUDITED → _record_main_tool_call → tool_call_records.jsonl，覆盖 resolve_sync_decision 和 spawn_subagent
 - 验证：751 tests passed
 - 后续：get_runtime_state 是否纳入审计、ToolCallRecord schema 是否需要演进，留待需要时再决定
+
+## 同步决策→执行→恢复全链路闭环（2026-09-03 ~ 09-04）
+
+### 背景
+R2 只做了"打开决策→用户 resolve→清除 pending"，但没有执行桥接。resolve(disk_to_world) 后 forge_sync 重新 detect 又 CONFLICT，决策从未被消费。
+
+### 设计文档
+- 新增 `docs/standards/sync_decision_reconciliation.md`：v1.1 + Closure Addendum + Phase A Closure Amendment。
+- 核心边界：generation 冻结授权观察；resolve 只授权不执行；执行方向只来自 durable SyncDecision；verify 用 detect()==IN_SYNC；watermark 只在真正同步成功后推进。
+
+### Phase A — 授权判定（commit 76f0c8f）
+- `SyncDecision` 增加 `generation` 字段，冻结决策时的 World/Disk 观察
+- `build_sync_decision_generation()` + `fingerprint_managed_disk()` 构造授权边界
+- `classify_decision_applicability()` 返回 applicable / stale / already_in_sync / not_decided / legacy_no_generation
+- `forge_sync()` 在 DECIDED 时先走协议分支，不直接调用 sync()
+
+### Phase B — disk_to_world 执行器（commit 64e6c73）
+- `SyncState.accept_disk_wins()` 单次 durable mutation 完成 baseline 重建 + watermark 推进到 generation.world_version
+- `SyncLayer.apply_disk_to_world_decision()` preflight → accept_disk_wins → detect() verify
+- watermark 永不超过 generation.world_version
+
+### Phase C — world_to_disk 执行器（commit 7206d61）
+- `SyncLayer.apply_world_to_disk_decision()` 逐笔 receipt：apply 成功才 mark_disk_synced
+- watermark 严格 <= 最高成功物化的 receipt.version
+- 执行前冻结 receipt sequence，发现 version > G.world_version 即 authorization_error 停止
+- `SyncDecision` 增加 `mark_count` / `last_marked_version`；partial execution 后 classify 返回 PARTIAL_EXECUTION，禁止普通 supersede
+
+### Phase D — 崩溃恢复（commit 1825b8e + ed09693）
+- 新增 `forge/sync/attempt.py`：ReconcileAttemptStore + recover()
+- `.forge/reconcile_attempt.json` durable 记录冻结 execution_receipts、expected_path_effects、next_receipt_index
+- 核心顺序：expected effects durable → apply → mark → progress durable
+- 恢复三窗口：apply 前（无副作用）、apply 后 mark 前（磁盘匹配则补 mark）、mark 后（续跑）
+- 磁盘不匹配或含糊 → STOP，不 supersede，不自动继续
+- `forge_sync()` 入口先跑 recover()，stopped 时返回 recovery_blocked
+
+### 测试
+- 全量 794 passed，1 skipped（端到端集成测试壳，待补真实实现）
+
+### 结论
+同步安全链从"resolve 后 forge_sync 又 CONFLICT"到"决策→授权→执行→验证→恢复"完整闭环。
