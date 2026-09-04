@@ -802,6 +802,21 @@ class SyncLayer:
                 detail=f"phase_c: cannot list receipts: {e}",
             )
 
+        from forge.sync.attempt import ReconcileAttemptStore
+
+        attempt_store = ReconcileAttemptStore(
+            Path(self.project_root) / ".forge"
+        )
+        existing_attempt = attempt_store.load()
+        if existing_attempt is not None and existing_attempt.status == "IN_PROGRESS":
+            return SyncReport(
+                status=CONFLICT,
+                detail=(
+                    "phase_d: in_progress ReconcileAttempt exists; "
+                    "recovery must run before apply_world_to_disk_decision"
+                ),
+            )
+
         # 授权异常：任何 version > G.world_version 必须 stop（不是静默过滤）
         for r in pending:
             ver = int(getattr(r, "version", 0) or 0)
@@ -822,6 +837,8 @@ class SyncLayer:
             if int(getattr(r, "version", 0) or 0) <= authorized_wv
         ]
         # sequence 已冻结；循环中不得重新 get_receipts 纳入新 receipt
+
+        attempt = attempt_store.create(decision, sequence)
 
         for receipt in sequence:
             ver = int(getattr(receipt, "version", 0) or 0)
