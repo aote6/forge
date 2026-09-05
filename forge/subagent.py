@@ -295,6 +295,12 @@ def run_subagent(
     ]
     last_text = ""
     records: list[ToolCallRecord] = []
+    # Preempt counters (process-local; not persisted). Checked only at tool
+    # boundaries after update_after_tool / after a full tool-call batch.
+    constraint_deny_count = 0
+    consecutive_tool_errors = 0
+    steps_used = 0
+    budget_limit = max(1, (int(max_steps) * 7 + 9) // 10)  # ceil(0.7 * max_steps)
 
     def _stop() -> bool:
         if should_stop is None:
@@ -306,6 +312,7 @@ def run_subagent(
 
     try:
         for _ in range(max_steps):
+            steps_used += 1
             if _stop():
                 return _finalize(
                     task,
@@ -375,6 +382,7 @@ def run_subagent(
                 args = tc.arguments if isinstance(tc.arguments, dict) else {}
                 decision = enforce(tc.name, args, constraints)
                 if not decision.allowed:
+                    constraint_deny_count += 1
                     messages.append(
                         Message(
                             role="tool",
@@ -491,6 +499,12 @@ def run_subagent(
                         error_message="user_stop",
                     )
                 after = build_workspace_manifest(project_root)
+                # Track consecutive tool failures for preempt (success resets).
+                if records and records[-1].tool_call_id == tool_call_id:
+                    if records[-1].status == "success":
+                        consecutive_tool_errors = 0
+                    else:
+                        consecutive_tool_errors += 1
                 if _stop():
                     last_text = content.strip()
                     return _finalize(
@@ -579,6 +593,49 @@ def run_subagent(
                 )
             if content:
                 last_text = content.strip()
+
+            # --- Preempt at tool boundary (never mid-tool) ---
+            # Checked after this turn's tools and checkpoint advance, before
+            # the next adapter.send. Does not clear checkpoint or append JSONL.
+            if constraint_deny_count >= 2:
+                return _finalize(
+                    task,
+                    subtask_id=subtask_id,
+                    last_text=last_text or (content or "").strip(),
+                    stop_when_met=False,
+                    exit_kind="preempted_constraint",
+                    records=records,
+                    error_message=(
+                        f"preempted_constraint: constraint_deny_count="
+                        f"{constraint_deny_count} >= 2"
+                    ),
+                )
+            if consecutive_tool_errors >= 3:
+                return _finalize(
+                    task,
+                    subtask_id=subtask_id,
+                    last_text=last_text or (content or "").strip(),
+                    stop_when_met=False,
+                    exit_kind="preempted_tool_fail",
+                    records=records,
+                    error_message=(
+                        f"preempted_tool_fail: consecutive_tool_errors="
+                        f"{consecutive_tool_errors} >= 3"
+                    ),
+                )
+            if steps_used >= budget_limit:
+                return _finalize(
+                    task,
+                    subtask_id=subtask_id,
+                    last_text=last_text or (content or "").strip(),
+                    stop_when_met=False,
+                    exit_kind="preempted_budget",
+                    records=records,
+                    error_message=(
+                        f"preempted_budget: steps_used={steps_used} "
+                        f">= {budget_limit} (70% of max_steps={max_steps})"
+                    ),
+                )
         return _finalize(
             task,
             subtask_id=subtask_id,

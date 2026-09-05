@@ -354,6 +354,14 @@ def assemble_agent_result(
     elif exit_kind == "max_steps":
         status = STATUS_BLOCKED
         reason = "max_steps reached without stop_when met"
+    elif exit_kind in (
+        "preempted_constraint",
+        "preempted_tool_fail",
+        "preempted_budget",
+    ):
+        # Subagent tool-boundary preempt → parent decides continue/abort.
+        status = STATUS_NEED_DECISION
+        reason = candidate.error_message or exit_kind
     elif stop_met:
         # stop_when met → candidate for done; apply v1 done_when proxy
         if done_when_satisfied_v1(stop_met, verified):
