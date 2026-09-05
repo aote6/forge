@@ -106,27 +106,8 @@
   - 建议：新增控制面工具 list_recent_subtasks(limit=N)，返回最近 N 个 AgentResult 摘要。
   - 优先级：P3
 
-- [ ] 缺少独立 PAUSE / ABORT 语义，Ctrl+C 目前只能软停当前 turn。
-  - 现状：已支持运行中 Ctrl+C 软停并回到 forge>；尚不支持只停子任务但主对话继续等待，或显式 ABORT 清理 pending。
-  - 影响：子 AI 长任务跑偏时，只能软停整个当前 turn，不能单独暂停子任务后继续主对话。
-  - 建议：基于现有 stop_requested 和 RuntimeState 增加轻量 PAUSE / ABORT 信号，不引入复杂状态机。
-  - 优先级：P2
 
 ### 主从分工 / 行为契约
-- [ ] 主 AI 对子 AI 执行过程无运行时可见性，无法中途唤醒纠偏。
-  - 现状：spawn_subagent 是同步阻塞调用，主 AI 的 LLM 在子 AI
-    执行期间没有"轮到它说话"的时间窗。run_subagent 内部的
-    TOOL_CALL_START/END 事件仅通过 emit 流向用户终端
-    （dp.py 的 presenter），从未进入主 AI 的 LLM 上下文。
-  - 影响：主 AI 无法在子 AI 跑偏时基于中间结果做判断或叫停，
-    只能等 AgentResult 返回或用户手动 Ctrl+C。STOP 后证据丢失
-    只是这个根本问题的特例。
-  - 建议：复用已有 checkpoint/pause 基础设施，将 run_subagent
-    改为"周期性检查点回看"——每 N 次工具调用暂停，把已产生的
-    EVIDENCE/进度摘要交回主 AI，由主 AI 决定继续/中止/改变方向。
-    具体设计参数（检查点频率、摘要格式、主 AI 决策如何喂回子 AI）
-    需单独立项设计，不在本次随手修范围内。
-  - 优先级：P0
 
 
 - [ ] Forge 缺少「语义级风险提示」，只能在极危险命令上硬拦截。
