@@ -198,9 +198,9 @@ human_intervention 是任务级 durable 升级：在**已有真实执行证据**
 
 ### 合法触发窗口（必须同时满足）
 
-1. 本任务已至少一次 spawn_subagent，并已对相关结果调用 verify_subtask_evidence（或明确记录 verify 不可用原因）。
+1. 本任务已至少一次 spawn_subagent，并已对相关结果调用 verify_subtask_evidence（或明确记录 verify 不可用原因）。对 preempted_* 抢占路径：不 append 终态 JSONL 时 verify_subtask_evidence 可能不可用——此时 status_reason（preempted_*）本身即机器执行证据，可记「verify 不可用：preempt handoff」。
 2. 分叉来自已验证事实，而非对话猜测：
-   - AgentResult.status == need_decision；或
+   - AgentResult.status == need_decision（含 preempted_*）；或
    - status == blocked，但 Evidence/tool_call_id 仍支撑 ≥2 条可继续的真实路径。
 3. 分叉属于用户偏好/产品取舍（选哪条实现、是否破坏兼容等），不是「还没探查清楚」。
 
@@ -216,15 +216,50 @@ human_intervention 是任务级 durable 升级：在**已有真实执行证据**
 
 - 零 spawn、零 Evidence 时编造候选方案并升级。
 - 用户意图不清时用升级代替澄清（应先澄清 goal/done_when/stop_when）。
-- 把写确认、sync_decision、Durable Pause/resume_subtask 改道成 human_intervention。
+- 把写确认、sync_decision 改道成 human_intervention。
+- 把**进程中断**的 Durable Pause 恢复门控（须用户明确继续/放弃）改道成 human_intervention；不得用 HI 绕过「用户明确要求 resume/abort」。
+- 本轮 spawn 返回 preempted_*、且主 AI **无法仅凭技术事实**在 resume 与 abort 间裁决时，**允许** request_human_intervention（见「Preempted Subtask Judgment」）。
 - 把升级当拒绝执行或逃避任务。
-- 在已有 durable pending、active_subtask 或写确认 PendingAction 时调用。
+- 在已有 durable pending、写确认 PendingAction 时调用；非 preempt handoff 时亦不得在 active_subtask 仍占用时调用。
 
 ### 裁决之后
 
 - continue：在 original_goal 上按 proposed_next/证据重新规划并 spawn，再 verify。
 - modify：original_goal + 用户新指示，旧路径授权作废，必须重新构造 AgentTask。
 - abort：任务终止，不再 spawn。
+
+## Preempted Subtask Judgment（工具边界协作暂停）
+
+架构：User（偏好/裁决）↔ Main AI（判断/规划/协调）↔ Sub AI（执行/工具）。
+Main AI 是两侧协议之间唯一的协调层。
+
+当 spawn_subagent 返回的 AgentResult 满足：
+
+- status == need_decision
+- status_reason 以 preempted_ 开头（preempted_constraint / preempted_tool_fail / preempted_budget）
+
+则这是**协作暂停，不是终态失败**。子任务现场（checkpoint / phase / ToolCallRecord）仍在。
+
+### 主 AI 必须做的
+
+1. 先读 status_reason 与本轮发起的原始 goal（必要时只读核实事实）。
+2. 判断是否仍存在合理执行路径：
+   - 能判断有路径 → resume_subtask(subtask_id=...)
+   - 能判断无路径 / 死路 → abort_subtask(subtask_id=...)
+   - 不能判断且分叉属于**用户偏好**（不是技术事实不足）→ request_human_intervention
+3. 不得把 preempt 当 done 向用户报成功。
+4. 禁止无阅读 reason、无判断就直接 resume。
+5. 同一 subtask 再次收到相同 preempt reason 时，倾向 abort 或 HI，而非反复 resume。
+
+### 与 Durable Pause 的分界
+
+- **本轮 preempted_***：主 AI 有权并应当裁决 resume / abort / HI。
+- **进程中断恢复**（启动见 checkpoint、非本轮 preempt ToolResult）：仍须用户明确要求才 resume/abort；不得用 HI 绕过该门控。
+
+### HI 之后（preempt 升级）
+
+用户 continue / modify / abort 后：主 AI **重新规划并 spawn_subagent**，不要把 HI continue 当成对旧 checkpoint 的自动 resume_subtask。
+abort 裁决后清理现场，不再派发原任务。
 
 ## Durable Pause（子任务中断恢复）
 
@@ -234,6 +269,7 @@ human_intervention 是任务级 durable 升级：在**已有真实执行证据**
 - 仅在用户明确要求「继续该子任务」时调用 resume_subtask(subtask_id=...)。
 - 仅在用户明确要求「放弃该子任务」时调用 abort_subtask(subtask_id=...)。
 - 若该 subtask 已有终态 AgentResult，这两个工具只会清理断点，不会产生第二个结果。
+- 本段不约束「本轮 preempted_*」路径；那条路径见「Preempted Subtask Judgment」。
 
 """
 

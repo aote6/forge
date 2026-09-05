@@ -1514,6 +1514,11 @@ class Runtime:
                     and _reason.startswith("preempted_")
                 )
                 if _is_preempt:
+                    # Process-local handoff mark: allows Main AI to request HI
+                    # while active_subtask_id is still set (no new phase enum).
+                    self._preempt_handoff_subtask_id = str(
+                        getattr(result, "subtask_id", "") or ""
+                    ) or None
                     display = format_agent_result_for_parent(result)
                     return ToolResult.ok(
                         display=display,
@@ -1762,6 +1767,9 @@ class Runtime:
             _hi = self._guard_human_intervention_pending("resume_subtask")
             if _hi is not None:
                 return _hi
+            # Consuming resume ends preempt handoff (Main AI chose continue).
+            if getattr(self, "_preempt_handoff_subtask_id", None) == sid:
+                self._preempt_handoff_subtask_id = None
 
             store = getattr(self, "_subtask_checkpoint_store", None)
             if store is None:
@@ -1922,6 +1930,8 @@ class Runtime:
             sid = str(subtask_id or "").strip()
             if not sid:
                 return ToolResult.fail(display="abort_subtask: subtask_id required")
+            if getattr(self, "_preempt_handoff_subtask_id", None) == sid:
+                self._preempt_handoff_subtask_id = None
 
             store = getattr(self, "_subtask_checkpoint_store", None)
             existing = load_subagent_results(workspace.project_root).get(sid)
@@ -2027,6 +2037,9 @@ class Runtime:
         self._subagent_results: dict[str, dict] = load_subagent_results(
             workspace.project_root
         )
+        # Process-local: subtask_id of latest tool-boundary preempt handoff to Main AI.
+        # Not persisted; enables request_human_intervention while active_subtask is set.
+        self._preempt_handoff_subtask_id: str | None = None
 
     def _startup_sync_check(self):
         """启动时只做同步状态检测，不自动 replay receipt 写磁盘（决策 3/8）。
@@ -2420,9 +2433,9 @@ class Runtime:
         """Open durable human_intervention pending and end the current AI turn.
 
         Preconditions (HUMAN_INTERVENTION_CONTRACT):
-          - phase == IDLE
+          - phase == IDLE (or RUNNING_SUBTASK under preempt handoff)
           - no durable pending
-          - active_subtask_id is None
+          - active_subtask_id is None (unless preempt handoff for that id)
           - _pending_action is None
         """
         import time
@@ -2452,20 +2465,33 @@ class Runtime:
         if rs is None or store is None:
             return TR.fail(display="request_human_intervention: RuntimeState unavailable")
 
-        if rs.phase != PHASE_IDLE:
-            return TR.fail(
-                display=(
-                    f"request_human_intervention: refused — phase is {rs.phase!r}, "
-                    "must be IDLE"
+        # Preempt handoff: spawn just returned need_decision/preempted_* and left
+        # phase=RUNNING_SUBTASK + active_subtask_id set. Main AI may escalate to HI
+        # when it cannot decide resume vs abort from facts alone.
+        from forge.runtime_state import PHASE_RUNNING_SUBTASK
+        handoff_id = getattr(self, "_preempt_handoff_subtask_id", None)
+        active_sid = rs.active_subtask_id
+        is_preempt_handoff = bool(
+            handoff_id
+            and active_sid is not None
+            and str(active_sid) == str(handoff_id)
+            and rs.phase == PHASE_RUNNING_SUBTASK
+        )
+        if not is_preempt_handoff:
+            if rs.phase != PHASE_IDLE:
+                return TR.fail(
+                    display=(
+                        f"request_human_intervention: refused — phase is {rs.phase!r}, "
+                        "must be IDLE"
+                    )
                 )
-            )
-        if rs.active_subtask_id is not None:
-            return TR.fail(
-                display=(
-                    "request_human_intervention: refused — active_subtask_id is set; "
-                    "finish or abort the subtask first."
+            if rs.active_subtask_id is not None:
+                return TR.fail(
+                    display=(
+                        "request_human_intervention: refused — active_subtask_id is set; "
+                        "finish or abort the subtask first."
+                    )
                 )
-            )
         if rs.pending is not None:
             return TR.fail(
                 display=(
@@ -2501,6 +2527,11 @@ class Runtime:
             summary = summary[:197] + "..."
 
         rs.phase = PHASE_AWAITING_USER
+        # Preempt handoff consumed: clear active pointer so AWAITING_USER is clean.
+        # Checkpoint is left in place until explicit abort/resume or later policy.
+        if is_preempt_handoff:
+            rs.active_subtask_id = None
+            self._preempt_handoff_subtask_id = None
         rs.pending = Pending(
             kind=PENDING_KIND_HUMAN_INTERVENTION,
             summary=summary,
@@ -2514,6 +2545,9 @@ class Runtime:
             # roll back in-memory on save failure — no false success
             rs.phase = PHASE_IDLE
             rs.pending = None
+            if is_preempt_handoff:
+                # best-effort: do not invent active id on rollback
+                pass
             rs.refresh_recovery()
             self.recovery = rs.recovery
             return TR.fail(
