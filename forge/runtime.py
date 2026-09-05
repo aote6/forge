@@ -1504,6 +1504,25 @@ class Runtime:
                 result = precheck_agent_result(workspace.project_root, result)
                 if "user_stop" in str(getattr(result, "status_reason", "") or ""):
                     self._stop_requested = True
+                # Tool-boundary preempt (need_decision + preempted_*): hand control
+                # back to main AI without destroying the subtask scene.
+                # AgentResult has no exit_kind field — reason carries "preempted_...".
+                from forge.agent_abi import STATUS_NEED_DECISION
+                _reason = str(getattr(result, "status_reason", "") or "")
+                _is_preempt = (
+                    getattr(result, "status", None) == STATUS_NEED_DECISION
+                    and _reason.startswith("preempted_")
+                )
+                if _is_preempt:
+                    display = format_agent_result_for_parent(result)
+                    return ToolResult.ok(
+                        display=display,
+                        payload={
+                            "subagent": True,
+                            "preempted": True,
+                            "agent_result": result.to_dict(),
+                        },
+                    )
                 # Persist structured AgentResult by subtask_id (memory + JSONL)
                 # so main agent can call verify_subtask_evidence(subtask_id)
                 # without re-emitting machine identity through LLM text.
