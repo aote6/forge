@@ -1995,3 +1995,34 @@ R2 只做了"打开决策→用户 resolve→清除 pending"，但没有执行�
 - 性质：工程启发式，不判断"是不是粘贴"，只判断"这个换行到达时输入流是否还在继续"。理论上不能 100% 区分，但覆盖典型整段粘贴场景。
 - BP 路径、反斜杠续行、普通单行 Enter 行为不变。
 - 验证：tests/test_tui_input.py 38 passed，全量 808 passed。
+
+## 2026-09-05 Subagent Preemption + Main AI Judgment 闭环
+
+### 背景
+TODO P0：主 AI 对子 AI 执行过程无运行时可见性，无法中途唤醒纠偏。
+
+### 阶段 A：Subagent Cooperative Preemption（commit cdabb89 + 8aafd1a）
+- 子 AI 侧新增三个进程内计数器：约束违规 ≥2 / 连续工具失败 ≥3 / 步数 ≥70% 且未 met
+- 仅在工具边界（update_after_tool 之后）检查抢占，绝不打断执行中的工具
+- 触发时 _finalize 成 need_decision，新增 exit_kind：preempted_constraint / preempted_tool_fail / preempted_budget
+- spawn_subagent 识别抢占路径：不 append JSONL、不 clear checkpoint、不复位 phase/active
+- checkpoint 保留，phase 保持 RUNNING_SUBTASK，active_subtask_id 保留
+- resume_subtask / abort_subtask 原样可用（b2 检查点重建）
+
+### 阶段 B：Main AI Judgment / Control Loop（commit d74496d）
+- system_prompt 新增「Preempted Subtask Judgment」专节
+- 契约：preempt ≠ terminal；主 AI 必须先读 reason + goal，必要时只读核实，再裁决 resume / abort / HI
+- 禁止无判断直接 resume；禁止把 preempt 当 done 报成功
+- 与 Durable Pause 分界：进程中断恢复仍须用户明确继续；本轮 preempted_* 由主 AI 裁决
+- Runtime 新增进程内 _preempt_handoff_subtask_id 标记
+- request_human_intervention() 在 preempt handoff 下放行（active_subtask_id 仍设但为抢占现场）
+- HI 成功后 active_subtask_id 清空，checkpoint 保留；用户 continue → 主 AI 重新规划 spawn，不自动 resume checkpoint
+- 非 preempt 的 RUNNING_SUBTASK + active → HI 仍拒绝
+
+### 架构模型
+User（偏好/裁决）↔ Main AI（判断/规划/协调）↔ Sub AI（执行/工具）
+Main AI 是两侧协议之间唯一的协调层。
+
+### 验证
+- 全量 828 passed
+- 覆盖：preempt 生命周期、resume/abort 恢复、HI 边界、进程中断恢复不被绕过
