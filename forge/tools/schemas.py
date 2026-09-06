@@ -17,7 +17,7 @@ from __future__ import annotations
 READ_ONLY_TOOL_DECLARATIONS = [
     {
         "name": "read_file",
-        "description": "读取文件。大文件无行范围时返回函数/类大纲；指定 start/end 读片段；小文件返回全文。",
+        "description": "读取文件。大文件无行范围时返回函数/类大纲；指定 start/end 读片段；小文件返回全文。需要完整读一个大文件时，直接传 start=1, end=0（或只传 end=0）一次性拿到全文，不要靠猜测行号分多次调用拼接——end=0 就是\"读到文件末尾\"。",
         "parameters": {
             "type": "object",
             "properties": {
