@@ -556,6 +556,7 @@ def _coerce_agent_result(agent_result: AgentResult | dict[str, Any]) -> AgentRes
         stop_when_met=bool(agent_result.get("stop_when_met")),
         status_reason=str(agent_result.get("status_reason") or ""),
         raw_conclusion=str(agent_result.get("raw_conclusion") or ""),
+        model_reported_evidence=tuple(agent_result.get("model_reported_evidence") or ()),
     )
 
 
@@ -656,4 +657,5 @@ def precheck_agent_result(
         stop_when_met=result.stop_when_met,
         status_reason=reason,
         raw_conclusion=result.raw_conclusion,
+        model_reported_evidence=result.model_reported_evidence,
     )

@@ -262,6 +262,7 @@ def _finalize(
         stop_when_met=result.stop_when_met,
         status_reason=result.status_reason,
         raw_conclusion=structured,
+        model_reported_evidence=result.model_reported_evidence,
     )
 
 
