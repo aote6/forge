@@ -207,6 +207,11 @@ def _execute_tool(
         output = None
         record_result = ToolResult.fail(display=f"subagent tool failed ({tc.name}): {e}")
 
+    raw_display = getattr(record_result, "display", None)
+    if raw_display is None:
+        display_val = None
+    else:
+        display_val = raw_display if isinstance(raw_display, str) else str(raw_display)
     record = ToolCallRecord(
         tool_call_id=tool_call_id,
         subtask_id=subtask_id,
@@ -217,6 +222,7 @@ def _execute_tool(
         error=error,
         timestamp=current_timestamp(),
         actor="subagent",
+        display=display_val,
     )
     write_record(project_root, record)
     records_out.append(record)
@@ -632,6 +638,7 @@ def run_subagent(
                                     "name": tc.name,
                                     "success": getattr(result, "success", False),
                                     "display": result.display or "",
+                                    "tool_call_id": tool_call_id,
                                 },
                             )
                         )

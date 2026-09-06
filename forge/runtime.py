@@ -166,8 +166,14 @@ def _record_main_tool_call(
     tool_name: str,
     arguments: dict,
     result,
+    tool_call_id: str | None = None,
 ) -> tuple[str | None, bool]:
-    """Write ToolCallRecord(actor=main). Returns (tool_call_id, record_written)."""
+    """Write ToolCallRecord(actor=main) including display snapshot.
+
+    Returns (tool_call_id, record_written).
+    display is the pre-summarize ToolResult.display (may be empty string).
+    output remains structured payload only.
+    """
     from forge.tool_call_record import (
         ToolCallRecord,
         current_timestamp,
@@ -175,12 +181,17 @@ def _record_main_tool_call(
         write_record,
     )
 
-    tool_call_id = new_tool_call_id()
+    tc_id = (tool_call_id or "").strip() or new_tool_call_id()
     status = "success" if getattr(result, "success", False) else "error"
-    error = None if status == "success" else (getattr(result, "display", None) or "error")
+    raw_display = getattr(result, "display", None)
+    if raw_display is None:
+        display_val = None
+    else:
+        display_val = raw_display if isinstance(raw_display, str) else str(raw_display)
+    error = None if status == "success" else (display_val or "error")
     output = getattr(result, "payload", None)
     rec = ToolCallRecord(
-        tool_call_id=tool_call_id,
+        tool_call_id=tc_id,
         subtask_id="",
         tool_name=tool_name,
         input=dict(arguments or {}),
@@ -189,9 +200,10 @@ def _record_main_tool_call(
         error=error,
         timestamp=current_timestamp(),
         actor="main",
+        display=display_val,
     )
     ok = bool(write_record(project_root, rec))
-    return tool_call_id, ok
+    return tc_id, ok
 
 
 def _write_strategy(tool_name: str) -> str:
@@ -2031,6 +2043,10 @@ class Runtime:
         self._handlers: dict = {t: [] for t in EventType}
         # Continuous Conversation + Pending Action Gate（唯一等待确认状态）
         self._pending_action: PendingAction | None = None
+        # Terminal history recall: latest ledger tool_call_id + display cache.
+        self._last_tool_call_id: str | None = None
+        self._last_tool_display: str = ""
+        self._last_tool_name: str = ""
         # Structured AgentResult by subtask_id (machine store; not LLM-reparsed).
         # Load append-only JSONL so prior subtasks remain verifiable after restart.
         from forge.subagent_results_store import load_subagent_results
@@ -3184,6 +3200,38 @@ class Runtime:
         self._pending_action = None
         return self._run_conversation(reply, extra_system=_CONTINUOUS_INSTRUCTION)
 
+
+    def _remember_tool_end(
+        self,
+        *,
+        name: str,
+        result,
+        tool_call_id: str | None,
+        emit_end: bool = True,
+    ) -> None:
+        """Update last-tool memory and optionally emit TOOL_CALL_END with ledger id."""
+        disp = getattr(result, "display", None)
+        if disp is None:
+            disp_s = ""
+        else:
+            disp_s = disp if isinstance(disp, str) else str(disp)
+        self._last_tool_display = disp_s
+        self._last_tool_name = name or ""
+        if tool_call_id:
+            self._last_tool_call_id = tool_call_id
+        if emit_end:
+            self.emit(
+                Event(
+                    EventType.TOOL_CALL_END,
+                    {
+                        "name": name,
+                        "success": bool(getattr(result, "success", False)),
+                        "display": disp if disp is not None else getattr(result, "display", None),
+                        "tool_call_id": tool_call_id,
+                    },
+                )
+            )
+
     def _execute_pending_action(self) -> str:
         """执行已冻结的 PendingAction 快照：先 Guard，再 ToolExecutor，再清空 pending。"""
         from forge.adapters.base import Message as ForgeMessage, ToolCall
@@ -3222,9 +3270,14 @@ class Runtime:
             self.runtime_state = self._runtime_state_store.load()
             self.recovery = self.runtime_state.recovery
         self._pending_action = None
-        self._last_tool_display = result.display or ""
-        self._last_tool_name = tc.name
         self._last_tool_calls = getattr(self, "_last_tool_calls", 0) + 1
+        ledger_id, _ = _record_main_tool_call(
+            self.workspace.project_root,
+            tool_name=tc.name,
+            arguments=exec_args,
+            result=result,
+        )
+        self._remember_tool_end(name=tc.name, result=result, tool_call_id=ledger_id)
         try:
             ws = getattr(self, "_working_set", None)
             if ws is not None:
@@ -3256,12 +3309,6 @@ class Runtime:
             result.display or "",
             name=tc.name,
             success=bool(result.success),
-        )
-        self.emit(
-            Event(
-                EventType.TOOL_CALL_END,
-                {"name": tc.name, "success": result.success, "display": result.display},
-            )
         )
         # 执行后让模型根据结果继续（完整工具表，不再放行整表无确认写）
         cont = self._run_conversation(
@@ -3623,17 +3670,14 @@ class Runtime:
                     proposed_next=args.get("proposed_next"),
                 )
                 tool_calls_n += 1
-                self._last_tool_display = result.display or ""
-                self._last_tool_name = _hi_tc.name
-                self.emit(
-                    Event(
-                        EventType.TOOL_CALL_END,
-                        {
-                            "name": _hi_tc.name,
-                            "success": bool(result.success),
-                            "display": result.display,
-                        },
-                    )
+                ledger_id, _ = _record_main_tool_call(
+                    self.workspace.project_root,
+                    tool_name=_hi_tc.name,
+                    arguments=args,
+                    result=result,
+                )
+                self._remember_tool_end(
+                    name=_hi_tc.name, result=result, tool_call_id=ledger_id
                 )
                 self._last_response_needs_display = True
                 self.conversation.append(ForgeMessage(role="user", content=task))
@@ -3678,17 +3722,14 @@ class Runtime:
                         )
                     )
                     tool_calls_n += 1
-                    self._last_tool_display = result.display or ""
-                    self._last_tool_name = tc.name
-                    self.emit(
-                        Event(
-                            EventType.TOOL_CALL_END,
-                            {
-                                "name": tc.name,
-                                "success": False,
-                                "display": result.display,
-                            },
-                        )
+                    ledger_id, _ = _record_main_tool_call(
+                        self.workspace.project_root,
+                        tool_name=tc.name,
+                        arguments=getattr(tc, "arguments", None) or {},
+                        result=result,
+                    )
+                    self._remember_tool_end(
+                        name=tc.name, result=result, tool_call_id=ledger_id
                     )
                     llm_tool_content = sanitize_and_redact(result.display or "")
                     messages.append(ForgeMessage(
@@ -3736,8 +3777,15 @@ class Runtime:
                     if kind == "result":
                         result = payload
                         tool_calls_n += 1
-                        self._last_tool_display = result.display or ""
-                        self._last_tool_name = tc.name
+                        ledger_id, _ = _record_main_tool_call(
+                            self.workspace.project_root,
+                            tool_name=tc.name,
+                            arguments=getattr(tc, "arguments", None) or {},
+                            result=result,
+                        )
+                        self._remember_tool_end(
+                            name=tc.name, result=result, tool_call_id=ledger_id
+                        )
                         try:
                             working_set.update_from_tool(
                                 tc.name, getattr(tc, "arguments", None) or {}, result
@@ -3745,16 +3793,6 @@ class Runtime:
                             _save_task_state(self.workspace.project_root, working_set)
                         except Exception as e:
                             print(f"[forge] WorkingSet update failed: {e}", file=sys.stderr)
-                        self.emit(
-                            Event(
-                                EventType.TOOL_CALL_END,
-                                {
-                                    "name": tc.name,
-                                    "success": result.success,
-                                    "display": result.display,
-                                },
-                            )
-                        )
                         llm_tool_content = sanitize_and_redact(result.display or "")
                         messages.append(ForgeMessage(
                             role="tool",
@@ -3832,31 +3870,33 @@ class Runtime:
                     self.runtime_state = self._runtime_state_store.load()
                     self.recovery = self.runtime_state.recovery
                 tool_calls_n += 1
-                self._last_tool_display = result.display or ""
-                self._last_tool_name = tc.name
-                # Main READ_ONLY: durable ToolCallRecord (actor=main), same ToolResult
+                # Terminal history + evidence: always write ToolCallRecord with display.
+                # MAIN_AUDITED_TOOL_NAMES remains the control-plane evidence set; we still
+                # record non-audited outcomes so last <id> can recall terminal display.
                 record_id = None
                 record_ok = False
-                if tc.name in MAIN_AUDITED_TOOL_NAMES and guard is None:
-                    try:
-                        record_id, record_ok = _record_main_tool_call(
-                            self.workspace.project_root,
-                            tool_name=tc.name,
-                            arguments=getattr(tc, "arguments", None) or {},
-                            result=result,
-                        )
-                    except Exception as e:
-                        print(
-                            f"[forge] main ToolCallRecord write failed: {e}",
-                            file=sys.stderr,
-                        )
-                        record_id, record_ok = None, False
-                    if not record_ok:
-                        note = (
-                            "\n[durable evidence unavailable: "
-                            "ToolCallRecord write failed for this read]"
-                        )
-                        result.display = (result.display or "") + note
+                try:
+                    record_id, record_ok = _record_main_tool_call(
+                        self.workspace.project_root,
+                        tool_name=tc.name,
+                        arguments=getattr(tc, "arguments", None) or {},
+                        result=result,
+                    )
+                except Exception as e:
+                    print(
+                        f"[forge] main ToolCallRecord write failed: {e}",
+                        file=sys.stderr,
+                    )
+                    record_id, record_ok = None, False
+                evidence_note = ""
+                if tc.name in MAIN_AUDITED_TOOL_NAMES and guard is None and not record_ok:
+                    evidence_note = (
+                        "\n[durable evidence unavailable: "
+                        "ToolCallRecord write failed for this read]"
+                    )
+                self._remember_tool_end(
+                    name=tc.name, result=result, tool_call_id=record_id
+                )
                 # P1-1: update Working Set from real tool outcome
                 try:
                     working_set.update_from_tool(
@@ -3871,20 +3911,10 @@ class Runtime:
                 # 收窄：forge_sync / undo_last_tx 不是文件编辑，不再触发 checkpoint。
                 if tc.name in _EDIT_TOOLS and result.success:
                     mutation_pending = True
-                self.emit(
-                    Event(
-                        EventType.TOOL_CALL_END,
-                        {
-                            "name": tc.name,
-                            "success": result.success,
-                            "display": result.display,
-                        },
-                    )
-                )
 
                 # Untrusted tool text → LLM context: redact secrets + mark
                 # injection-like phrasing. Soft mitigation only; not a hard boundary.
-                display_for_llm = result.display or ""
+                display_for_llm = (result.display or "") + evidence_note
                 if record_id and record_ok:
                     display_for_llm = f"tool_call_id={record_id}\n{display_for_llm}"
                 elif record_id and not record_ok:

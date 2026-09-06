@@ -273,7 +273,7 @@ def main():
     _print_world_summary(runtime)
 
     print("Forge | 工具循环 | 输入 q 退出")
-    print("  工具输出会即时显示（last 看全文）；后台自检默认关 (FORGE_HEALTH_CHECK=1 开启)")
+    print("  工具输出会即时显示（last / last <tool_call_id> 回看全文）；后台自检默认关 (FORGE_HEALTH_CHECK=1 开启)")
     print(paint("─" * max(40, min(shutil.get_terminal_size(fallback=(40, 24)).columns, 76)), TUBE_BLUE))
 
     while True:
@@ -283,10 +283,47 @@ def main():
                 user_input = "q"
             if not user_input.strip():
                 continue
-            cmd = user_input.strip().lower()
-            if cmd in ("last", "copy", "clip"):
-                disp = getattr(runtime, "_last_tool_display", None) or ""
-                name = getattr(runtime, "_last_tool_name", "") or ""
+            raw_cmd = user_input.strip()
+            parts = raw_cmd.split(None, 1)
+            cmd0 = parts[0].lower() if parts else ""
+            if cmd0 in ("last", "copy", "clip"):
+                from forge.tool_call_record import get_latest_record_with_display, get_record
+
+                arg = parts[1].strip() if len(parts) > 1 else ""
+                project_root = workspace.project_root
+                disp = None
+                name = ""
+                if arg:
+                    rec = get_record(project_root, arg)
+                    if rec is None:
+                        print(f"(no ToolCallRecord for tool_call_id={arg})")
+                        continue
+                    if rec.get("display") is None:
+                        print(
+                            f"(record {arg} has no display field — "
+                            "legacy or non-terminal entry; cannot recall)"
+                        )
+                        continue
+                    disp = rec.get("display") or ""
+                    name = str(rec.get("tool_name") or "")
+                    if not str(disp).strip():
+                        print(f"(record {arg} display is empty)")
+                        continue
+                else:
+                    tc_id = getattr(runtime, "_last_tool_call_id", None)
+                    rec = get_record(project_root, tc_id) if tc_id else None
+                    if rec is not None and rec.get("display") is not None:
+                        disp = rec.get("display") or ""
+                        name = str(rec.get("tool_name") or "")
+                    if disp is None or not str(disp).strip():
+                        # crash recovery / cold start: latest durable display
+                        latest = get_latest_record_with_display(project_root)
+                        if latest is not None:
+                            disp = latest.get("display") or ""
+                            name = str(latest.get("tool_name") or "")
+                        else:
+                            disp = getattr(runtime, "_last_tool_display", None) or ""
+                            name = getattr(runtime, "_last_tool_name", "") or ""
                 presenter.page_last(name, disp)
                 continue
             if cmd in ("changes",):

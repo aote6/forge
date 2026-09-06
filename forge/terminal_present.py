@@ -27,12 +27,14 @@ from forge.terminal_color import (
 
 MAX_SUMMARY_LINES = 16
 MAX_SUMMARY_CHARS = 1200
+MIN_OMIT_LINES = 5
 HEAD_LINES = 4
 TAIL_LINES = 12
 DEFAULT_PAGE_LINES = 14
 HEARTBEAT_INTERVAL = 10.0
 
-_OMIT_TMPL = "…（省略 {n} 行，输入 last 看全文）"
+# {n}=omitted lines; {tool}=tool_name or ""; {id}=tool_call_id or ""
+_OMIT_TMPL = "…（省略 {n} 行，{tool}{id}；回看：last {id}）"
 
 Writer = Callable[..., None]
 InputFn = Callable[[str], str]
@@ -43,13 +45,21 @@ InputFn = Callable[[str], str]
 # ---------------------------------------------------------------------------
 
 
-def summarize_tool_display(display: str, *, success: bool) -> str:
+def summarize_tool_display(
+    display: str,
+    *,
+    success: bool,
+    tool_call_id: str | None = None,
+    tool_name: str | None = None,
+) -> str:
     """Summarize tool display for the terminal without flooding the screen.
 
     - Short outputs: kept whole.
     - Long success: small head + larger tail, with an omit marker.
     - Failure (success=False): tail-first so traceback / ERROR stay visible.
     - Character budget never trims away the protected tail region.
+    - If the line algorithm would omit fewer than MIN_OMIT_LINES lines,
+      return the full display (no omit marker) — avoids "省略 1 行" noise.
     """
     if not display:
         return ""
@@ -66,12 +76,24 @@ def summarize_tool_display(display: str, *, success: bool) -> str:
         return full
 
     if success:
-        return _summarize_success(lines)
-    return _summarize_failure(lines)
+        return _summarize_success(
+            lines, tool_call_id=tool_call_id, tool_name=tool_name
+        )
+    return _summarize_failure(
+        lines, tool_call_id=tool_call_id, tool_name=tool_name
+    )
 
 
-def _omit_marker(omitted: int) -> str:
-    return _OMIT_TMPL.format(n=max(0, omitted))
+def _omit_marker(
+    omitted: int,
+    *,
+    tool_call_id: str | None = None,
+    tool_name: str | None = None,
+) -> str:
+    tid = (tool_call_id or "").strip() or "?"
+    tname = (tool_name or "").strip()
+    tool_part = f"{tname} " if tname else ""
+    return _OMIT_TMPL.format(n=max(0, omitted), tool=tool_part, id=tid)
 
 
 def _join_fit(parts: list[str], *, max_chars: int) -> str:
@@ -95,7 +117,12 @@ def _join_fit(parts: list[str], *, max_chars: int) -> str:
     return "…" + last[-(max_chars - 1) :]
 
 
-def _summarize_success(lines: list[str]) -> str:
+def _summarize_success(
+    lines: list[str],
+    *,
+    tool_call_id: str | None = None,
+    tool_name: str | None = None,
+) -> str:
     n = len(lines)
     head_n = min(HEAD_LINES, n)
     tail_n = min(TAIL_LINES, max(0, n - head_n))
@@ -103,26 +130,42 @@ def _summarize_success(lines: list[str]) -> str:
         return _join_fit(lines, max_chars=MAX_SUMMARY_CHARS)
 
     omitted = n - head_n - tail_n
+    if omitted < MIN_OMIT_LINES:
+        # Not worth a fold marker (e.g. omit 1–4 lines) — show full text.
+        return "\n".join(lines)
+
     head = lines[:head_n]
     tail = lines[-tail_n:] if tail_n else []
-    marker = _omit_marker(omitted)
+    marker = _omit_marker(
+        omitted, tool_call_id=tool_call_id, tool_name=tool_name
+    )
     parts = head + [marker] + tail
     return _join_fit(parts, max_chars=MAX_SUMMARY_CHARS)
 
 
-def _summarize_failure(lines: list[str]) -> str:
+def _summarize_failure(
+    lines: list[str],
+    *,
+    tool_call_id: str | None = None,
+    tool_name: str | None = None,
+) -> str:
     n = len(lines)
     if n == 0:
         return ""
 
     take = min(MAX_SUMMARY_LINES, n)
-    tail = lines[-take:]
     omitted = n - take
 
     if omitted <= 0:
-        return _join_fit(tail, max_chars=MAX_SUMMARY_CHARS)
+        return _join_fit(lines[-take:] if take else lines, max_chars=MAX_SUMMARY_CHARS)
 
-    marker = _omit_marker(omitted)
+    if omitted < MIN_OMIT_LINES:
+        return "\n".join(lines)
+
+    tail = lines[-take:]
+    marker = _omit_marker(
+        omitted, tool_call_id=tool_call_id, tool_name=tool_name
+    )
     parts = [marker] + tail
     body = _join_fit(parts, max_chars=MAX_SUMMARY_CHARS)
     if omitted > 0 and lines:
@@ -425,7 +468,13 @@ class TerminalPresenter:
         disp = (data.get("display") or "").strip()
         if not disp:
             return
-        body = summarize_tool_display(disp, success=ok)
+        tc_id = data.get("tool_call_id")
+        body = summarize_tool_display(
+            disp,
+            success=ok,
+            tool_call_id=str(tc_id) if tc_id else None,
+            tool_name=str(name) if name else None,
+        )
         if body:
             # Tool body is uncolored chrome boundary: plain text only.
             self._emit(body, flush=True)

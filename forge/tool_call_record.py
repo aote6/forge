@@ -15,6 +15,7 @@ subtasks; durable proof of main reads), and must not be conflated with
 world-state change logs.
 
 Legacy lines without "actor" are treated as actor="subagent" on read.
+Legacy lines without "display" load with display=None (no terminal recall).
 """
 from __future__ import annotations
 
@@ -47,6 +48,9 @@ class ToolCallRecord:
     the log. Downstream consumers (constraint layer, AgentResult assembly,
     main-agent acceptance) treat every field here as ground truth, distinct
     from anything a model asserts about the call.
+
+    output  = structured tool payload / facts (unchanged role)
+    display = ToolResult.display snapshot before terminal summarize/fold
     """
 
     tool_call_id: str
@@ -58,6 +62,7 @@ class ToolCallRecord:
     error: str | None
     timestamp: float  # unix epoch seconds, UTC
     actor: str = "subagent"  # "main" | "subagent"; new writers pass explicitly
+    display: str | None = None  # original ToolResult.display; None on legacy rows
 
     def to_json_line(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, default=str)
@@ -90,6 +95,15 @@ def write_record(project_root: str | os.PathLike, record: ToolCallRecord) -> boo
         return False
 
 
+def _normalize_record_dict(obj: dict[str, Any]) -> dict[str, Any]:
+    if not obj.get("actor"):
+        obj["actor"] = "subagent"
+    # Legacy rows: no display key → None (caller must not invent text)
+    if "display" not in obj:
+        obj["display"] = None
+    return obj
+
+
 def get_record(project_root: str | os.PathLike, tool_call_id: str) -> dict[str, Any] | None:
     """Look up one record by tool_call_id.
 
@@ -119,10 +133,10 @@ def get_record(project_root: str | os.PathLike, tool_call_id: str) -> dict[str, 
                     # A corrupted line must not break lookup of other
                     # records; skip and keep scanning.
                     continue
+                if not isinstance(obj, dict):
+                    continue
                 if obj.get("tool_call_id") == tool_call_id:
-                    if not obj.get("actor"):
-                        obj["actor"] = "subagent"
-                    found = obj
+                    found = _normalize_record_dict(obj)
         return found
     except Exception:
         return None
@@ -157,12 +171,46 @@ def list_records_for_subtask(
                 if not isinstance(obj, dict):
                     continue
                 if str(obj.get("subtask_id") or "") == sid:
-                    if not obj.get("actor"):
-                        obj["actor"] = "subagent"
-                    out.append(obj)
+                    out.append(_normalize_record_dict(obj))
     except Exception:
         return out
     return out
+
+
+def get_latest_record_with_display(
+    project_root: str | os.PathLike,
+) -> dict[str, Any] | None:
+    """Return the most recently appended record that has a non-empty display.
+
+    Used by CLI `last` when Runtime has no in-memory _last_tool_call_id
+    (e.g. after process restart). Never raises.
+    """
+    path = _records_path(project_root)
+    if not path.exists():
+        return None
+    latest: dict[str, Any] | None = None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    obj = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                obj = _normalize_record_dict(obj)
+                disp = obj.get("display")
+                if disp is None:
+                    continue
+                if not str(disp).strip():
+                    continue
+                latest = obj
+        return latest
+    except Exception:
+        return None
 
 
 def current_timestamp() -> float:
