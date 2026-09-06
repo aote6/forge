@@ -2147,3 +2147,28 @@ AgentResult.evidence 依赖模型输出 EVIDENCE 文本。模型漏写时，
 ### 测试
 - 新增 2 个测试：显式 path 提取 + 无 path 时保持 None
 - 全量 843 passed
+
+## 2026-09-06 Terminal History Recall：last <tool_call_id>
+
+### 问题
+Forge 自动连续运行时工具输出被折叠，last 单槽 buffer 被覆盖，
+用户无法回看历史任意一次的完整输出。折叠提示也没有 tool_call_id，
+用户分不清折叠的是什么内容。
+
+### 修复
+- ToolCallRecord 新增 display 字段：保存 ToolResult.display
+  snapshot（summarize 之前），output 仍为结构化 payload
+- TOOL_CALL_END 事件携带 tool_call_id；所有 emit 路径覆盖
+- last 命令升级：
+  - last 读 _last_tool_call_id，回退 get_latest_record_with_display
+  - last <tool_call_id> 从账本精确读 display 分页展示
+- 折叠提示改为：…（省略 N 行，tool_name tc_xxx；回看：last tc_xxx）
+- MIN_OMIT_LINES=5：实际省略少于 5 行不折叠，避免"省略 1 行"噪音
+- evidence_note 只进 LLM 文本，不再污染 result.display / record.display
+
+### 测试
+新增 tests/test_terminal_history_recall.py（9 个测试）
+全量 852 passed。
+
+### 剩余 TODO
+P3: WRITE_CONFIRM 确认框缺少只读检查命令通道（输入 last 被当拒绝）

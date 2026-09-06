@@ -10,14 +10,20 @@
 
 ### 主 AI 只读后行为风险
 
-- [ ] last 的提示时机、输入通道、显示对象与用户预期不一致。
-  - 发现场景：
-    1. 在写操作确认框中输入 last，会被当作非“确认”输入，从而等价于拒绝写入，而不是查看上一条完整输出。
-    2. 工具运行过程中经常显示“输入 last 看全文”，但此时 Forge 正在同步执行 Runtime，用户实际上无法进入 forge> 输入 last。
-    3. last 当前显示的是最近一次主 Runtime 工具输出的完整 display，不是子 AI 执行过程中的中间工具输出，因此用户可能误以为可以查看刚刚子 AI 的完整过程。
-  - 影响：确认框误拒绝、提示时机误导、查看对象与用户预期不一致。
-  - 建议：这是用户交互语义/行为一致性问题，先记录；不要为此设计新机制，不改 last 实现，不改 Runtime/subagent/CLI/测试。
-  - 优先级：P2
+- [ ] WRITE_CONFIRM 确认框缺少只读检查命令通道
+  - 现状：子任务写操作进入 cli_confirm 后，输入只能被解释为
+    confirm/cancel。用户无法在确认暂停期间输入 last tc_xxx
+    查看历史工具输出；任意非 confirm/cancel 输入都会返回
+    False，并导致 user_denied_write。
+  - 边界：
+    - forge> 主 PendingAction 已可由 dp 先处理 last
+    - human intervention 有独立的 continue/modify/abort 协议
+    - 子 AI 内部工具输出已通过 emit + ToolCallRecord.display
+      实现实时显示与历史 last tc_xxx，不属于未解决问题
+  - 目标：确认框支持 side-effect-free inspection（至少 last /
+    last tc_xxx），执行查看后保持原 WRITE_CONFIRM 状态，
+    不改变 approve/deny 决策。
+  - 优先级：P3
 
 - [ ] 主 AI 可能把过度侦查从子 AI 转移到自己。
   - 发现场景：P1 给主 AI 开放 MAIN_READ_ONLY 后，主 AI 可能连续读取大量文件仍不形成判断，最后仍派宽泛任务。
