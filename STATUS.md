@@ -2172,3 +2172,28 @@ Forge 自动连续运行时工具输出被折叠，last 单槽 buffer 被覆盖�
 
 ### 剩余 TODO
 P3: WRITE_CONFIRM 确认框缺少只读检查命令通道（输入 last 被当拒绝）
+
+## 2026-09-06 Sync Decision Parameter Inertia 防护
+
+### 问题
+用户选 abort，主 AI 调用 resolve_sync_decision 时可能填错
+direction 参数（如 world_to_disk），导致用户明确拒绝的操作
+被静默执行。根因：direction 完全由模型自然语言理解后填写，
+代码层没有捕获用户原始意图做校验。
+
+### 修复
+- dp.py：仅在 AWAITING_USER + sync_decision pending 期间
+  捕获用户输入中的方向关键词，写入
+  runtime._last_user_sync_choice_hint
+  （abort / 放弃 / 取消 → abort；disk / 磁盘 → disk_to_world；
+  world → world_to_disk）
+- runtime.py resolve_sync_decision_tool：调用时交叉校验
+  hint 与 direction，不一致拒绝并要求重新确认；消费后
+  立即清空 hint，避免跨轮泄漏
+- 关键词未命中时 hint=None，不做拦截（模糊表达如"别弄了"
+  不覆盖；这是 defense-in-depth，非完整保证）
+
+### 测试
+新增 tests/test_sync_decision_inertia.py（3 个测试）：
+mismatch 拒绝+清空、match 放行、无 hint 不拦截
+全量 855 passed。
