@@ -2114,3 +2114,25 @@ AgentResult.evidence 依赖模型输出 EVIDENCE 文本。模型漏写时，
 
 ### 验证
 全量 838 passed。
+
+## 2026-09-06 MDE v1 收口：lifecycle + 语义澄清
+
+### 修复
+- model_reported_evidence 生命周期完整透传：
+  _finalize / _coerce_agent_result / precheck_agent_result
+  三个重建点不再丢弃该字段
+- verify_evidence() 标记 DEPRECATED（MDE v1 后不是权威路径）
+- done_when_satisfied_v1 docstring 扩展：明确 proxy 边界，
+  status=done 不等于语义完成，status=blocked 不等于工程失败
+- precheck reason 补充说明：demote 是 evidence-contract
+  failure，不是 engineering task failure
+
+### 测试
+- 新增 lifecycle 测试 + _coerce 恢复测试
+- 全量 841 passed
+
+### 剩余 TODO（已记录）
+- P1: verify_evidence() 遗留函数清理
+- P1: done_when 真正的语义求值
+- P1: precheck acceptance semantics 重构
+- P3: Machine Evidence 提取显式 input path

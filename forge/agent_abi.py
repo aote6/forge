@@ -328,7 +328,18 @@ def verify_evidence(
     records: Sequence[Any],
     subtask_id: str,
 ) -> list[Evidence]:
-    """Keep only evidence whose tool_call_id exists in records for this subtask."""
+    """DEPRECATED legacy audit helper — do NOT use for authoritative Evidence.
+
+    MDE v1 (AGENT_ABI v1.4) made ToolCallRecord the only authoritative
+    source for AgentResult.evidence via project_machine_evidence().
+    This function still accepts model-reported items and builds Evidence
+    from them, which violates the MDE boundary if its return value is
+    placed into AgentResult.evidence.
+
+    Retained only for legacy tests that verify actor=main filtering.
+    Do not call from production paths. Do not feed its output into
+    AgentResult.evidence, status decisions, or precheck logic.
+    """
     by_id = _record_index(records)
     verified: list[Evidence] = []
     seen: set[str] = set()
@@ -367,8 +378,17 @@ def done_when_satisfied_v1(stop_when_met: bool, verified: Sequence[Evidence]) ->
 
     done_when_satisfied := stop_when_met AND len(verified) >= 1
 
-    See module docstring. Callers must not treat this as proof that the
-    natural-language AgentTask.done_when predicate holds.
+    This is explicitly a proxy, not a semantic evaluator.
+    It CANNOT answer "is done_when satisfied?" — only:
+      "did execution stop via stop_when, and is there at least one
+       machine-derived successful tool call?"
+
+    Future ABI versions may introduce structured done_when evaluation.
+    Until then:
+      - Main AI is solely responsible for judging done_when.
+      - This proxy only gates the machine-authored status=done.
+      - status=done from this proxy does NOT mean task is semantically complete.
+      - status=blocked from this proxy does NOT mean engineering task failed.
     """
     return bool(stop_when_met) and len(verified) >= 1
 
@@ -644,7 +664,10 @@ def precheck_agent_result(
         status = STATUS_BLOCKED
         reason = (
             "acceptance_precheck: status=done demoted — "
-            "no independently verifiable evidence on disk"
+            "no independently verifiable evidence on disk. "
+            "This is an evidence-contract failure, NOT proof that "
+            "the engineering task failed. Main AI must judge the "
+            "actual task outcome independently."
         )
 
     return AgentResult(
