@@ -53,6 +53,8 @@ _STOP_WHEN_RE = re.compile(
     r"^\s*STOP_WHEN\s*:\s*(met|not_met)\s*$", re.IGNORECASE | re.MULTILINE
 )
 
+SUBAGENT_MAX_TOOL_CALLS = 25  # 跨轮次工具调用总数上限(含只读/写/denied),独立于 steps_used/max_steps
+
 SUBAGENT_SYSTEM = """你是 Forge 子 Agent。完成主 Agent 交给你的子任务。
 - 用工具探索与必要的小修改（str_replace / write_file）。
 - 不要无限搜索；找到结论后停止调用工具。
@@ -301,6 +303,7 @@ def run_subagent(
     constraint_deny_count = 0
     consecutive_tool_errors = 0
     steps_used = 0
+    tool_calls_used = 0  # 跨轮次总工具调用尝试次数(不分只读/写/denied)
     budget_limit = max(1, (int(max_steps) * 7 + 9) // 10)  # ceil(0.7 * max_steps)
 
     def _stop() -> bool:
@@ -423,6 +426,7 @@ def run_subagent(
                 )
             )
             for tc in resp.tool_calls:
+                tool_calls_used += 1
                 if _stop():
                     return _finalize(
                         task,
@@ -688,6 +692,19 @@ def run_subagent(
                     error_message=(
                         f"preempted_budget: steps_used={steps_used} "
                         f">= {budget_limit} (70% of max_steps={max_steps})"
+                    ),
+                )
+            if tool_calls_used >= SUBAGENT_MAX_TOOL_CALLS:
+                return _finalize(
+                    task,
+                    subtask_id=subtask_id,
+                    last_text=last_text or (content or "").strip(),
+                    stop_when_met=False,
+                    exit_kind="preempted_tool_budget",
+                    records=records,
+                    error_message=(
+                        f"preempted_tool_budget: tool_calls_used={tool_calls_used} "
+                        f">= {SUBAGENT_MAX_TOOL_CALLS}"
                     ),
                 )
         return _finalize(

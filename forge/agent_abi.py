@@ -358,6 +358,7 @@ def assemble_agent_result(
         "preempted_constraint",
         "preempted_tool_fail",
         "preempted_budget",
+        "preempted_tool_budget",
     ):
         # Subagent tool-boundary preempt → parent decides continue/abort.
         status = STATUS_NEED_DECISION
