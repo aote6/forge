@@ -95,6 +95,23 @@
 ### 运行时生命周期（R1 后续）
 
 ### 主从分工 / 行为契约
+- [ ] 子 AI 工具调用成功但 AgentResult.evidence 为空（stop_when met 路径缺兜底）。
+  - 发现场景：2026-09-06 实机跑 forge_sync，子 AI 实际调用
+    forge_sync 成功（ToolCallRecord 可查，IN_SYNC），但 AgentResult
+    evidence 为空、conclusion 为空，状态变成 blocked。主 AI 差点
+    误判"执行失败"并重跑第三次。
+  - 根因：模型正常收尾时没写 EVIDENCE 文本，verify_evidence
+    返回空。user_stop 路径已加兜底（从 records 合成），但
+    stop_when met 路径没有同等兜底，done_when proxy 要求
+    evidence 非空 → blocked。
+  - 影响：forge_sync 这类"无文本结论"的工具每次都可能触发；
+    主 AI 浪费 token 重跑；验收展示错误。
+  - 建议：在 assemble_agent_result 里，当 verified 为空且
+    records 里有成功调用时，不区分 exit_kind，统一从 records
+    兜底合成 evidence（user_stop 已有此逻辑，应扩展到
+    stop_when met / no_tools 等其他非终态路径）。
+  - 优先级：P1
+
 - [ ] Forge 缺少「语义级风险提示」，只能在极危险命令上硬拦截。
   - 发现场景：删仓库、发垃圾嘟文、贴 API key 等语义上有害但技术可行的请求无法识别。
   - 建议方向：不做「AI 拒绝权」，做「风险提示 + 确认 + 极危险硬拦截」。
