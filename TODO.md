@@ -101,6 +101,22 @@
 ### 运行时生命周期（R1 后续）
 
 ### 主从分工 / 行为契约
+- [ ] 用户自然语言"停止"无法中断 run()/spawn_subagent（阻塞调用根因）
+  - 发现：2026-09-02 用户在 forge> 打字"停止"，主/子 AI 工具
+    循环不响应，只有 Ctrl+C 能杀。2026-09-06 代码审计确认：
+    _stop_requested 只被 KeyboardInterrupt（Ctrl+C）和子任务
+    user_stop 状态设置，没有任何"用户输入文本 → 设标志"的路径。
+  - 根因：dp.py 的 forge> 提示符只在 runtime.run() 整个返回后
+    才重新出现。run() 执行期间终端不在读 stdin，用户打字没有
+    入口。这和 spawn_subagent 同步阻塞调用是同一根因——只要
+    run()/spawn_subagent 是阻塞的，中途就没有代码路径接收新输入。
+  - 边界：不是软停止机制缺失（_stop_requested 存在且被消费），
+    是用户自然语言输入无法在阻塞期间被读到。
+  - 方向：需要架构级改造——后台线程读 stdin + 设置 stop 标志，
+    或 select/termios 非阻塞 stdin 监听，或把阻塞调用改为
+    可中断检查点。不是加几行关键词判断能解决的 quick fix。
+  - 优先级：P0（架构级，与"spawn_subagent 阻塞时主 AI 无法说话"
+    合并处理）
 - [ ] verify_evidence() 遗留函数清理（MDE v1 已隔离但未删除）
   - 现状：函数已标记 deprecated，无生产调用者。
     两个测试 tests/test_main_read_tool_records.py 仍引用它验证

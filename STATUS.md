@@ -2197,3 +2197,25 @@ direction 参数（如 world_to_disk），导致用户明确拒绝的操作
 新增 tests/test_sync_decision_inertia.py（3 个测试）：
 mismatch 拒绝+清空、match 放行、无 hint 不拦截
 全量 855 passed。
+
+## 2026-09-06 Stop 机制审计：自然语言"停止"无法中断阻塞调用
+
+### 审计结论
+用户打字"停止"无法中断 run()/spawn_subagent 的原始 bug 场景
+仍存在。_stop_requested 只被 Ctrl+C（KeyboardInterrupt）和
+子任务 user_stop 状态设置，没有"用户输入文本 → 设标志"路径。
+
+### 根因
+dp.py 的 forge> 提示符只在 runtime.run() 整个返回后重新出现。
+run() 执行期间终端不在读 stdin，用户打字没有入口。与
+spawn_subagent 同步阻塞调用是同一根因。
+
+### 定性
+架构级问题，不是 quick fix。需要后台 stdin 监听或可中断
+检查点。已记入 TODO P0，与"spawn_subagent 阻塞时主 AI
+无法说话"合并处理。
+
+### 本轮已完成
+- Sync Decision Parameter Inertia 防护（defense-in-depth）
+- Terminal History Recall（last <tool_call_id>）
+- MDE v1（Machine-Derived Evidence）
