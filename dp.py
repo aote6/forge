@@ -213,7 +213,6 @@ def _background_health_check(project_root: str) -> None:
 
 
 def main():
-    global project_root
     if len(sys.argv) >= 3 and sys.argv[1] in ("sync", "status"):
         action = sys.argv[1]
         root = sys.argv[2]
@@ -291,11 +290,11 @@ def main():
                 from forge.tool_call_record import get_latest_record_with_display, get_record
 
                 arg = parts[1].strip() if len(parts) > 1 else ""
-                project_root = workspace.project_root
+                root_for_lookup = workspace.project_root
                 disp = None
                 name = ""
                 if arg:
-                    rec = get_record(project_root, arg)
+                    rec = get_record(root_for_lookup, arg)
                     if rec is None:
                         print(f"(no ToolCallRecord for tool_call_id={arg})")
                         continue
@@ -312,13 +311,13 @@ def main():
                         continue
                 else:
                     tc_id = getattr(runtime, "_last_tool_call_id", None)
-                    rec = get_record(project_root, tc_id) if tc_id else None
+                    rec = get_record(root_for_lookup, tc_id) if tc_id else None
                     if rec is not None and rec.get("display") is not None:
                         disp = rec.get("display") or ""
                         name = str(rec.get("tool_name") or "")
                     if disp is None or not str(disp).strip():
                         # crash recovery / cold start: latest durable display
-                        latest = get_latest_record_with_display(project_root)
+                        latest = get_latest_record_with_display(root_for_lookup)
                         if latest is not None:
                             disp = latest.get("display") or ""
                             name = str(latest.get("tool_name") or "")
@@ -327,7 +326,7 @@ def main():
                             name = getattr(runtime, "_last_tool_name", "") or ""
                 presenter.page_last(name, disp)
                 continue
-            if cmd in ("changes",):
+            if cmd0 in ("changes",):
                 tools = runtime.executor.tools
                 if "session_changes" in tools:
                     print("\n" + tools["session_changes"]().display)
