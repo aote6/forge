@@ -95,6 +95,16 @@
 ### 运行时生命周期（R1 后续）
 
 ### 主从分工 / 行为契约
+- [ ] Machine Evidence 提取显式 input path（Evidence UX 恢复）
+  - 背景：MDE v1 中 project_machine_evidence() 的 path 恒为 None。
+    旧 user_stop fallback 会提取 input["path"]，统一走投影后这个
+    展示字段丢了。权威性不受影响（tool_call_id 可查账本），但
+    主 AI 阅读效率和人类审计可读性下降。
+  - 修复：在 project_machine_evidence() 里，若 input 是 dict 且
+    有显式 "path" 字段，则原样提取到 Evidence.path。
+    只允许显式 input["path"]，不做路径推导。
+  - 边界：path 是辅助展示字段，tool_call_id 是唯一权威锚点。
+  - 优先级：P3（已知展示损失，不阻塞 MDE 正确性）
 
 
 - [ ] Forge 缺少「语义级风险提示」，只能在极危险命令上硬拦截。
