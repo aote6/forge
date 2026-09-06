@@ -2054,3 +2054,28 @@ Main AI 是两侧协议之间唯一的协调层。
 - 修复：新增自检规则——信息来源非实现代码时必须用推测措辞，
   正文不得与 UNCERTAIN 矛盾。
 - 验证：全量 828 passed（prompt 层无法单测，需实机观察）。
+
+## 2026-09-06 晚间：三个 P1 修复（Claude）
+
+### 1. STOP 后证据兜底（commit 在 agent_abi.py）
+- 问题：user_stop 时子 AI 输出残缺，verified evidence 为空，
+  主 AI 无法说明"刚才子 AI 在查什么"。
+- 修复：user_stop 且 verified 为空时，从 records 里真实成功
+  调用兜底合成 evidence + conclusion（含 task.goal）。
+- 验证：828 passed。
+
+### 2. 工具调用总数预算（commit subagent.py + agent_abi.py）
+- 问题：max_steps 按 LLM 回合数计，同一回合可多工具调用，
+  拦不住"53 次工具调用"式过度侦查。
+- 修复：新增 SUBAGENT_MAX_TOOL_CALLS=25，每进入工具循环体
+  计数（不分只读/写/denied），超限走 preempted_tool_budget
+  → STATUS_NEED_DECISION。
+- 验证：新增 test_tool_budget.py，全量 829 passed。
+
+### 3. read_file 描述补 end=0 全读用法
+- 修复：schema 顶层描述加入"完整读大文件用 start=1, end=0"。
+- 验证：828 passed。
+
+### TODO 更新
+- 删除已解决的 STOP 证据丢失、子 AI 过度侦查条目
+- 代价预算条目更新为"子 AI 侧已修，主 AI 侧未修"
