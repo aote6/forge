@@ -351,6 +351,59 @@ def run_subagent(
                 )
 
             if not resp.tool_calls:
+                if not _STOP_WHEN_RE.search(content):
+                    messages.append(
+                        Message(
+                            role="assistant",
+                            content=resp.content,
+                            tool_calls=None,
+                        )
+                    )
+                    messages.append(
+                        Message(
+                            role="user",
+                            content=(
+                                "你上一轮回复未包含有效的循环控制信号。"
+                                "只回复一行，必须是以下格式之一：\n"
+                                "STOP_WHEN: met\nSTOP_WHEN: not_met\n"
+                                "不要调用任何工具，不要输出其他内容。"
+                            ),
+                        )
+                    )
+                    try:
+                        forced_resp = adapter.send(messages, schemas)
+                        forced_content = forced_resp.content or ""
+                    except KeyboardInterrupt:
+                        return _finalize(
+                            task,
+                            subtask_id=subtask_id,
+                            last_text=last_text,
+                            stop_when_met=False,
+                            exit_kind="user_stop",
+                            records=records,
+                            error_message="user_stop",
+                        )
+                    forced_signal = parse_stop_when(forced_content)
+                    if forced_signal == "met":
+                        last_text = forced_content.strip()
+                        return _finalize(
+                            task,
+                            subtask_id=subtask_id,
+                            last_text=last_text,
+                            stop_when_met=True,
+                            exit_kind="stop_when",
+                            records=records,
+                        )
+                    last_text = content.strip() or forced_content.strip()
+                    return _finalize(
+                        task,
+                        subtask_id=subtask_id,
+                        last_text=last_text,
+                        stop_when_met=False,
+                        exit_kind="no_tools_forced_retry_failed",
+                        records=records,
+                        error_message="forced_stop_when_retry_failed",
+                    )
                 last_text = content.strip()
                 return _finalize(
                     task,
