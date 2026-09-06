@@ -2136,3 +2136,14 @@ AgentResult.evidence 依赖模型输出 EVIDENCE 文本。模型漏写时，
 - P1: done_when 真正的语义求值
 - P1: precheck acceptance semantics 重构
 - P3: Machine Evidence 提取显式 input path
+
+## 2026-09-06 P3 修复：Machine Evidence 提取显式 input path
+
+### 修复
+- project_machine_evidence() 从 input["path"] 提取显式路径
+- path 是辅助展示字段，tool_call_id 仍是唯一权威锚点
+- 不做路径推导，只认显式 input dict 里的 "path" 字符串
+
+### 测试
+- 新增 2 个测试：显式 path 提取 + 无 path 时保持 None
+- 全量 843 passed

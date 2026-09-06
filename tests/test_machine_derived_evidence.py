@@ -220,3 +220,16 @@ def test_coerce_agent_result_old_dict_without_field_gets_empty_tuple():
     }
     result = _coerce_agent_result(d)
     assert result.model_reported_evidence == ()
+
+
+def test_machine_evidence_extracts_explicit_input_path():
+    """Evidence.path only from explicit input["path"], never inferred."""
+    rec = _record(input_data={"path": "forge/runtime.py"})
+    ev = project_machine_evidence([rec], "sub_x")
+    assert ev[0].path == "forge/runtime.py"
+
+
+def test_machine_evidence_path_none_when_input_has_no_path():
+    rec = _record(input_data={"pattern": "x"})
+    ev = project_machine_evidence([rec], "sub_x")
+    assert ev[0].path is None

@@ -312,11 +312,18 @@ def project_machine_evidence(
         if not tc_id:
             continue
 
+        r_input = _get(r, "input", None)
+        r_path = None
+        if isinstance(r_input, dict):
+            raw_path = r_input.get("path")
+            if isinstance(raw_path, str) and raw_path:
+                r_path = raw_path
+
         out.append(
             Evidence(
                 tool_call_id=tc_id,
                 claim=f"{tool_name} 执行成功",
-                path=None,
+                path=r_path,
                 quote=None,
             )
         )
