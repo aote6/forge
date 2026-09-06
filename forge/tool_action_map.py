@@ -26,6 +26,7 @@ TOOL_ACTION_MAP: list[dict[str, str]] = [
     {"tool_name": "todo_write", "action": "control", "path_field": "", "command_class_rule": ""},
     {"tool_name": "todo_list", "action": "control", "path_field": "", "command_class_rule": ""},
     {"tool_name": "get_runtime_state", "action": "control", "path_field": "", "command_class_rule": ""},
+    {"tool_name": "list_recent_subtasks", "action": "control", "path_field": "", "command_class_rule": ""},
     {"tool_name": "spawn_subagent", "action": "control", "path_field": "", "command_class_rule": ""},
     {"tool_name": "session_changes", "action": "world_read", "path_field": "", "command_class_rule": ""},
     {"tool_name": "verify_tool_call", "action": "read", "path_field": "", "command_class_rule": ""},

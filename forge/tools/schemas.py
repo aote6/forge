@@ -538,6 +538,17 @@ CONTROL_PLANE_TOOL_DECLARATIONS = [
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "list_recent_subtasks",
+        "description": "只读:查看最近 N 个子任务的执行结果摘要(subtask_id/status/status_reason/conclusion前100字)。按写入顺序取最后N条,非时间排序。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "n": {"type": "integer", "description": "返回条数,默认5"},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_runtime_state",
         "description": (
             "只读查询当前 RuntimeState 摘要（phase / active_subtask_id / pending / recovery）。"

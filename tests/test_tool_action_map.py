@@ -51,6 +51,7 @@ EXPECTED_TOOL_NAMES = [
     "request_human_intervention",
     "resolve_human_intervention",
     "submit_plan",
+    "list_recent_subtasks",
 ]
 
 LEGAL_ACTIONS = frozenset({

@@ -39,6 +39,34 @@ def _parse_cached(full_path: Path, rel_path: str):
 
 
 def make_search_tools(workspace) -> dict:
+    def list_recent_subtasks(n: int = 5) -> ToolResult:
+        """只读:倒序读取 subagent_results.jsonl 最近 N 条 AgentResult 摘要。"""
+        try:
+            import json
+            path = Path(workspace.project_root) / ".forge" / "subagent_results.jsonl"
+            if not path.exists():
+                return ToolResult.ok(display="RESULT: list_recent_subtasks\ncount: 0\n(无历史记录)")
+            lines = path.read_text(encoding="utf-8").splitlines()
+            tail = lines[-n:][::-1]
+            items = []
+            for ln in tail:
+                try:
+                    items.append(json.loads(ln))
+                except Exception:
+                    continue
+            out = [f"RESULT: list_recent_subtasks\ncount: {len(items)}"]
+            for d in items:
+                conclusion = (d.get("conclusion") or "")[:100]
+                out.append(
+                    f"- subtask_id={d.get('subtask_id','')} "
+                    f"status={d.get('status','')} "
+                    f"status_reason={d.get('status_reason','')} "
+                    f"conclusion={conclusion}"
+                )
+            return ToolResult.ok(display="\n".join(out))
+        except Exception as e:
+            return ToolResult.fail(display=f"list_recent_subtasks 失败: {e}")
+
     def find_symbol_definition(symbol_name: str) -> ToolResult:
         """全仓符号索引查找定义（.forge/symbols.json），避免逐文件 AST 全扫。"""
         try:
@@ -328,4 +356,5 @@ def make_search_tools(workspace) -> dict:
         "rebuild_symbol_index": rebuild_symbol_index,
         "search_history": search_history,
         "inspect_last_intent": inspect_last_intent,
+        "list_recent_subtasks": list_recent_subtasks,
     }
