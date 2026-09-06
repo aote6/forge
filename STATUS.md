@@ -2094,3 +2094,23 @@ Main AI 是两侧协议之间唯一的协调层。
 
 ### 验证
 全量 830 passed。
+
+## 2026-09-06 MDE v1：Machine-Derived Evidence
+
+### 问题
+AgentResult.evidence 依赖模型输出 EVIDENCE 文本。模型漏写时，
+即使 ToolCallRecord 已有成功记录，evidence 为空导致 stop_when met
+被误判 blocked（实机 forge_sync 事故 34d6c29）。
+
+### 修复
+- docs/AGENT_ABI.md 升 v1.4：Evidence Provenance 裁定
+- agent_abi.py 新增 project_machine_evidence()：
+  ToolCallRecord (actor=subagent, subtask_id 匹配, status=success)
+  → AgentResult.evidence（authoritative）
+- 模型 EVIDENCE 降级为 model_reported_evidence（advisory，audit only）
+- fallback 简化：统一走 project_machine_evidence
+- 新增 tests/test_machine_derived_evidence.py（8 个测试）
+- 更新 4 个旧测试断言匹配 MDE v1 语义
+
+### 验证
+全量 838 passed。

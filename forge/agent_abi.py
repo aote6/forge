@@ -126,6 +126,7 @@ class AgentResult:
     stop_when_met: bool
     status_reason: str
     raw_conclusion: str = ""
+    model_reported_evidence: tuple[dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.status not in VALID_STATUSES:
@@ -145,6 +146,7 @@ class AgentResult:
             "stop_when_met": self.stop_when_met,
             "status_reason": self.status_reason,
             "raw_conclusion": self.raw_conclusion,
+            "model_reported_evidence": list(self.model_reported_evidence),
         }
 
 
@@ -272,6 +274,55 @@ def _record_subtask_id(rec: Any) -> str:
     return ""
 
 
+def project_machine_evidence(
+    records: Sequence[Any],
+    subtask_id: str,
+) -> tuple[Evidence, ...]:
+    """Project authoritative Evidence from ToolCallRecord only.
+
+    Conditions (all must hold):
+      - actor == "subagent"
+      - subtask_id == current subtask
+      - status == "success"
+
+    claim is a machine-generated execution fact label only.
+    path / quote are not inferred in MDE v1.
+    """
+    out: list[Evidence] = []
+    for r in records:
+        def _get(obj: Any, key: str, default=None):
+            if hasattr(obj, key):
+                return getattr(obj, key)
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return default
+
+        actor = str(_get(r, "actor") or "")
+        sid = str(_get(r, "subtask_id") or "")
+        status = str(_get(r, "status") or "")
+        tc_id = str(_get(r, "tool_call_id") or "")
+        tool_name = str(_get(r, "tool_name") or "")
+
+        if actor != "subagent":
+            continue
+        if sid != subtask_id:
+            continue
+        if status != "success":
+            continue
+        if not tc_id:
+            continue
+
+        out.append(
+            Evidence(
+                tool_call_id=tc_id,
+                claim=f"{tool_name} 执行成功",
+                path=None,
+                quote=None,
+            )
+        )
+    return tuple(out)
+
+
 def verify_evidence(
     items: Iterable[dict[str, Any]],
     records: Sequence[Any],
@@ -330,7 +381,8 @@ def assemble_agent_result(
     subtask_id: str,
 ) -> AgentResult:
     """Assemble final AgentResult. Model never chooses status."""
-    verified = verify_evidence(candidate.evidence_items, records, subtask_id)
+    machine_evidence = project_machine_evidence(records, subtask_id)
+    verified = list(machine_evidence)
     stop_met = bool(candidate.stop_when_met)
     exit_kind = candidate.exit_kind or "no_tools"
 
@@ -389,30 +441,10 @@ def assemble_agent_result(
 
     conclusion = candidate.conclusion or ""
 
-    # user_stop 兜底 (2026-09-06): 用户中断时模型输出常常残缺,
-    # verified evidence 可能为空,但 records 里已经真实记录了
-    # 中断前成功执行过的工具调用——不要浪费这些机器事实。
-    if exit_kind == "user_stop" and not verified:
-        fallback_evidence: list[Evidence] = []
-        for r in records:
-            r_status = getattr(r, "status", None) if not isinstance(r, dict) else r.get("status")
-            if r_status != "success":
-                continue
-            r_tool_call_id = getattr(r, "tool_call_id", None) if not isinstance(r, dict) else r.get("tool_call_id")
-            r_tool_name = getattr(r, "tool_name", None) if not isinstance(r, dict) else r.get("tool_name")
-            r_input = getattr(r, "input", None) if not isinstance(r, dict) else r.get("input")
-            if not r_tool_call_id or not r_tool_name:
-                continue
-            r_path = None
-            if isinstance(r_input, dict):
-                r_path = r_input.get("path")
-            fallback_evidence.append(
-                Evidence(
-                    tool_call_id=str(r_tool_call_id),
-                    claim=f"{r_tool_name} 成功执行 (user_stop 前,机器兜底记录)",
-                    path=r_path,
-                )
-            )
+    # user_stop / stop_when 兜底: 如果 machine projection 为空
+    # （正常情况下不该发生），从 records 再兜底一次。
+    if not verified and exit_kind in ("user_stop", "stop_when"):
+        fallback_evidence = list(project_machine_evidence(records, subtask_id))
         if fallback_evidence:
             verified = fallback_evidence
         if not conclusion:
@@ -428,6 +460,7 @@ def assemble_agent_result(
         subtask_id=subtask_id,
         status=status,
         conclusion=conclusion,
+        model_reported_evidence=tuple(candidate.evidence_items),
         evidence=tuple(verified),
         uncertain=candidate.uncertain or "",
         next=candidate.next or "",

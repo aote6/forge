@@ -46,7 +46,9 @@ def test_status_rejects_invalid_enum():
         )
 
 
-def test_assemble_done_without_evidence_becomes_blocked():
+def test_assemble_missing_model_evidence_uses_machine_projection():
+    # MDE v1: even if model writes no EVIDENCE text, machine projects
+    # Evidence from successful ToolCallRecord for this subtask.
     task = AgentTask(goal="g", subtask_id="sub_1")
     cand = CandidateResult(
         conclusion="ok",
@@ -55,10 +57,12 @@ def test_assemble_done_without_evidence_becomes_blocked():
         exit_kind="stop_when",
     )
     r = assemble_agent_result(task, cand, [_rec("tc_1")], subtask_id="sub_1")
-    assert r.status == STATUS_BLOCKED
+    assert r.status == STATUS_DONE
+    assert [e.tool_call_id for e in r.evidence] == ["tc_1"]
 
 
 def test_evidence_without_tool_call_id_stripped():
+    # MDE v1: model evidence_items are advisory; machine projects from records.
     task = AgentTask(goal="g", subtask_id="sub_1")
     cand = CandidateResult(
         conclusion="ok",
@@ -67,11 +71,13 @@ def test_evidence_without_tool_call_id_stripped():
         exit_kind="stop_when",
     )
     r = assemble_agent_result(task, cand, [_rec("tc_1")], subtask_id="sub_1")
-    assert r.evidence == ()
-    assert r.status == STATUS_BLOCKED
+    assert [e.tool_call_id for e in r.evidence] == ["tc_1"]
+    assert list(r.model_reported_evidence) == cand.evidence_items
+    assert r.status == STATUS_DONE
 
 
 def test_evidence_cross_subtask_stripped():
+    # MDE v1: machine projection filters by subtask_id.
     task = AgentTask(goal="g", subtask_id="sub_1")
     cand = CandidateResult(
         conclusion="ok",
@@ -82,6 +88,7 @@ def test_evidence_cross_subtask_stripped():
     records = [_rec("tc_other", subtask_id="sub_OTHER")]
     r = assemble_agent_result(task, cand, records, subtask_id="sub_1")
     assert r.evidence == ()
+    assert list(r.model_reported_evidence) == cand.evidence_items
     assert r.status == STATUS_BLOCKED
 
 

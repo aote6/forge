@@ -125,7 +125,10 @@ def test_run_subagent_returns_structured_conclusion():
     )
     assert isinstance(out, AgentResult)
     assert "a.py" in out.conclusion
-    assert len(out.evidence) == 0  # no tool_call_id in EVIDENCE line
+    # MDE v1: machine projects Evidence from successful ToolCallRecord
+    # even when model EVIDENCE line has no tool_call_id.
+    assert len(out.evidence) == 1
+    assert out.evidence[0].claim == "search_code 执行成功"
 
 
 def test_run_subagent_intermediate_tool_trace_not_in_main_context():

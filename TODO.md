@@ -95,47 +95,7 @@
 ### 运行时生命周期（R1 后续）
 
 ### 主从分工 / 行为契约
-- [ ] Evidence Provenance 重构：AgentResult.evidence 必须从 ToolCallRecord 机器生成，模型 EVIDENCE 降级为 advisory。
-  - 背景：2026-09-06 实机发现子 AI 工具成功但 evidence 为空
-    （模型忘写 EVIDENCE 文本），导致 forge_sync 实际成功却
-    被标 blocked。不是单个 bug，是"模型叙述 ≠ 系统事实"边界
-    没立起来。
-  - 当前问题：AgentResult.evidence 依赖模型在最后一轮写
-    EVIDENCE 文本，机器只验证模型写的真假。模型忘写/写错/
-    假引用都会让验收失败，尽管 ToolCallRecord 里已有真实事实。
-  - 目标结构：
-      ToolCallRecord / Runtime Receipt
-        ↓ 机器事实
-      Evidence Projection
-        ↓ 自动生成
-      AgentResult.evidence（authoritative）
-      模型 EVIDENCE → model_evidence（advisory only）
-  - 关键边界：工具成功 ≠ 任务完成。机器能证明"工具执行了"，
-    但不能证明"任务做完了"。done/blocked/need_decision 仍需
-    验收逻辑或主 AI 判断。
-  - 迁移路径：
-      Phase 1 同时生成 machine evidence + 保留 model EVIDENCE
-      Phase 2 验收逻辑优先使用 machine evidence
-      Phase 3 model EVIDENCE 降级为 advisory
-      Phase 4 删除"必须模型输出 EVIDENCE 才能完成"的 ABI 约束
-  - 优先级：P0
 
-- [ ] 子 AI 工具调用成功但 AgentResult.evidence 为空（stop_when met 路径缺兜底）。
-  - 发现场景：2026-09-06 实机跑 forge_sync，子 AI 实际调用
-    forge_sync 成功（ToolCallRecord 可查，IN_SYNC），但 AgentResult
-    evidence 为空、conclusion 为空，状态变成 blocked。主 AI 差点
-    误判"执行失败"并重跑第三次。
-  - 根因：模型正常收尾时没写 EVIDENCE 文本，verify_evidence
-    返回空。user_stop 路径已加兜底（从 records 合成），但
-    stop_when met 路径没有同等兜底，done_when proxy 要求
-    evidence 非空 → blocked。
-  - 影响：forge_sync 这类"无文本结论"的工具每次都可能触发；
-    主 AI 浪费 token 重跑；验收展示错误。
-  - 建议：在 assemble_agent_result 里，当 verified 为空且
-    records 里有成功调用时，不区分 exit_kind，统一从 records
-    兜底合成 evidence（user_stop 已有此逻辑，应扩展到
-    stop_when met / no_tools 等其他非终态路径）。
-  - 优先级：P1
 
 - [ ] Forge 缺少「语义级风险提示」，只能在极危险命令上硬拦截。
   - 发现场景：删仓库、发垃圾嘟文、贴 API key 等语义上有害但技术可行的请求无法识别。
