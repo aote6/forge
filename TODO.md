@@ -95,6 +95,39 @@
 ### 运行时生命周期（R1 后续）
 
 ### 主从分工 / 行为契约
+- [ ] verify_evidence() 遗留函数清理（MDE v1 已隔离但未删除）
+  - 现状：函数已标记 deprecated，无生产调用者。
+    两个测试 tests/test_main_read_tool_records.py 仍引用它验证
+    actor=main 过滤行为。
+  - 风险：函数签名接受模型 items 并生成 Evidence，与 MDE 边界
+    冲突。若未来有人误用其返回值进入 AgentResult.evidence，
+    会重新打开"模型生产权威证据"的口子。
+  - 修复方向：把两个测试迁移到 project_machine_evidence 的
+    actor 过滤测试，然后删除 verify_evidence()。
+  - 优先级：P1
+
+- [ ] done_when 真正的语义求值（v1 只有 proxy）
+  - 现状：done_when_satisfied_v1 是明确标注的 proxy：
+    stop_when_met && machine_evidence >= 1。
+    不读 done_when 自然语言内容，不判断任务是否真正完成。
+  - 影响：主 AI 看到 status=done 时，实际只知道"子 AI 说停了
+    且有成功工具调用"，不知道 done_when 是否真满足。
+    主 AI 承担全部语义判断，但没有结构化支持。
+  - 方向：设计结构化 completion predicate（如期望工具名+输出
+    匹配），让机器能验证 done_when 的可观察部分。
+  - 优先级：P1（独立设计，不混入 MDE）
+
+- [ ] precheck acceptance semantics：证据链失败 ≠ 工程失败
+  - 现状：precheck 在 done + 无 machine evidence 时 demote 为
+    blocked。status_reason 已加文案说明"不代表工程失败"，但
+    状态建模没变——主 AI 看到 blocked 仍无法区分"活没干好"
+    和"证据链丢了"。
+  - 影响：主 AI 可能误把验收失败当执行失败，违反 system prompt
+    里"verify 失败 ≠ 工程任务失败"的规则。
+  - 方向：考虑拆分 engineering outcome 和 evidence contract
+    两个维度，或引入新的 status / 字段区分。
+  - 优先级：P1（acceptance semantics 重构，另立任务）
+
 - [ ] Machine Evidence 提取显式 input path（Evidence UX 恢复）
   - 背景：MDE v1 中 project_machine_evidence() 的 path 恒为 None。
     旧 user_stop fallback 会提取 input["path"]，统一走投影后这个
