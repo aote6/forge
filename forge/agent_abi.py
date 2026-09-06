@@ -387,6 +387,39 @@ def assemble_agent_result(
         reason = "status=done rejected: verified evidence is empty"
 
     conclusion = candidate.conclusion or ""
+
+    # user_stop 兜底 (2026-09-06): 用户中断时模型输出常常残缺,
+    # verified evidence 可能为空,但 records 里已经真实记录了
+    # 中断前成功执行过的工具调用——不要浪费这些机器事实。
+    if exit_kind == "user_stop" and not verified:
+        fallback_evidence: list[Evidence] = []
+        for r in records:
+            r_status = getattr(r, "status", None) if not isinstance(r, dict) else r.get("status")
+            if r_status != "success":
+                continue
+            r_tool_call_id = getattr(r, "tool_call_id", None) if not isinstance(r, dict) else r.get("tool_call_id")
+            r_tool_name = getattr(r, "tool_name", None) if not isinstance(r, dict) else r.get("tool_name")
+            r_input = getattr(r, "input", None) if not isinstance(r, dict) else r.get("input")
+            if not r_tool_call_id or not r_tool_name:
+                continue
+            r_path = None
+            if isinstance(r_input, dict):
+                r_path = r_input.get("path")
+            fallback_evidence.append(
+                Evidence(
+                    tool_call_id=str(r_tool_call_id),
+                    claim=f"{r_tool_name} 成功执行 (user_stop 前,机器兜底记录)",
+                    path=r_path,
+                )
+            )
+        if fallback_evidence:
+            verified = fallback_evidence
+        if not conclusion:
+            conclusion = (
+                f"(subagent: 被用户中断前的目标: {task.goal or '(无)'}; "
+                f"已完成 {len(fallback_evidence)} 次成功工具调用,详见 EVIDENCE)"
+            )
+
     if not conclusion and status == STATUS_BLOCKED:
         conclusion = "(subagent: no conclusion)"
 
