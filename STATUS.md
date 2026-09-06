@@ -2026,3 +2026,31 @@ Main AI 是两侧协议之间唯一的协调层。
 ### 验证
 - 全量 828 passed
 - 覆盖：preempt 生命周期、resume/abort 恢复、HI 边界、进程中断恢复不被绕过
+
+## 2026-09-06 行为验证 + 子 AI 信号缺失修复
+
+### 背景
+实机行为验证：让 Forge 分析 tests/test_tui_input.py 并写分析文件。
+过程中发现子 AI 三个问题，修复两个 + 一个 machine harness。
+
+### 问题 1：子 AI 漏写 STOP_WHEN 信号（commit b0bc537）
+- 现象：子 AI 干完活但最后一轮没写 STOP_WHEN: met，落入 no_tools
+  分支被映射成 need_decision，主 AI 误以为需要裁决。
+- 排查：4 个失败案例中 2 个是设计生效（blocked：零工具调用被
+  done_when proxy 正确拒绝），2 个是真遗漏。
+- 修复：no_tools 分支前加 harness 兜底——信号缺失时追加一轮
+  "强制信号轮"，只要求输出 STOP_WHEN，不计入预算，只重试一次。
+- 验证：全量 828 passed。
+
+### 问题 2：read_file 描述缺 end=0 全读用法（commit 93d2a2f）
+- 现象：子 AI 读 472 行文件分了 6 次。
+- 根因：end=0（读到文件末尾）只在参数说明里，顶层描述没提。
+- 修复：描述加入"完整读大文件用 start=1, end=0 一次拿全文"。
+- 验证：全量 828 passed。
+
+### 问题 3：SUBAGENT_SYSTEM 缺定稿前自检（commit 93d2a2f）
+- 现象：子 AI 未读实现代码，却在正文用确定语气写"时序细节"，
+  与 UNCERTAIN 区声明矛盾。
+- 修复：新增自检规则——信息来源非实现代码时必须用推测措辞，
+  正文不得与 UNCERTAIN 矛盾。
+- 验证：全量 828 passed（prompt 层无法单测，需实机观察）。
