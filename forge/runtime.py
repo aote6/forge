@@ -1725,8 +1725,24 @@ class Runtime:
 
             主 AI 必须先得到用户明确方向，不得自行决定。
             决议成功后只清除 pending，不自动执行 forge_sync。
+
+            Defense-in-depth（非完整保证）：若 dp.py 在 AWAITING_USER +
+            sync_decision pending 期间从用户原始输入捕获到方向关键词
+            （_last_user_sync_choice_hint），且与本次 direction 不一致，
+            拒绝调用并要求主 AI 重新确认。关键词未命中时 hint 为 None，
+            不做任何拦截——不能覆盖模糊表达（如"别弄了"）的场景。
             """
             from forge.adapters.base import ToolResult as TR
+
+            expected = getattr(self, "_last_user_sync_choice_hint", None)
+            self._last_user_sync_choice_hint = None  # 消费后立即清空，避免跨轮泄漏
+            if expected and direction != expected:
+                return TR.fail(
+                    display=(
+                        f"用户最近输入像是选择了 {expected!r}，但你传的 "
+                        f"direction={direction!r}。请重新向用户确认后再调用。"
+                    )
+                )
 
             try:
                 decision = self.resolve_sync_decision(direction)

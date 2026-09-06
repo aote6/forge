@@ -283,6 +283,32 @@ def main():
                 user_input = "q"
             if not user_input.strip():
                 continue
+
+            # Defense-in-depth for sync-decision "parameter inertia":
+            # 仅在 AWAITING_USER + sync_decision pending 期间捕获用户原始
+            # 方向意图，交给 resolve_sync_decision_tool 做交叉校验；不在
+            # 此范围外捕获，避免误伤无关对话（如聊 unbounded 的 world
+            # generation）或和 abort_subtask 的 abort 语义混淆。
+            from forge.runtime_state import (
+                PHASE_AWAITING_USER,
+                PENDING_KIND_SYNC_DECISION,
+            )
+
+            rs = getattr(runtime, "runtime_state", None)
+            if (
+                rs is not None
+                and rs.phase == PHASE_AWAITING_USER
+                and rs.pending is not None
+                and rs.pending.kind == PENDING_KIND_SYNC_DECISION
+            ):
+                _low = user_input.lower()
+                if "abort" in _low or "放弃" in user_input or "取消" in user_input:
+                    runtime._last_user_sync_choice_hint = "abort"
+                elif "disk" in _low or "磁盘" in user_input:
+                    runtime._last_user_sync_choice_hint = "disk_to_world"
+                elif "world" in _low:
+                    runtime._last_user_sync_choice_hint = "world_to_disk"
+
             raw_cmd = user_input.strip()
             parts = raw_cmd.split(None, 1)
             cmd0 = parts[0].lower() if parts else ""
