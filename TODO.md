@@ -94,13 +94,6 @@
 
 ### 运行时生命周期（R1 后续）
 
-- [ ] 控制面缺少 `list_recent_subtasks()` 工具。
-  - 现状：_subagent_results 已持久化到 JSONL，但主 AI 无法主动回顾历史任务。
-  - 影响：主 AI 无法回答「昨天派过什么任务、结果如何」。
-  - 建议：新增控制面工具 list_recent_subtasks(limit=N)，返回最近 N 个 AgentResult 摘要。
-  - 优先级：P3
-
-
 ### 主从分工 / 行为契约
 - [ ] Forge 缺少「语义级风险提示」，只能在极危险命令上硬拦截。
   - 发现场景：删仓库、发垃圾嘟文、贴 API key 等语义上有害但技术可行的请求无法识别。

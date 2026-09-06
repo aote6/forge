@@ -2079,3 +2079,18 @@ Main AI 是两侧协议之间唯一的协调层。
 ### TODO 更新
 - 删除已解决的 STOP 证据丢失、子 AI 过度侦查条目
 - 代价预算条目更新为"子 AI 侧已修，主 AI 侧未修"
+
+## 2026-09-06 深夜：list_recent_subtasks 工具
+
+### 问题
+控制面缺少回顾历史子任务的工具。subagent_results.jsonl 已有数据，
+但主 AI 无法主动读取。
+
+### 修复
+- 新增控制面只读工具 list_recent_subtasks(n=5)，倒序读 JSONL
+  最后 N 行，返回 subtask_id/status/status_reason/conclusion 前100字
+- 注册到 CONTROL_PLANE_TOOLS + TOOL_ACTION_MAP + search_tools
+- 工具面总数 45 → 46（放宽 test_tool_surface_quality 上限）
+
+### 验证
+全量 830 passed。
