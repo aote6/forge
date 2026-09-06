@@ -213,6 +213,7 @@ def _background_health_check(project_root: str) -> None:
 
 
 def main():
+    global project_root
     if len(sys.argv) >= 3 and sys.argv[1] in ("sync", "status"):
         action = sys.argv[1]
         root = sys.argv[2]
