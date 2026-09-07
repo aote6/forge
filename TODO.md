@@ -61,19 +61,11 @@
 
 ### 测试技术债
 
-- [ ] 旧测试门禁绕过点已迁移，但测试债未消失：`test_p2_3_progress_skeleton.py` 从清空 `_WRITE_CONFIRM_TOOLS` 改为 monkeypatch `_main_tool_policy_denied` 放行 `str_replace`。
-  - 发现场景：P1 主 AI mutation policy 上线后，该测试为了让 mutation 成功路径可执行，又增加了一层 policy 绕过。
-  - 影响：测试仍没有验证真实 PendingAction / 子任务 mutation 契约，只是绕过了新加的主 AI policy。
-  - 建议：逐步迁移为真实 mutation 执行路径（子任务或内部合法执行入口），不再通过多层 monkeypatch 模拟 mutation 成功。
+- [ ] 测试债未消失：`test_p2_3_progress_skeleton.py` 通过 monkeypatch `_main_tool_policy_denied` 放行 `str_replace` 来模拟 mutation 成功。
+  - 发现场景：P1 主 AI mutation policy 上线后，该测试为了执行 mutation 成功路径，绕过 policy。
+  - 影响：测试仍没有验证真实 mutation 执行契约，只是绕过了主 AI policy。
+  - 建议：逐步迁移为真实 mutation 执行路径（子任务或内部合法执行入口），不再通过 monkeypatch 模拟。
   - 优先级：P2
-
-### 主循环死代码清理
-
-- [ ] 旧 PendingAction 死代码清理：主循环 `_pending_action` / `_execute_pending_action` / `_write_strategy` / `_WRITE_CONFIRM_TOOLS` 等已确认无活执行路径。
-  - 发现场景：Phase 2 closure audit 确认主循环 schemas 只有 CONTROL_PLANE_TOOLS，WRITE_CONFIRM 分支永远不可达。
-  - 影响：死代码增加维护负担，但当前不影响功能。
-  - 建议：确认无测试依赖后清理，不碰子循环 confirm_fn / Execution Pause。
-  - 优先级：P3
 
 ### 系统集成能力
 
