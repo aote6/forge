@@ -392,3 +392,67 @@ def test_atomic_write_no_torn(tmp_path):
     data = json.loads(raw)
     assert data["subtask_id"] == "sub_atom"
     assert not store.path.with_suffix(".tmp").exists()
+
+
+def test_clear_subtask_checkpoint_success(tmp_path, capsys):
+    """Helper returns True and leaves no checkpoint when clear succeeds."""
+    from forge.runtime import _clear_subtask_checkpoint, _CHECKPOINT_CLEAR_FAIL_NOTE
+
+    store = SubtaskCheckpointStore(tmp_path)
+    store.update_after_tool(
+        subtask_id="sub_ok",
+        task_dict=_task_dict("sub_ok"),
+        last_tool_call_id="tc_ok",
+    )
+    assert store.load() is not None
+    assert _clear_subtask_checkpoint(store) is True
+    assert store.load() is None
+    err = capsys.readouterr().err
+    assert _CHECKPOINT_CLEAR_FAIL_NOTE not in err
+
+
+def test_clear_subtask_checkpoint_failure_not_silent(tmp_path, monkeypatch, capsys):
+    """Simulate clear() returning False — must not be silent (log + False)."""
+    from forge.runtime import _clear_subtask_checkpoint, _CHECKPOINT_CLEAR_FAIL_NOTE
+
+    store = SubtaskCheckpointStore(tmp_path)
+    store.update_after_tool(
+        subtask_id="sub_fail",
+        task_dict=_task_dict("sub_fail"),
+        last_tool_call_id="tc_fail",
+    )
+    assert store.load() is not None
+
+    monkeypatch.setattr(store, "clear", lambda: False)
+    assert _clear_subtask_checkpoint(store) is False
+    # checkpoint intentionally left (clear mocked to fail)
+    assert store.load() is not None
+    err = capsys.readouterr().err
+    assert _CHECKPOINT_CLEAR_FAIL_NOTE in err
+
+
+def test_clear_subtask_checkpoint_none_store_ok():
+    from forge.runtime import _clear_subtask_checkpoint
+
+    assert _clear_subtask_checkpoint(None) is True
+
+
+def test_clear_subtask_checkpoint_raised_not_silent(tmp_path, monkeypatch, capsys):
+    """clear() raising must be caught, logged, return False — no silent pass."""
+    from forge.runtime import _clear_subtask_checkpoint
+
+    store = SubtaskCheckpointStore(tmp_path)
+    store.update_after_tool(
+        subtask_id="sub_raise",
+        task_dict=_task_dict("sub_raise"),
+        last_tool_call_id="tc_raise",
+    )
+
+    def _boom():
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(store, "clear", _boom)
+    assert _clear_subtask_checkpoint(store) is False
+    err = capsys.readouterr().err
+    assert "subtask checkpoint clear raised" in err
+    assert "permission denied" in err

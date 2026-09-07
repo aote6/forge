@@ -723,6 +723,34 @@ def _strip_confirm_prefix(text: str) -> str:
     return _CONFIRM_PREFIX_RE.sub("", (text or "").strip(), count=1).strip()
 
 
+_CHECKPOINT_CLEAR_FAIL_NOTE = (
+    "[warn] subtask checkpoint clear failed; leftover may surface as "
+    "INCONSISTENT recovery noise on next start"
+)
+
+
+def _clear_subtask_checkpoint(store) -> bool:
+    """Clear SubtaskCheckpoint; never raise. Log on failure. Returns success.
+
+    clear() already prints to stderr on OS error; we add a forge-level line so
+    callers that surface ToolResult.display can also notify the main AI.
+    Failure is non-fatal: append_ok + existing-terminal guards already prevent
+    re-execution; leftover only creates recovery noise.
+    """
+    if store is None:
+        return True
+    try:
+        ok = bool(store.clear())
+    except Exception as e:
+        print(f"[forge] subtask checkpoint clear raised: {e}", file=sys.stderr)
+        return False
+    if not ok:
+        print(
+            f"[forge] {_CHECKPOINT_CLEAR_FAIL_NOTE}",
+            file=sys.stderr,
+        )
+    return ok
+
 
 def _append_conversation_log(project_root: str, role: str, content: str, **extra) -> None:
     """Append one JSONL line to .forge/conversation_log.jsonl for search_history."""
@@ -1504,12 +1532,12 @@ class Runtime:
                     append_ok = append_subagent_result(workspace.project_root, ar_dict)
 
                     # Durable Pause §6.2: clear checkpoint ONLY after append success.
+                    # clear failure is non-fatal (noise only); surface it, do not retry.
+                    clear_ok = True
                     if append_ok:
-                        try:
-                            if getattr(self, "_subtask_checkpoint_store", None) is not None:
-                                self._subtask_checkpoint_store.clear()
-                        except Exception:
-                            pass
+                        clear_ok = _clear_subtask_checkpoint(
+                            getattr(self, "_subtask_checkpoint_store", None)
+                        )
                         # R1 phase lifecycle: reset to IDLE after result persisted
                         if getattr(self, "_runtime_state_store", None) is not None:
                             self.runtime_state.phase = PHASE_IDLE
@@ -1517,7 +1545,11 @@ class Runtime:
                             self.runtime_state.refresh_recovery()
                             self.recovery = self.runtime_state.recovery
                             self._runtime_state_store.save(self.runtime_state)
+                else:
+                    clear_ok = True
                 display = format_agent_result_for_parent(result)
+                if not clear_ok:
+                    display = (display or "") + "\n" + _CHECKPOINT_CLEAR_FAIL_NOTE
                 return ToolResult.ok(
                     display=display,
                     payload={
@@ -1760,18 +1792,23 @@ class Runtime:
             # 0. Terminal AgentResult guard (design §7.2) — both paths.
             existing = load_subagent_results(workspace.project_root).get(sid)
             if existing is not None:
-                store.clear()
+                clear_ok = _clear_subtask_checkpoint(store)
                 if getattr(self, "_runtime_state_store", None) is not None:
                     self.runtime_state.phase = PHASE_IDLE
                     self.runtime_state.active_subtask_id = None
                     self.runtime_state.refresh_recovery()
                     self.recovery = self.runtime_state.recovery
                     self._runtime_state_store.save(self.runtime_state)
+                clear_msg = (
+                    "checkpoint cleared, no second result written."
+                    if clear_ok
+                    else _CHECKPOINT_CLEAR_FAIL_NOTE
+                )
                 return ToolResult.ok(
                     display=(
                         f"resume_subtask: subtask_id={sid} already has terminal "
                         f"AgentResult (status={existing.get('status')}); "
-                        "checkpoint cleared, no second result written."
+                        f"{clear_msg}"
                     ),
                     payload={"resumed": False, "reason": "already_terminal"},
                 )
@@ -1860,6 +1897,7 @@ class Runtime:
                 result = precheck_agent_result(workspace.project_root, result)
                 if "user_stop" in str(getattr(result, "status_reason", "") or ""):
                     self._stop_requested = True
+                clear_ok = True
                 if result.subtask_id:
                     ar_dict = result.to_dict()
                     self._subagent_results[str(result.subtask_id)] = ar_dict
@@ -1867,7 +1905,7 @@ class Runtime:
                         workspace.project_root, ar_dict
                     )
                     if append_ok:
-                        store.clear()
+                        clear_ok = _clear_subtask_checkpoint(store)
                         if getattr(self, "_runtime_state_store", None) is not None:
                             self.runtime_state.phase = PHASE_IDLE
                             self.runtime_state.active_subtask_id = None
@@ -1875,6 +1913,8 @@ class Runtime:
                             self.recovery = self.runtime_state.recovery
                             self._runtime_state_store.save(self.runtime_state)
                 display = format_agent_result_for_parent(result)
+                if not clear_ok:
+                    display = (display or "") + "\n" + _CHECKPOINT_CLEAR_FAIL_NOTE
                 return ToolResult.ok(
                     display=display,
                     payload={
@@ -1918,23 +1958,28 @@ class Runtime:
             store = getattr(self, "_subtask_checkpoint_store", None)
             existing = load_subagent_results(workspace.project_root).get(sid)
 
-            def _clean_phase_and_checkpoint():
-                if store is not None:
-                    store.clear()
+            def _clean_phase_and_checkpoint() -> bool:
+                clear_ok = _clear_subtask_checkpoint(store)
                 if getattr(self, "_runtime_state_store", None) is not None:
                     self.runtime_state.phase = PHASE_IDLE
                     self.runtime_state.active_subtask_id = None
                     self.runtime_state.refresh_recovery()
                     self.recovery = self.runtime_state.recovery
                     self._runtime_state_store.save(self.runtime_state)
+                return clear_ok
 
             if existing is not None:
-                _clean_phase_and_checkpoint()
+                clear_ok = _clean_phase_and_checkpoint()
+                clear_msg = (
+                    "checkpoint cleared, no second result written."
+                    if clear_ok
+                    else _CHECKPOINT_CLEAR_FAIL_NOTE
+                )
                 return ToolResult.ok(
                     display=(
                         f"abort_subtask: subtask_id={sid} already has terminal "
                         f"AgentResult (status={existing.get('status')}); "
-                        "checkpoint cleared, no second result written."
+                        f"{clear_msg}"
                     ),
                     payload={"aborted": True, "synthesized": False},
                 )
@@ -1961,12 +2006,17 @@ class Runtime:
                     )
                 )
             self._subagent_results[sid] = ar_dict
-            _clean_phase_and_checkpoint()
+            clear_ok = _clean_phase_and_checkpoint()
+            clear_msg = (
+                "checkpoint cleared."
+                if clear_ok
+                else _CHECKPOINT_CLEAR_FAIL_NOTE
+            )
             return ToolResult.ok(
                 display=(
                     f"abort_subtask: synthesized blocked result for {sid} "
                     f"(status_reason=abandoned_after_process_interrupt); "
-                    "checkpoint cleared."
+                    f"{clear_msg}"
                 ),
                 payload={
                     "aborted": True,
