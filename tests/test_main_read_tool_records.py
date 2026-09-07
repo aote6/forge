@@ -8,7 +8,6 @@ from forge.agent_abi import (
     Evidence,
     STATUS_DONE,
     lookup_evidence_records,
-    verify_evidence,
 )
 from forge.tool_call_record import (
     ToolCallRecord,
@@ -91,8 +90,6 @@ def test_sub_evidence_rejects_main_record(tmp_path: Path):
         actor="main",
     )
     write_record(tmp_path, main_rec)
-    items = [{"tool_call_id": main_tc, "claim": "I read it", "path": "a.py"}]
-    assert verify_evidence(items, [main_rec], sid) == []
     ar = AgentResult(
         subtask_id=sid,
         status=STATUS_DONE,
@@ -106,25 +103,6 @@ def test_sub_evidence_rejects_main_record(tmp_path: Path):
     looked = lookup_evidence_records(tmp_path, ar)
     assert looked[0]["ok"] is False
 
-
-def test_verify_evidence_rejects_wrong_subtask():
-    sid = "sub_ok"
-    tc = "tc_" + "f" * 32
-    items = [{"tool_call_id": tc, "claim": "x"}]
-    records = [
-        ToolCallRecord(
-            tool_call_id=tc,
-            subtask_id="sub_other",
-            tool_name="read_file",
-            input={},
-            output=None,
-            status="success",
-            error=None,
-            timestamp=1.0,
-            actor="subagent",
-        )
-    ]
-    assert verify_evidence(items, records, sid) == []
 
 
 def test_main_read_only_names_are_subset_of_read_only():

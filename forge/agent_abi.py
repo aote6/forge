@@ -330,56 +330,6 @@ def project_machine_evidence(
     return tuple(out)
 
 
-def verify_evidence(
-    items: Iterable[dict[str, Any]],
-    records: Sequence[Any],
-    subtask_id: str,
-) -> list[Evidence]:
-    """DEPRECATED legacy audit helper — do NOT use for authoritative Evidence.
-
-    MDE v1 (AGENT_ABI v1.4) made ToolCallRecord the only authoritative
-    source for AgentResult.evidence via project_machine_evidence().
-    This function still accepts model-reported items and builds Evidence
-    from them, which violates the MDE boundary if its return value is
-    placed into AgentResult.evidence.
-
-    Retained only for legacy tests that verify actor=main filtering.
-    Do not call from production paths. Do not feed its output into
-    AgentResult.evidence, status decisions, or precheck logic.
-    """
-    by_id = _record_index(records)
-    verified: list[Evidence] = []
-    seen: set[str] = set()
-    for item in items:
-        tc_id = (item.get("tool_call_id") or "").strip()
-        if not tc_id or tc_id in seen:
-            continue
-        rec = by_id.get(tc_id)
-        if rec is None:
-            continue
-        # Main-agent records never count as subtask Evidence.
-        actor = ""
-        if hasattr(rec, "actor"):
-            actor = str(getattr(rec, "actor") or "")
-        elif isinstance(rec, dict):
-            actor = str(rec.get("actor") or "")
-        if actor == "main":
-            continue
-        rec_sid = _record_subtask_id(rec)
-        if not rec_sid or rec_sid != subtask_id:
-            continue
-        seen.add(tc_id)
-        verified.append(
-            Evidence(
-                tool_call_id=tc_id,
-                claim=str(item.get("claim") or ""),
-                path=item.get("path"),
-                quote=item.get("quote"),
-            )
-        )
-    return verified
-
-
 def done_when_satisfied_v1(stop_when_met: bool, verified: Sequence[Evidence]) -> bool:
     """v1 machine proxy for done_when — NOT semantic evaluation of done_when text.
 
