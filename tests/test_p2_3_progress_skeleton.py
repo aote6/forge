@@ -208,11 +208,10 @@ def _named_mutation_round(step: int, name: str) -> Message:
 def test_successful_mutation_triggers_checkpoint_next_round(tmp_path, monkeypatch):
     """mutation 成功 → 下一轮模型上下文包含 [PROGRESS]（不必等到第 5 步）。
 
-    Pending Action Gate 下普通写会冻结；本测试清空 WRITE_CONFIRM 桶以隔离
+    WRITE_CONFIRM 分支已删除（2026-09-07），mutation 直接走执行器。
     WorkingSet/checkpoint 行为（门禁由 test_plan_gate 覆盖）。
     """
     import forge.runtime as rtmod
-    monkeypatch.setattr(rtmod, "_WRITE_CONFIRM_TOOLS", frozenset())
 
     _original_main_policy = rtmod._main_tool_policy_denied
 
@@ -240,7 +239,6 @@ def test_successful_mutation_triggers_checkpoint_next_round(tmp_path, monkeypatc
 def test_failed_mutation_not_recorded_as_done(tmp_path, monkeypatch):
     """失败的 mutation 不得被记录为已完成。"""
     import forge.runtime as rtmod
-    monkeypatch.setattr(rtmod, "_WRITE_CONFIRM_TOOLS", frozenset())
     bad = ToolResult.fail(
         display="str_replace failed: old_string not found\npath: pkg/a.py",
         payload={"path": "pkg/a.py"},
@@ -265,7 +263,6 @@ def test_failed_mutation_not_recorded_as_done(tmp_path, monkeypatch):
 def test_failed_mutation_does_not_trigger_immediate_checkpoint(tmp_path, monkeypatch):
     """只有成功的 mutation 才触发额外 checkpoint。"""
     import forge.runtime as rtmod
-    monkeypatch.setattr(rtmod, "_WRITE_CONFIRM_TOOLS", frozenset())
     bad = ToolResult.fail(display="str_replace failed", payload={})
     adapter = _RecordingAdapter([_mutation_round(0), _read_round(1), _read_round(2)])
     rt = _runtime(tmp_path, adapter, _ScriptedExecutor({"str_replace": bad}))

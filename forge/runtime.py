@@ -108,17 +108,6 @@ _MASTODON_TOOLS = {
 # undo_last_tx: 恢复类，直接执行（仍受 Guard）
 # forge_sync: 不在此自动执行；循环内先 detect，仅 FAST_FORWARD 才进 PendingAction
 _WRITE_RECOVERY_TOOLS = frozenset({"undo_last_tx"})
-_WRITE_CONFIRM_TOOLS = frozenset(
-    (MUTATION_TOOL_NAMES | RECONCILIATION_TOOL_NAMES) - _WRITE_RECOVERY_TOOLS - {"forge_sync"}
-)
-# NOTE(2026-09-02): Phase 1 隔离后，_main_tool_policy_denied 会在此策略判定之前
-# 拦截所有 MUTATION_TOOL_NAMES | RECONCILIATION_TOOL_NAMES 工具并 continue（见主循环
-# for tc in resp.tool_calls 里 denied is not None 分支）。因此下面 WRITE_CONFIRM 分支
-# （strategy == "WRITE_CONFIRM" 那段）在当前工具面下不可达，仅当未来把某个
-# mutation/reconciliation 工具重新加入 CONTROL_PLANE_TOOL_DECLARATIONS 时才会复活。
-# 保留该分支作为该场景下的安全网，不要删除；不变量由
-# tests/test_tool_plane_isolation.py::test_write_confirm_tools_unreachable_from_main_loop 锁定。
-
 
 @dataclass
 class PendingAction:
@@ -215,45 +204,10 @@ def _write_strategy(tool_name: str) -> str:
         return "FORGE_SYNC"
     if tool_name in _WRITE_RECOVERY_TOOLS:
         return "WRITE_RECOVERY"
-    if tool_name in _WRITE_CONFIRM_TOOLS:
         return "WRITE_CONFIRM"
     if tool_name == SUBMIT_PLAN_TOOL_NAME:
         return "READ"  # 可选方案输出，不授予写权限
     return "READ"
-
-
-def _pending_action_summary(tool: str, args: dict | None) -> str:
-    args = args or {}
-    if tool == "str_replace":
-        path = args.get("path", "?")
-        old = str(args.get("old_string") or "")
-        new = str(args.get("new_string") or "")
-        return (
-            f"str_replace path={path}\n"
-            f"  old_string ({len(old)} chars): {old[:120]!r}{'…' if len(old) > 120 else ''}\n"
-            f"  new_string ({len(new)} chars): {new[:120]!r}{'…' if len(new) > 120 else ''}"
-        )
-    if tool == "write_file":
-        path = args.get("path", "?")
-        content = str(args.get("content") or "")
-        return f"write_file path={path} content_len={len(content)}"
-    if tool == "post_toot":
-        text = str(args.get("text") or "")
-        vis = args.get("visibility") or "unlisted"
-        return f"post_toot visibility={vis} text={text[:200]!r}{'…' if len(text) > 200 else ''}"
-    if tool == "delete_toot":
-        return f"delete_toot status_id={args.get('status_id')!r}"
-    if tool == "forge_sync":
-        detail = str(args.get("_detect_summary") or args.get("status") or "FAST_FORWARD")
-        return f"forge_sync 将推进同步：\n{detail}"
-    try:
-        import json as _json
-        blob = _json.dumps(args, ensure_ascii=False)
-    except Exception:
-        blob = str(args)
-    if len(blob) > 400:
-        blob = blob[:400] + "…"
-    return f"{tool} {blob}"
 
 
 _ACTION_CONFIRM_PROMPT = (
@@ -3843,28 +3797,6 @@ class Runtime:
                         "可直接回复意见继续讨论；需要改文件/发嘟时请调用对应工具，"
                         "Runtime 会在执行前要求确认。"
                     )
-                if strategy == "WRITE_CONFIRM":
-                    # 冻结精确快照，本轮停止；不执行、不打开其它 mutation 权限
-                    summary = _pending_action_summary(tc.name, getattr(tc, "arguments", None) or {})
-                    self._pending_action = PendingAction(
-                        tool=tc.name,
-                        args=dict(getattr(tc, "arguments", None) or {}),
-                        tool_call_id=getattr(tc, "id", None) or "pending",
-                        summary=summary,
-                        assistant_content=resp.content,
-                    )
-                    self._last_response_needs_display = True
-                    self.conversation.append(ForgeMessage(role="user", content=task))
-                    self.conversation.append(
-                        ForgeMessage(role="assistant", content=(resp.content or "") + "\n" + summary)
-                    )
-                    _append_conversation_log(
-                        self.workspace.project_root, "assistant", summary
-                    )
-                    assistant_replies.append(summary)
-                    self._last_tool_calls = tool_calls_n
-                    self._last_assistant_replies = assistant_replies
-                    return summary + _ACTION_CONFIRM_PROMPT
                 self.emit(
                     Event(EventType.TOOL_CALL_START, {"name": tc.name, "args": tc.arguments})
                 )

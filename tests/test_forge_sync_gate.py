@@ -73,7 +73,7 @@ def _report(status, **kw):
 def test_write_strategy_forge_sync_is_special():
     assert _write_strategy("forge_sync") == "FORGE_SYNC"
     assert _write_strategy("undo_last_tx") == "WRITE_RECOVERY"
-    assert _write_strategy("str_replace") == "WRITE_CONFIRM"
+    assert _write_strategy("str_replace") == "READ"  # WRITE_CONFIRM 分类已删除
 
 
 def test_main_forge_sync_refused_by_policy_in_sync(tmp_path):

@@ -6,23 +6,22 @@ from forge.runtime import (
     PendingAction,
     Runtime,
     _write_strategy,
-    _WRITE_CONFIRM_TOOLS,
     _WRITE_RECOVERY_TOOLS,
 )
 
 
 def test_write_strategy_buckets():
+    """WRITE_CONFIRM 分类已删除（2026-09-07）。mutation 工具
+    在到达 _write_strategy 之前已被 _main_tool_policy_denied 按类别拦截。"""
     assert _write_strategy("read_file") == "READ"
     assert _write_strategy("search_code") == "READ"
-    assert _write_strategy("str_replace") == "WRITE_CONFIRM"
-    assert _write_strategy("post_toot") == "WRITE_CONFIRM"
-    assert _write_strategy("write_file") == "WRITE_CONFIRM"
+    assert _write_strategy("str_replace") == "READ"
+    assert _write_strategy("post_toot") == "READ"
+    assert _write_strategy("write_file") == "READ"
     assert _write_strategy("forge_sync") == "FORGE_SYNC"
     assert _write_strategy("undo_last_tx") == "WRITE_RECOVERY"
     assert _write_strategy("submit_plan") == "READ"
     assert "forge_sync" not in _WRITE_RECOVERY_TOOLS
-    assert "str_replace" in _WRITE_CONFIRM_TOOLS
-    assert "forge_sync" not in _WRITE_CONFIRM_TOOLS
 
 
 def test_guard_still_blocks_after_confirm(tmp_path):
