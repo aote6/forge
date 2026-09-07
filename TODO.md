@@ -117,17 +117,6 @@
     可中断检查点。不是加几行关键词判断能解决的 quick fix。
   - 优先级：P0（架构级，与"spawn_subagent 阻塞时主 AI 无法说话"
     合并处理）
-- [ ] verify_evidence() 遗留函数清理（MDE v1 已隔离但未删除）
-  - 现状：函数已标记 deprecated，无生产调用者。
-    两个测试 tests/test_main_read_tool_records.py 仍引用它验证
-    actor=main 过滤行为。
-  - 风险：函数签名接受模型 items 并生成 Evidence，与 MDE 边界
-    冲突。若未来有人误用其返回值进入 AgentResult.evidence，
-    会重新打开"模型生产权威证据"的口子。
-  - 修复方向：把两个测试迁移到 project_machine_evidence 的
-    actor 过滤测试，然后删除 verify_evidence()。
-  - 优先级：P1
-
 - [ ] done_when 真正的语义求值（v1 只有 proxy）
   - 现状：done_when_satisfied_v1 是明确标注的 proxy：
     stop_when_met && machine_evidence >= 1。
