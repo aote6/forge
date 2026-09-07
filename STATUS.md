@@ -2219,3 +2219,23 @@ spawn_subagent 同步阻塞调用是同一根因。
 - Sync Decision Parameter Inertia 防护（defense-in-depth）
 - Terminal History Recall（last <tool_call_id>）
 - MDE v1（Machine-Derived Evidence）
+
+## 2026-09-07 清理与修复
+
+### verify_evidence 遗留函数删除
+- 删除 verify_evidence()（MDE v1 后无生产调用者）
+- 过滤行为已由 project_machine_evidence 测试覆盖
+- 全量 854 passed
+
+### WRITE_CONFIRM 死代码清理
+- 删除 _WRITE_CONFIRM_TOOLS frozenset 和分类分支
+- 删除 _pending_action_summary（唯一调用点是死分支）
+- 删除主循环 WRITE_CONFIRM 块
+- 安全性不变：_main_tool_policy_denied 类别检查是真正闸门
+- 全量 853 passed
+
+### Checkpoint clear 返回值处理
+- 新增 _clear_subtask_checkpoint helper
+- 4 处调用点检查返回值，失败时提示主 AI
+- 无重试/阻塞：append_ok + existing-terminal 防护已防重复执行
+- 新增 4 个测试，全量 857 passed
