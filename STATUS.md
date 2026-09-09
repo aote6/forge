@@ -2296,3 +2296,32 @@ EOFError，外部程序/脚本无法干净调用 Forge。
 857 passed。实测 python3 dp.py -c "..." 单次输出后干净退出到
 shell，不进入交互循环。已提交并推送 forge（commit 0138510,
 3d07335），并从 TODO.md 删除对应条目。
+
+## 2026-09-09 TODO 事实清理 + Main Checkpoint Facts
+
+### TODO 事实清理（只改文档，不动代码）
+- 删除 P0「自然语言停止」条目里过时的「与 spawn_subagent 阻塞时主 AI 无法说话合并处理」表述。
+  该问题已由 9/5 preempt 机制（cdabb89 + 8aafd1a + d74496d）解决，preempt 让子 AI 在异常边界
+  主动交还判断权给主 AI，不再需要「合并处理」。
+- 「终端动画/实时输出」从 P0 降为 P2。性质是终端能力/产品体验缺口，不涉及控制权或安全架构。
+- 保留「自然语言停止」为 P0：运行期缺少 stdin producer，用户打字无法转成 _stop_requested。
+
+### Main Checkpoint Facts（soft feedback，不硬拦）
+- 新增 runtime-local _CheckpointWindow（forge/runtime.py），不进 WorkingSet / task_state。
+- 每次 Main 工具调用后记录 (tool_name, canonical input, canonical payload/display)。
+- 注入 progress/final checkpoint 时生成 FACTS SINCE LAST CHECKPOINT：
+  - 同 tool + 同 input 调用次数，结果是否变化
+  - WorkingSet 字段 delta（files_read / pending_verify / open_hypotheses 等）
+  - spawn_subagent 成功次数（报告为 delegation，不推断 mutation）
+  - forge_sync 调用次数
+- 无值得报告的事实时不输出 FACTS，保持原 checkpoint 形态。
+- 有 FACTS 时追加指令：事实非评价，done/unfinished/next/risk 必须与事实一致。
+- 三处 record_tool 调用点经审查互斥：policy denied / FORGE_SYNC / 正常 executor。
+- 不碰 WorkingSet 持久化、ToolCallRecord schema、Sub AI、预算常量、gate/policy。
+- 新增 tests/test_checkpoint_facts.py（19 个测试）。
+
+### 验证
+- tests/test_checkpoint_facts.py: 19 passed
+- 关联回归 test_p2_3_progress_skeleton + test_p1_working_set: 29 passed
+- 全量: 876 passed, 0 failed
+- 已提交 forge（commit 2c6d689）
