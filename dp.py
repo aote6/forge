@@ -21,6 +21,18 @@ from forge.tui_input import read_multiline_input
 from forge.terminal_present import TerminalPresenter
 from forge.terminal_color import ALARM, AMBER, PHOSPHOR, TUBE_BLUE, paint
 
+# 单次命令模式：dp.py [project_root] -c "消息内容"
+# 在 project_root/sync/status 解析之前先摘出 -c，避免互相干扰。
+_single_command = None
+if "-c" in sys.argv or "--command" in sys.argv:
+    _flag = "-c" if "-c" in sys.argv else "--command"
+    _idx = sys.argv.index(_flag)
+    if _idx + 1 >= len(sys.argv):
+        print(f'用法: dp.py [project_root] {_flag} "消息内容"', file=sys.stderr)
+        sys.exit(1)
+    _single_command = sys.argv[_idx + 1]
+    del sys.argv[_idx : _idx + 2]
+
 project_root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
 adapter = DeepSeekAdapter(
     model_name=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
@@ -271,6 +283,19 @@ def main():
 
     _check_veritas(runtime)
     _print_world_summary(runtime)
+
+    if _single_command is not None:
+        try:
+            runtime.run(_single_command)  # 回复由 _on_assistant_done hook 打印，此处不重复打印
+        except Exception as e:
+            print(f"FAIL: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            try:
+                runtime.world.close()
+            except Exception:
+                pass
+        return
 
     print("Forge | 工具循环 | 输入 q 退出")
     print("  工具输出会即时显示（last / last <tool_call_id> 回看全文）；后台自检默认关 (FORGE_HEALTH_CHECK=1 开启)")
