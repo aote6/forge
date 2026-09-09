@@ -75,7 +75,7 @@
   - 发现场景：彩虹雨脚本运行成功，但用户只能看到静态 ASCII 摘要，看不到实时动画。
   - 影响：依赖 ANSI 颜色、光标移动、实时刷新的命令无法演示。
   - 建议：新增独立 PTY/交互终端能力，与 run_command 批处理捕获分离。
-  - 优先级：P0
+  - 优先级：P2
 
 ### 运行时生命周期（R1 后续）
 
@@ -94,8 +94,7 @@
   - 方向：需要架构级改造——后台线程读 stdin + 设置 stop 标志，
     或 select/termios 非阻塞 stdin 监听，或把阻塞调用改为
     可中断检查点。不是加几行关键词判断能解决的 quick fix。
-  - 优先级：P0（架构级，与"spawn_subagent 阻塞时主 AI 无法说话"
-    合并处理）
+  - 优先级：P0
 - [ ] done_when 真正的语义求值（v1 只有 proxy）
   - 现状：done_when_satisfied_v1 是明确标注的 proxy：
     stop_when_met && machine_evidence >= 1。
