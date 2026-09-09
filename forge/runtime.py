@@ -602,12 +602,199 @@ PROGRESS_MARKER = "[PROGRESS]"
 FINAL_CHECKPOINT_MARKER = "[FINAL CHECKPOINT]"
 _CHECKPOINT_MARKERS = (PROGRESS_MARKER, FINAL_CHECKPOINT_MARKER)
 _EMPTY = "无"
+_FACTS_MARKER = "FACTS SINCE LAST CHECKPOINT"
 
 
 def _one_line(text, limit: int = 160) -> str:
     """压成单行并截断；空值返回空串。"""
     t = " ".join(str(text or "").split())
     return t[:limit]
+
+
+def _canonical_json(value) -> str:
+    """Stable serialization for input/result identity (not display text)."""
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        return repr(value)
+
+
+def _result_identity(result) -> str:
+    """Prefer structured payload; fall back to raw display (pre-sanitize)."""
+    payload = getattr(result, "payload", None)
+    if payload is not None:
+        return "p:" + _canonical_json(payload)
+    display = getattr(result, "display", None)
+    if display is None:
+        return "d:"
+    return "d:" + (display if isinstance(display, str) else str(display))
+
+
+def _input_identity(arguments: dict | None) -> str:
+    return _canonical_json(arguments if isinstance(arguments, dict) else {})
+
+
+def _short_input_label(tool_name: str, arguments: dict | None, limit: int = 60) -> str:
+    """Human-readable arg snippet for FACTS lines (not used for identity)."""
+    args = arguments if isinstance(arguments, dict) else {}
+    for key in ("pattern", "path", "query", "symbol_name", "cmd", "goal", "url"):
+        v = args.get(key)
+        if isinstance(v, str) and v.strip():
+            return _one_line(f'{tool_name}({key}={v.strip()!r})', limit)
+    if not args:
+        return f"{tool_name}()"
+    return _one_line(f"{tool_name}({_canonical_json(args)})", limit)
+
+
+def _ws_field_snapshot(ws: "WorkingSet") -> dict:
+    """Shallow copy of WorkingSet observation fields for checkpoint-window baseline."""
+    return {
+        "files_read": list(ws.files_read or []),
+        "files_edited": list(ws.files_edited or []),
+        "open_hypotheses": list(ws.open_hypotheses or []),
+        "pending_verify": list(ws.pending_verify or []),
+        "verify_targets": list(ws.verify_targets or []),
+        "failure_target": ws.failure_target,
+        "failure_context_len": len(ws.failure_context or []),
+    }
+
+
+class _CheckpointWindow:
+    """Runtime-local facts between two Main checkpoints (not persisted).
+
+    Tracks tool call identities and WorkingSet field deltas since the last
+    emitted checkpoint. Resets when a checkpoint is actually injected.
+    """
+
+    def __init__(self, ws: "WorkingSet") -> None:
+        self.baseline = _ws_field_snapshot(ws)
+        # (tool_name, input_id, result_id, label)
+        self.calls: list[tuple[str, str, str, str]] = []
+        self.spawn_success_count = 0
+        self.forge_sync_count = 0
+
+    def record_tool(
+        self, name: str, arguments: dict | None, result
+    ) -> None:
+        n = (name or "").strip()
+        if not n:
+            return
+        args = arguments if isinstance(arguments, dict) else {}
+        inp = _input_identity(args)
+        rid = _result_identity(result)
+        label = _short_input_label(n, args)
+        self.calls.append((n, inp, rid, label))
+        if n == "spawn_subagent" and getattr(result, "success", False):
+            self.spawn_success_count += 1
+        if n == "forge_sync":
+            self.forge_sync_count += 1
+
+    def facts_text(self, ws: "WorkingSet") -> str:
+        """Build FACTS block or empty string when nothing reportable."""
+        lines: list[str] = []
+
+        # --- repeated tool calls (same tool + same input) ---
+        groups: dict[tuple[str, str], list[tuple[str, str]]] = {}
+        order: list[tuple[str, str]] = []
+        for name, inp, rid, label in self.calls:
+            key = (name, inp)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append((rid, label))
+
+        for key in order:
+            entries = groups[key]
+            if len(entries) < 2:
+                continue
+            label = entries[0][1]
+            n = len(entries)
+            result_ids = {e[0] for e in entries}
+            if len(result_ids) == 1:
+                lines.append(
+                    f"{label} was called {n} times. "
+                    "The result did not change across those calls."
+                )
+            else:
+                lines.append(
+                    f"{label} was called {n} times. "
+                    "The result changed across those calls."
+                )
+
+        # --- WorkingSet field deltas vs baseline ---
+        cur = _ws_field_snapshot(ws)
+        base = self.baseline
+
+        def _list_delta(field: str, label: str) -> None:
+            before = list(base.get(field) or [])
+            after = list(cur.get(field) or [])
+            if before == after:
+                return
+            added = [x for x in after if x not in before]
+            removed = [x for x in before if x not in after]
+            parts: list[str] = []
+            if added:
+                parts.append("+" + str(len(added)))
+                if len(added) <= 3:
+                    parts.append("(" + ", ".join(_one_line(a, 40) for a in added) + ")")
+            if removed:
+                parts.append("-" + str(len(removed)))
+            if parts:
+                lines.append(f"{label}: {' '.join(parts)} ({len(before)} → {len(after)})")
+            else:
+                lines.append(f"{label}: {len(before)} → {len(after)}")
+
+        _list_delta("files_read", "files_read")
+        _list_delta("files_edited", "files_edited")
+        _list_delta("pending_verify", "pending_verify")
+        _list_delta("open_hypotheses", "open_hypotheses")
+        _list_delta("verify_targets", "verify_targets")
+
+        if base.get("failure_target") != cur.get("failure_target"):
+            lines.append(
+                f"failure_target: {base.get('failure_target')!r} → {cur.get('failure_target')!r}"
+            )
+        if base.get("failure_context_len") != cur.get("failure_context_len"):
+            lines.append(
+                f"failure_context entries: "
+                f"{base.get('failure_context_len')} → {cur.get('failure_context_len')}"
+            )
+
+        # Unchanged high-signal fields when other facts exist, or always note
+        # pending_verify stability if there were tool calls but no list deltas.
+        if self.calls and not any(
+            ln.startswith("pending_verify:") for ln in lines
+        ):
+            n = len(cur.get("pending_verify") or [])
+            if n or (base.get("pending_verify") or []):
+                lines.append(f"pending_verify: {n} → {n} (unchanged)")
+
+        if self.calls and not any(
+            ln.startswith("open_hypotheses:") for ln in lines
+        ):
+            n = len(cur.get("open_hypotheses") or [])
+            if n or (base.get("open_hypotheses") or []):
+                lines.append(f"open_hypotheses: unchanged")
+
+        # --- reliable delegation / sync observations (no mutation inference) ---
+        if self.spawn_success_count:
+            lines.append(
+                f"spawn_subagent succeeded {self.spawn_success_count} time(s) "
+                "(delegated execution; not a Main direct mutation)."
+            )
+        if self.forge_sync_count:
+            lines.append(f"forge_sync was invoked {self.forge_sync_count} time(s).")
+
+        if not lines:
+            return ""
+        return _FACTS_MARKER + "\n" + "\n".join(lines)
+
+    def reset(self, ws: "WorkingSet") -> None:
+        """Start a new observation window after a checkpoint is emitted."""
+        self.baseline = _ws_field_snapshot(ws)
+        self.calls.clear()
+        self.spawn_success_count = 0
+        self.forge_sync_count = 0
 
 
 def _ck_done(ws: "WorkingSet") -> str:
@@ -646,22 +833,36 @@ def _ck_unfinished(ws: "WorkingSet") -> str:
     return ", ".join(items) if items else _EMPTY
 
 
-def _progress_checkpoint_text(ws: "WorkingSet") -> str:
-    """周期性强制 checkpoint：要求模型先复述状态，再继续工具调用。"""
+def _facts_instruction() -> str:
     return (
+        "以上 FACTS 是 Runtime 观察到的客观事实（工具调用与工作集字段变化），"
+        "不是建议，也不是对你工作的评价。"
+        "你的 done / unfinished / next / risk 必须与这些事实一致；"
+        "若事实显示某个探索动作重复且结果没有变化，请在判断中考虑这一点。"
+    )
+
+
+def _progress_checkpoint_text(ws: "WorkingSet", facts: str = "") -> str:
+    """周期性强制 checkpoint：要求模型先复述状态，再继续工具调用。"""
+    body = (
         f"{PROGRESS_MARKER}\n"
         f"goal: {_one_line(ws.goal, 200) or _EMPTY}\n"
         f"done: {_ck_done(ws)}\n"
         f"next: {_ck_next(ws)}\n"
         f"risk: {_ck_risk(ws)}\n"
-        "在继续任何工具调用之前，先按上面 4 行原样输出当前状态（这是强制 checkpoint，"
+    )
+    if facts:
+        body += f"\n{facts}\n\n{_facts_instruction()}\n"
+    body += (
+        "在继续任何工具调用之前，先按上面字段原样输出当前状态（这是强制 checkpoint，"
         "不是建议）。信息以上面给出的为准，不要重新猜测 goal；字段为空就写「无」。"
     )
+    return body
 
 
-def _final_checkpoint_text(ws: "WorkingSet") -> str:
+def _final_checkpoint_text(ws: "WorkingSet", facts: str = "") -> str:
     """接近最大步数时的收束 checkpoint：停止探索，立即总结。"""
-    return (
+    body = (
         f"{FINAL_CHECKPOINT_MARKER}\n\n"
         "你已接近本轮最大工具调用次数。\n"
         "停止新的无关探索。\n\n"
@@ -669,10 +870,15 @@ def _final_checkpoint_text(ws: "WorkingSet") -> str:
         f"goal: {_one_line(ws.goal, 200) or _EMPTY}\n"
         f"done: {_ck_done(ws)}\n"
         f"unfinished: {_ck_unfinished(ws)}\n"
-        f"next: {_ck_next(ws)}\n\n"
-        "如果任务已经完成，不要继续调用工具。\n"
+        f"next: {_ck_next(ws)}\n"
+    )
+    if facts:
+        body += f"\n{facts}\n\n{_facts_instruction()}\n"
+    body += (
+        "\n如果任务已经完成，不要继续调用工具。\n"
         "如果仍未完成，只指出最必要的下一步。"
     )
+    return body
 
 
 def _is_checkpoint_message(m) -> bool:
@@ -688,6 +894,7 @@ def _checkpoint_for_step(
     step_i: int,
     mutation_pending: bool,
     max_steps: int,
+    facts: str = "",
 ) -> str:
     """本轮该注入哪种 checkpoint（空串表示不注入）。
 
@@ -695,9 +902,9 @@ def _checkpoint_for_step(
     - 每 PROGRESS_CHECKPOINT_EVERY 步，或上一轮有成功 mutation：progress。
     """
     if step_i >= max_steps - FINAL_CHECKPOINT_TAIL_STEPS:
-        return _final_checkpoint_text(ws)
+        return _final_checkpoint_text(ws, facts=facts)
     if mutation_pending or (step_i > 0 and step_i % PROGRESS_CHECKPOINT_EVERY == 0):
-        return _progress_checkpoint_text(ws)
+        return _progress_checkpoint_text(ws, facts=facts)
     return ""
 
 
@@ -3572,6 +3779,8 @@ class Runtime:
         self._working_set = working_set
         # P2-3: 上一轮有成功 mutation → 下一轮补一次 progress checkpoint
         mutation_pending = False
+        # Runtime-local facts since last checkpoint (not part of WorkingSet / task_state).
+        ck_window = _CheckpointWindow(working_set)
         for step_i in range(MAX_AGENT_STEPS):
             if self.stop_requested():
                 self._last_tool_calls = tool_calls_n
@@ -3602,11 +3811,14 @@ class Runtime:
                 if nudge:
                     messages.append(ForgeMessage(role="user", content=nudge))
                     nudged = True
+            facts = ck_window.facts_text(working_set)
             checkpoint = _checkpoint_for_step(
-                working_set, step_i, mutation_pending, MAX_AGENT_STEPS
+                working_set, step_i, mutation_pending, MAX_AGENT_STEPS, facts=facts
             )
             if checkpoint:
                 messages.append(ForgeMessage(role="system", content=checkpoint))
+                # New observation window starts after this checkpoint is emitted.
+                ck_window.reset(working_set)
             mutation_pending = False
             self._assistant_streamed = False  # presentation only
 
@@ -3751,6 +3963,12 @@ class Runtime:
                     self._remember_tool_end(
                         name=tc.name, result=result, tool_call_id=ledger_id
                     )
+                    try:
+                        ck_window.record_tool(
+                            tc.name, getattr(tc, "arguments", None) or {}, result
+                        )
+                    except Exception:
+                        pass
                     llm_tool_content = sanitize_and_redact(result.display or "")
                     messages.append(ForgeMessage(
                         role="tool",
@@ -3813,6 +4031,12 @@ class Runtime:
                             _save_task_state(self.workspace.project_root, working_set)
                         except Exception as e:
                             print(f"[forge] WorkingSet update failed: {e}", file=sys.stderr)
+                        try:
+                            ck_window.record_tool(
+                                tc.name, getattr(tc, "arguments", None) or {}, result
+                            )
+                        except Exception:
+                            pass
                         llm_tool_content = sanitize_and_redact(result.display or "")
                         messages.append(ForgeMessage(
                             role="tool",
@@ -3904,6 +4128,12 @@ class Runtime:
                     _save_task_state(self.workspace.project_root, working_set)
                 except Exception as e:
                     print(f"[forge] WorkingSet update failed: {e}", file=sys.stderr)
+                try:
+                    ck_window.record_tool(
+                        tc.name, getattr(tc, "arguments", None) or {}, result
+                    )
+                except Exception:
+                    pass
                 # P2-3: 复用文件编辑成功判定（_EDIT_TOOLS + result.success），
                 # Working Set 刷新之后再排队 checkpoint；失败的编辑不触发、不入 done。
                 # 收窄：forge_sync / undo_last_tx 不是文件编辑，不再触发 checkpoint。
