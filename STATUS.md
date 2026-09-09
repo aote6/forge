@@ -2239,3 +2239,60 @@ spawn_subagent 同步阻塞调用是同一根因。
 - 4 处调用点检查返回值，失败时提示主 AI
 - 无重试/阻塞：append_ok + existing-terminal 防护已防重复执行
 - 新增 4 个测试，全量 857 passed
+
+## 2026-09-09 WAL 临时文件污染根因修复 + dp.py 单次调用模式
+
+### WAL 临时文件污染项目根目录（veritas_kernel）
+
+#### 现象
+~/forge 和 ~/veritas_kernel 根目录各堆积数百个 wal_*.log 文件，
+最早可追溯到多周前，持续增长。
+
+#### 根因
+VeritasEngine::new()（无显式 WAL 路径时的兜底分支）在
+engine.rs 中直接用 `wal_{pid}_{tid}_{n}.log` 写入当前工作目录，
+且从不清理。两条触发路径：
+- veritas_kernel 自身 cargo test 中的 bootstrap_tests /
+  Kernel::new() 单元测试，cwd=项目根目录
+- forge 侧 dp.py 后台自检线程（_background_health_check）跑
+  pytest 时，tests/test_e2e_veritas_forge.py 直接 subprocess.Popen
+  起 veritasd 未设 env/cwd，继承 pytest 进程环境（无 VERITAS_WAL），
+  命中同一条兜底分支
+Forge 正常路径（WorldAdapter._ensure_process 显式设置
+VERITAS_WAL）不受影响，持久化 WAL（.forge/veritas.wal）无风险。
+
+#### 修复（仅改 veritas_kernel/src/engine.rs）
+- 兜底路径改写到 std::env::temp_dir()/veritas_ephemeral_wal/，
+  不再落在项目根目录
+- new() 内附带清理逻辑：每次调用顺手清掉该临时目录下修改时间
+  超过 1 小时的旧文件，避免长期堆积
+- with_wal_path（Forge 走的显式路径）未改动
+
+#### 验证
+cargo build --release + cargo test 全绿（含
+wal_recovery_robustness 7 个用例、world_demo）。
+已清理两个项目根目录历史遗留文件。已提交并推送
+veritas_kernel（commit a56f57e）。forge 侧无需改动
+（仅依赖编译产物）。
+
+### dp.py 新增 -c/--command 单次调用模式
+
+#### 问题（原 TODO P3）
+dp.py 只有交互循环，`printf 'xxx' | python3 dp.py` 处理完第一条
+消息后仍尝试继续读 stdin，管道关闭后 read_multiline_input 抛
+EOFError，外部程序/脚本无法干净调用 Forge。
+
+#### 修复
+- sys.argv 解析阶段新增 -c/--command 摘取，先于
+  project_root/sync/status 解析，互不干扰
+- main() 中 runtime 初始化完成、进入交互循环之前，插入单次分支：
+  runtime.run(_single_command) 后直接 return，复用
+  _on_assistant_done hook 输出回复（不重复 print），
+  finally 里正常 world.close()
+- 用法：python3 dp.py [project_root] -c "消息内容"，用于脚本/
+  自动化/被其他程序调用的场景（同类设计参考 claude -p）
+
+#### 验证
+857 passed。实测 python3 dp.py -c "..." 单次输出后干净退出到
+shell，不进入交互循环。已提交并推送 forge（commit 0138510,
+3d07335），并从 TODO.md 删除对应条目。
