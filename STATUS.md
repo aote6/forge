@@ -2325,3 +2325,45 @@ shell，不进入交互循环。已提交并推送 forge（commit 0138510,
 - 关联回归 test_p2_3_progress_skeleton + test_p1_working_set: 29 passed
 - 全量: 876 passed, 0 failed
 - 已提交 forge（commit 2c6d689）
+
+## 2026-09-11 Escape Pod 边界与代码考察记录
+
+### 背景
+
+Escape Pod 的初始动机是：当 Forge 自身出现故障，而修复 Forge 所需要的执行能力又恰好受 Forge 故障影响时，是否需要一个位于 Forge 外部的独立执行体。
+
+在提出阶段进行了多轮源码考察，目的是先确认方向，不急于施工。
+
+### 结论
+
+- Escape Pod 不需要成为第二个 Forge。
+- Forge 当前已经存在一套独立于 Main AI 治理层的执行基础。
+- 如果未来真实事故证明需要外部执行体，应优先复用这套执行基础，而不是复制 Forge 的 Runtime、Main AI 治理、任务生命周期或事务系统。
+
+考察确认的最小方向：外部独立执行体、有限工具集合、复用 IntentExecutor / WorldRuntime / Veritas transaction、不继承 Forge 治理流程。
+
+### 文档
+
+新增两份文档，分工明确：
+
+- docs/ESCAPE_POD_BOUNDARY.md（71 行）—— 边界结论，说不做什么。
+- docs/ESCAPE_POD_ARCHAEOLOGY.md（356 行）—— 代码考察记录，说查到了什么、源码入口在哪、未来事故时从哪进。
+
+Archaeology 记录的关键源码入口：
+
+- forge/runtime.py
+- forge/tools/__init__.py
+- forge/intents/executor.py
+- forge/tools/intent_tools.py
+
+### 当前状态
+
+Escape Pod 尚未实现，目前没有真实事故证明需要实现它。
+
+当前继续封存，不施工。等第一次真实事故出现后，按 Archaeology 记录的入口重新确认层次关系，只调查事故相关增量，不重新考古整个 Forge。
+
+### 验证
+
+- python3 逐字节检查两份新文档，无异常空格。
+- git diff --check 无输出。
+- 已提交并推送 forge（commit b36731c, 9e24eed）。
